@@ -142,16 +142,17 @@ class BuildManager:
             except Exception as e:
                 self._log(f"[backup] skipped: {e}")
 
-    def _stream(self, cmd, cwd=None):
+    def _stream(self, cmd, cwd=None, env=None):
         self._log(f"\n$ {' '.join(cmd)}")
         p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True, bufsize=1)
+                             stderr=subprocess.STDOUT, text=True, bufsize=1,
+                             env=env)
         for line in p.stdout:
             self._log(line.rstrip("\n"))
         p.wait()
         return p.returncode
 
-    def run_build(self, src, build_dir, flags, pull=True, jobs=None):
+    def run_build(self, src, build_dir, flags, pull=True, jobs=None, env=None):
         """Blocking build; call inside a thread. flags: {CMAKE_VAR: value}."""
         with self.lock:
             if self.state["running"]:
@@ -179,15 +180,16 @@ class BuildManager:
                    "-DCMAKE_BUILD_TYPE=Release"]
             for k, v in (flags or {}).items():
                 cfg.append(f"-D{k}={v}")
-            rc = self._stream(cfg)
+            rc = self._stream(cfg, env=env) if env else self._stream(cfg)
             if rc != 0:
                 raise RuntimeError("cmake configure failed")
 
             self.state["phase"] = "build"
             self._log("\n=== cmake build ===")
             jobs = jobs or os.cpu_count() or 8
-            rc = self._stream(["cmake", "--build", build_dir, "--config", "Release",
-                               "--parallel", str(jobs)])
+            build_cmd = ["cmake", "--build", build_dir, "--config", "Release",
+                         "--parallel", str(jobs)]
+            rc = self._stream(build_cmd, env=env) if env else self._stream(build_cmd)
             if rc != 0:
                 # cmake returns one code for the whole build. A non-essential
                 # later target (npm/sharp UI assets) can fail after llama-server
@@ -247,10 +249,10 @@ class BuildManager:
         except Exception as e:
             self._log(f"[binaries] could not record server_bin: {e}")
 
-    def start(self, src, build_dir, flags, pull=True, jobs=None):
+    def start(self, src, build_dir, flags, pull=True, jobs=None, env=None):
         if self.state["running"]:
             return False
         t = threading.Thread(target=self.run_build,
-                             args=(src, build_dir, flags, pull, jobs), daemon=True)
+                             args=(src, build_dir, flags, pull, jobs, env), daemon=True)
         t.start()
         return True

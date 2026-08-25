@@ -144,7 +144,7 @@ def vllm_log_tail(n=400):
 
 
 def total_vram_mib():
-    return sum(g["total"] for g in _gpu_telemetry() if "total" in g)
+    return hardware.total_fit_vram_mib(hardware.detect_gpus())
 
 
 def download_dir():
@@ -199,22 +199,51 @@ def gpus():
 
 
 def _gpu_telemetry():
-    if osplat.IS_MAC:
-        return osplat.mac_gpu_telemetry()
+    return hardware.detect_gpu_telemetry()
+
+
+def _build_backend_info(c=None, backend=""):
+    c = c or cfg()
+    rec = hardware.recommend(backend=backend or c.get("llama_backend", "auto"))
+    return {
+        "selected_backend": rec.get("selected_backend", "cpu"),
+        "available_backends": rec.get("available_backends", []),
+        "recommended_flags": rec.get("cmake_flags", {}),
+        "notes": rec.get("notes", []),
+    }
+
+
+def _hip_env():
+    hipcxx = _run_capture(["hipconfig", "-l"]).strip()
+    hippath = _run_capture(["hipconfig", "-R"]).strip()
+    env = dict(os.environ)
+    if hipcxx:
+        env["HIPCXX"] = os.path.join(hipcxx, "clang")
+    if hippath:
+        env["HIP_PATH"] = hippath
+    return env if ("HIPCXX" in env or "HIP_PATH" in env) else None
+
+
+def _run_capture(cmd, timeout=10):
     try:
-        out = subprocess.check_output(
-            ["nvidia-smi",
-             "--query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu",
-             "--format=csv,noheader,nounits"], text=True, timeout=8)
-    except Exception as e:
-        return [{"error": str(e)}]
-    res = []
-    for ln in out.strip().splitlines():
-        f = [x.strip() for x in ln.split(",")]
-        if len(f) >= 6:
-            res.append({"index": int(f[0]), "name": f[1], "used": int(f[2]),
-                        "total": int(f[3]), "util": int(f[4]), "temp": int(f[5])})
-    return res
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout or ""
+    except Exception:
+        return ""
+
+
+def _validate_build_backend(backend, prereq_status):
+    if backend == "cuda":
+        if not prereq_status.get("cuda", {}).get("present"):
+            return "CUDA toolkit not found - install CUDA or choose another backend."
+    elif backend == "hip":
+        rocm = prereq_status.get("rocm", {})
+        if not rocm.get("present"):
+            return "ROCm/HIP tools not found - install rocminfo + hipconfig or choose another backend."
+    elif backend == "vulkan":
+        vk = prereq_status.get("vulkan", {})
+        if not vk.get("present"):
+            return "Vulkan build prerequisites not found - install vulkaninfo + glslc (+ headers) or choose another backend."
+    return ""
 
 
 def _cached_schema(bin_path, cache_holder):
@@ -651,27 +680,35 @@ def get_gpus(req):
 
 
 def get_setup(req):
-    return 200, {"prereqs": prereqs.status(), "hardware": hardware.recommend()}
+    c = cfg()
+    return 200, {"prereqs": prereqs.status(),
+                 "hardware": hardware.recommend(backend=c.get("llama_backend", "auto"))}
 
 
 def get_build_info(req):
     c = cfg()
     target = req.q("target") or "llamacpp"
     builder = _builder_for(target)
+    build_backend = c.get("llama_backend", "auto")
+    rec = hardware.recommend(backend=build_backend)
     if target == "ikllama":
         src = c.get("ik_llama_src", "")
         remote = c.get("ik_llama_git_remote", "https://github.com/ikawrakow/ik_llama.cpp")
-        saved_flags = c.get("ik_llama_cmake_flags", {})
+        saved_flags = c.get("ik_llama_cmake_flags", {}) if c.get("ik_llama_cmake_backend") == rec.get("selected_backend") else {}
     else:
         src = c["llama_src"]
         remote = c.get("git_remote", "https://github.com/ggml-org/llama.cpp")
-        saved_flags = c.get("cmake_flags", {})
+        saved_flags = c.get("cmake_flags", {}) if c.get("cmake_backend") == rec.get("selected_backend") else {}
     return 200, {
         "target": target,
         "current": builder.current_commit(src),
         "updates": builder.check_updates(src, force=req.flag("force")),
-        "recommended_flags": hardware.recommend()["cmake_flags"],
+        "recommended_flags": rec["cmake_flags"],
         "saved_flags": saved_flags,
+        "selected_backend": rec.get("selected_backend", "cpu"),
+        "available_backends": rec.get("available_backends", []),
+        "backend_notes": rec.get("notes", []),
+        "requested_backend": build_backend,
         "remote": remote,
     }
 
@@ -946,24 +983,32 @@ def post_build_start(req):
     c = cfg()
     target = req.body.get("target", "llamacpp")
     builder = _builder_for(target)
+    requested_backend = c.get("llama_backend", "auto")
+    rec = hardware.recommend(backend=requested_backend)
+    selected_backend = rec.get("selected_backend", "cpu")
+    bad_backend = _validate_build_backend(selected_backend, prereqs.status())
+    if bad_backend:
+        return 200, {"started": False, "target": target, "error": bad_backend,
+                     "backend": selected_backend}
+    env = _hip_env() if selected_backend == "hip" else None
     if target == "ikllama":
         src = c.get("ik_llama_src", "")
         bdir = c.get("ik_llama_build_dir", "")
-        flags = req.body.get("flags") or c.get("ik_llama_cmake_flags") or hardware.recommend()["cmake_flags"]
-        config.update({"ik_llama_cmake_flags": flags})
+        flags = req.body.get("flags") or c.get("ik_llama_cmake_flags") or rec["cmake_flags"]
+        config.update({"ik_llama_cmake_flags": flags, "ik_llama_cmake_backend": selected_backend})
     else:
         src = c["llama_src"]
         bdir = c["build_dir"]
-        flags = req.body.get("flags") or c.get("cmake_flags") or hardware.recommend()["cmake_flags"]
-        config.update({"cmake_flags": flags})
+        flags = req.body.get("flags") or c.get("cmake_flags") or rec["cmake_flags"]
+        config.update({"cmake_flags": flags, "cmake_backend": selected_backend})
     # Answer an unset/bad path here rather than starting a build thread that can
     # only fail: the user gets the reason in the UI instead of a raw cmake error
     # in the build log ("No build directory specified for -B").
     bad = BuildManager.validate_paths(src, bdir)
     if bad:
         return 200, {"started": False, "target": target, "error": bad}
-    ok = builder.start(src, bdir, flags, pull=req.body.get("pull", True))
-    return 200, {"started": ok, "target": target}
+    ok = builder.start(src, bdir, flags, pull=req.body.get("pull", True), env=env)
+    return 200, {"started": ok, "target": target, "backend": selected_backend}
 
 
 def post_setup_install(req):
@@ -1136,6 +1181,7 @@ def _v_str(v):   return v if isinstance(v, str) else None
 def _v_port(v):  return v if isinstance(v, int) and 1 <= v <= 65535 else None
 def _v_mode(v):  return v if v in ("lite", "advanced") else None
 def _v_theme(v): return v if v in ("", "light", "dark") else None
+def _v_backend(v): return v if v in ("auto", "cuda", "hip", "vulkan", "cpu") else None
 def _v_dirs(v):
     return v if isinstance(v, list) and all(isinstance(x, str) for x in v) else None
 
@@ -1167,6 +1213,7 @@ CONFIG_WRITABLE = {
     "anthropic_shim_enabled":  _v_bool,
     "vram_bandwidths":         _v_bandwidths,
     "vram_predict_enabled":    _v_bool,
+    "llama_backend":           _v_backend,
 }
 
 

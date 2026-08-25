@@ -3,6 +3,8 @@
 Windows: winget -> choco. macOS: Homebrew (no sudo needed). Linux: we detect
 apt/dnf/pacman but never run sudo from the GUI - install() returns the exact
 command for the user to run instead. Never installs without an explicit request.
+Acceleration backends are reported separately so missing Vulkan does not make a
+CPU or CUDA setup look broken.
 """
 import os, shutil, subprocess, glob
 
@@ -108,6 +110,70 @@ def find_cuda():
     return {"present": False, "applicable": True,
             "url": "https://developer.nvidia.com/cuda-downloads (needed only for NVIDIA GPU builds)"}
 
+
+def _tool_present(cmd, args=None, timeout=8):
+    exe = _which(cmd)
+    if not exe:
+        return {"present": False, "path": "", "version": ""}
+    version = ""
+    try:
+        out = subprocess.run([exe] + (args or ["--version"]), capture_output=True,
+                             text=True, timeout=timeout)
+        version = ((out.stdout or out.stderr).strip().splitlines() or [""])[0]
+    except Exception:
+        version = exe
+    return {"present": True, "path": exe, "version": version}
+
+
+def find_rocm():
+    if not osplat.IS_LINUX:
+        return {"present": False, "applicable": False}
+    hip = _tool_present("hipconfig", ["--version"])
+    rocm = _tool_present("rocminfo", [], timeout=15)
+    if rocm["present"] and not rocm["version"]:
+        rocm["version"] = "present"
+    tools = {
+        "hipconfig": hip,
+        "rocminfo": rocm,
+        "amd-smi": _tool_present("amd-smi", ["version"]),
+        "rocm-smi": _tool_present("rocm-smi", ["--showproductname"]),
+    }
+    present = hip["present"] and rocm["present"]
+    return {
+        "present": present,
+        "applicable": True,
+        "version": hip["version"] or rocm["version"],
+        "tools": tools,
+        "hint": osplat.linux_install_hint(osplat.linux_pkg_manager(), "rocminfo hipcc"),
+        "url": "https://rocm.docs.amd.com/",
+    }
+
+
+def find_vulkan():
+    if osplat.IS_MAC:
+        return {"present": False, "applicable": False}
+    info = _tool_present("vulkaninfo", ["--summary"], timeout=15)
+    glslc = _tool_present("glslc", ["--version"])
+    present = info["present"] and glslc["present"]
+    hint = ""
+    if osplat.IS_LINUX:
+        pm = osplat.linux_pkg_manager()
+        pkgs = {"apt-get": "libvulkan-dev glslc spirv-headers",
+                "dnf": "vulkan-loader-devel shaderc spirv-headers-devel",
+                "pacman": "vulkan-headers shaderc spirv-headers"}
+        hint = osplat.linux_install_hint(pm, pkgs.get(pm, "libvulkan-dev glslc spirv-headers"))
+    return {
+        "present": present,
+        "applicable": True,
+        "version": info["version"] or glslc["version"],
+        "tools": {
+            "vulkaninfo": info,
+            "glslc": glslc,
+        },
+        "hint": hint,
+        "url": "https://vulkan.lunarg.com/sdk/home",
+    }
+
 def installers():
     if osplat.IS_WIN:
         return {"winget": bool(_which("winget")), "choco": bool(_which("choco"))}
@@ -134,10 +200,14 @@ def status():
                        "hint": osplat.linux_install_hint(osplat.linux_pkg_manager(),
                                                          spec["pkg"]) if osplat.IS_LINUX else "",
                        "url": spec["url"]}
+    rocm = find_rocm()
+    vulkan = find_vulkan()
     return {
         "tools": tools,
         "msvc": find_compiler(),         # key kept for UI compat; now platform-generic
         "cuda": find_cuda(),
+        "rocm": rocm,
+        "vulkan": vulkan,
         "installers": installers(),
         "platform": osplat.current(),
     }

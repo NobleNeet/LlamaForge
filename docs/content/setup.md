@@ -12,7 +12,7 @@ Check build prerequisites, install what is missing with your permission, scan yo
 
 The Setup tab reports on four independent things, each backed by its own backend module.
 
-**Prerequisite detection.** `backend/prereqs.py` checks for four command-line tools — `git`, `cmake`, `ninja`, and `python` (via `shutil.which`, running `--version` to confirm and capture the installed version) — plus the platform C++ compiler and the CUDA toolkit. On Windows, the compiler check (`find_msvc()`) shells out to `vswhere.exe` to locate an MSVC install with the C++ desktop workload, falling back to a glob for `cl.exe` under `Program Files\Microsoft Visual Studio`. On macOS/Linux it looks for `clang++` or `g++` on `PATH`. CUDA detection reads `nvcc --version` (or `$CUDA_PATH`) and is skipped entirely on macOS, where Metal is used instead.
+**Prerequisite detection.** `backend/prereqs.py` checks for four command-line tools — `git`, `cmake`, `ninja`, and `python` (via `shutil.which`, running `--version` to confirm and capture the installed version) — plus the platform C++ compiler and backend-specific acceleration toolchains. CUDA detection reads `nvcc --version` (or `$CUDA_PATH`) and is skipped on macOS. On Linux, ROCm/HIP is reported from `hipconfig` + `rocminfo`, and Vulkan from `vulkaninfo` + `glslc`.
 
 **Installing missing tools.** Which package manager runs depends on the OS, verified directly in `prereqs.py`:
 
@@ -28,11 +28,11 @@ After a successful install, the running process's `PATH` is refreshed from the r
 
 **Registry prune.** `POST /api/scan/prune` ("Check for deleted models") takes a list of model IDs, re-checks each one's `model` path in `models.ini` against disk, and — only for entries whose file no longer exists — unloads it from the router if currently loaded, then removes its section from `models.ini` with `config.remove_section()`. An entry whose file has reappeared since the check is left alone. This edits `models.ini` only; it never touches files on disk.
 
-The tab also surfaces `hardware.recommend()`'s detected CPU/GPU (shared with the Build tab), lets you pick a **favourite model to auto-load on launch** (`auto_load_model` in `config.json`), and — on Windows — the vLLM/WSL2 install flow described in [vLLM Backend](vllm.md).
+The tab also surfaces `hardware.recommend()`'s detected CPU/GPU/backends (shared with the Build tab), including AMD architecture strings such as `gfx1151` when available, lets you pick a **favourite model to auto-load on launch** (`auto_load_model` in `config.json`), and — on Windows — the vLLM/WSL2 install flow described in [vLLM Backend](vllm.md).
 
 ## How to use it
 
-1. Open the **Setup** tab. **Prerequisites** lists Git, CMake, Ninja, Python, your C++ compiler, and CUDA (if applicable), each marked present/missing with its detected version.
+1. Open the **Setup** tab. **Prerequisites** lists Git, CMake, Ninja, Python, your C++ compiler, and acceleration-specific toolchains such as CUDA, ROCm/HIP, and Vulkan when applicable.
 2. Click **Install** next to a missing tool to install it with your OS's package manager (Windows: winget, falling back to choco; macOS: Homebrew). On Linux, copy the shown command into a terminal yourself — the dashboard never runs `sudo`.
 3. Review **Detected Hardware** — your CPU and any GPUs found, shared with the Build tab's flag recommendations.
 4. Click **Scan for GGUF models** to walk your fixed drives (or `$HOME` plus mounted volumes) for `.gguf` files; review the results and apply the ones you want registered.
@@ -47,7 +47,7 @@ The tab also surfaces `hardware.recommend()`'s detected CPU/GPU (shared with the
 
 | Concept | Source | Behavior |
 |---|---|---|
-| Prereq detection | `prereqs.status()` | `git`, `cmake`, `ninja`, `python` via `shutil.which` + `--version`; C++ compiler and CUDA toolkit detected separately. |
+| Prereq detection | `prereqs.status()` | `git`, `cmake`, `ninja`, `python` via `shutil.which` + `--version`; C++ compiler plus CUDA / ROCm-HIP / Vulkan toolchains detected separately. |
 | Windows install | `prereqs.install()` | `winget install --id <id> -e ...`, falling back to `choco install <id> -y` if winget is absent or fails. |
 | macOS install | `prereqs.install()` | `brew install <pkg>` — requires Homebrew, no sudo. |
 | Linux install | `prereqs.install()` | Never runs sudo; returns the exact `apt-get`/`dnf`/`pacman` command to run yourself. |

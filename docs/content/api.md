@@ -51,10 +51,10 @@ These are the endpoints external coding agents (Claude Code, Codex, etc.) talk t
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/setup` | Prerequisite tool status (git/cmake/ninja/compiler/CUDA) plus hardware recommendation. |
+| GET | `/api/setup` | Prerequisite tool status (git/cmake/ninja/compiler plus CUDA / ROCm-HIP / Vulkan as applicable) plus hardware recommendation. |
 | POST | `/api/setup/install` | Install a missing prerequisite tool (Windows/macOS only). |
-| GET | `/api/gpus` | Live GPU telemetry via `nvidia-smi`. |
-| GET | `/api/build/info` | Current commit, available updates, and recommended/saved CMake flags (per `target`: `llamacpp` or `ikllama`). |
+| GET | `/api/gpus` | Live GPU telemetry via the available platform backend (`nvidia-smi`, Linux AMD detection, or Apple Silicon unified-memory telemetry). |
+| GET | `/api/build/info` | Current commit, available updates, the selected backend, and recommended/saved CMake flags (per `target`: `llamacpp` or `ikllama`). |
 | GET | `/api/build/log` | Tail of the build log plus builder state (`phase` includes `done_warnings` for a partial success). |
 | POST | `/api/build/start` | Start (re)building the target engine with the given (or saved/recommended) CMake flags. |
 | POST | `/api/engine/switch` | Point the router at `llamacpp` or `ikllama` (sets `active_engine`); refused if the target binary has no router mode. |

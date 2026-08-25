@@ -8,6 +8,7 @@
   "panel_port": 8090,
   "router_host": "127.0.0.1",
   "router_api_key": "",
+  "llama_backend": "auto",
   "wsl_distro": "",
   "vllm_port": 8081,
   "cmake_flags": {},

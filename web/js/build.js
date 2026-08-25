@@ -21,6 +21,7 @@ const ENGINE_REPOS = {
   llamacpp: "github.com/ggml-org/llama.cpp",
   ikllama: "github.com/ikawrakow/ik_llama.cpp",
 };
+const BACKEND_LABELS = {auto:"Auto", cuda:"CUDA", hip:"ROCm / HIP", vulkan:"Vulkan", cpu:"CPU"};
 
 export async function loadBuild(force) {
   const v = $("#view-build");
@@ -40,6 +41,8 @@ export async function loadBuild(force) {
   const remoteUrl = b.remote || ENGINE_REPOS[_target] || "";
   const label = ENGINE_LABELS[_target] || _target;
   const isActive = _target === activeEngine;
+  const reqBackend = ((st.config||{}).llama_backend) || "auto";
+  const availBackends = ["auto"].concat(b.available_backends || []).filter((v, i, a) => a.indexOf(v) === i);
 
   setHTML(v, `
     <div class="card buildtarget">
@@ -65,6 +68,14 @@ export async function loadBuild(force) {
         <button class="ghost" id="btn-refresh-upstream">Check GitHub now</button>
         <span class="note" style="margin:0">${esc(checked)} &middot; auto-checks at most every 15 min</span>
       </div>
+    </div>
+    <div class="card"><h3>Acceleration Backend</h3>
+      <div class="kv"><span class="k">selected</span><span class="v">
+        <select id="build-backend" style="background:var(--inset);border:1px solid var(--hair);color:var(--ink);font-family:var(--mono);font-size:12px;padding:6px">
+          ${["auto","cuda","hip","vulkan","cpu"].map(k => `<option value="${esc(k)}" ${reqBackend===k?"selected":""} ${availBackends.includes(k)||k==="auto"||k==="cpu"?"":"disabled"}>${esc(BACKEND_LABELS[k]||k)}${availBackends.includes(k)||k==="auto"||k==="cpu"?"":" (unavailable)"}</option>`).join("")}
+        </select></span></div>
+      <div class="kv"><span class="k">effective</span><span class="v">${esc(BACKEND_LABELS[b.selected_backend] || b.selected_backend || "CPU")}</span></div>
+      ${(b.backend_notes||[]).map(n => `<div class="note">&bull; ${esc(n)}</div>`).join("")}
     </div>
     <div class="card"><h3>Build Flags · ${esc(label)}</h3>
       <div class="flags">${Object.entries(flags).map(([k,val])=>`<span class="flagpill">${esc(k)}=${esc(val)}</span>`).join("")}</div>
@@ -104,6 +115,11 @@ export async function loadBuild(force) {
   };
 
   $("#btn-build").onclick = startBuild;
+  const beSel = $("#build-backend");
+  if (beSel) beSel.onchange = async () => {
+    await api("/api/config", {llama_backend: beSel.value});
+    loadBuild();
+  };
   const refBtn = $("#btn-refresh-upstream");
   if (refBtn) refBtn.onclick = () => { refBtn.disabled = true; loadBuild(true); };
   pollBuild();
@@ -132,7 +148,7 @@ async function startBuild() {
   msg.className = "msg work"; msg.textContent = "starting build...";
   const r = await api("/api/build/start", {pull, target: _target});
   if (r.started) toast(`Build started (${ENGINE_LABELS[_target]})`, "ok");
-  else msg.textContent = "a build is already running";
+  else msg.textContent = r.error || "a build is already running";
   pollBuild();
 }
 

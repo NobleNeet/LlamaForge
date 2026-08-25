@@ -34,6 +34,7 @@ DEFAULTS = {
     "wsl_distro":  "",                        # WSL distro that runs vLLM ("" = auto-pick default)
     "vllm_port":   8081,                      # port vLLM serves on (WSL localhost-forwarded to Windows)
     "cmake_flags": {},                       # persisted build flags (from hardware detect)
+    "cmake_backend": "",                     # backend those flags were generated for
     "git_remote":  "https://github.com/ggml-org/llama.cpp",
     # ik_llama mirrors the llama.cpp path trio and, like it, ships empty: these
     # belong to bootstrap and this machine, not to the defaults every install
@@ -44,7 +45,9 @@ DEFAULTS = {
     "ik_llama_models_ini": "",                # its own models.ini ("" -> sibling of models_ini)
     "ik_llama_git_remote": "https://github.com/ikawrakow/ik_llama.cpp",
     "ik_llama_cmake_flags": {},               # separate build flags for ik_llama
+    "ik_llama_cmake_backend": "",             # backend those ik flags target
     "active_engine": "llamacpp",              # which binary the router uses: llamacpp | ikllama
+    "llama_backend": "auto",                  # build backend selection: auto|cuda|hip|vulkan|cpu
     "auto_load_model": "",                    # model id to load automatically on launch ("" = none)
     "presets":     {},                       # named knob sets: {name: {knob: value}}
     "preset_bindings": {},                    # {model_id: preset_name} auto-applied on bind/edit

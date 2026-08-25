@@ -31,7 +31,7 @@ of hand-editing `models.ini` and long `llama-server` command lines.
 memorize flags, edit config files by hand, or babysit build commands. It assumes
 you're comfortable running a setup script once and building llama.cpp for your
 machine — both guided from the dashboard. Windows with an NVIDIA GPU is the
-primary target (CPU-only works too); **Linux** (NVIDIA/CPU) and **macOS**
+primary target (CPU-only works too); **Linux** (NVIDIA CUDA / AMD ROCm-HIP / Vulkan / CPU) and **macOS**
 (Apple Silicon, Metal) are supported as an early preview — same dashboard,
 `bootstrap.sh` instead of `bootstrap.ps1`. **Looking for something else?** If you want a zero-config, double-click
 installer with no compile step, [LM Studio](https://lmstudio.ai),
@@ -59,8 +59,8 @@ Advanced exposes every server flag.
 | **Models** | Every model on your machine in one list with live GPU VRAM/util/temp meters (used **and** free). Expand a model to edit all **~220 llama.cpp knobs** (context, KV-cache type, speculative decoding, tensor split, sampling, rope, ...), grouped and searchable, with the file path, on-disk size, and a **GGUF metadata card** (architecture, parameters, quantization, trained context, layers, attention heads, rope). Save hot-reloads with no restart; **quick-load/unload right from the row header**, with load requests **queued** so a second load waits its turn. A failed load shows the **real error inline with a suggested fix** instead of making you scroll the log. Save any knob set as a **named preset** and apply it to any model in one click, **compare** 2–3 models side-by-side to see what differs, and copy a ready-to-paste **curl / OpenAI-client / JSON** snippet per model. A **Refine** button benchmarks knob variants with real completion requests and applies the fastest config. A full **keyboard map** drives the view, and the expanded row + unsaved edits persist across reloads. |
 | **Stats** | Per-model usage tracked from the router's own metrics: tokens processed, average generation speed (tok/s), run counts, time loaded, and a stacked prompt/generated activity chart (14- or 30-day). Live throughput while a model runs. Resettable. (Totals are per-model across all clients — per-request/per-IP isn't shown because clients hit the router directly, so the dashboard never sees individual request origins.) |
 | **Discover** | Search **huggingface.co** for **GGUF** (llama.cpp) or **safetensors** (vLLM) models (newest / most downloaded / most liked). Every quant is rated against your hardware - **FITS / TIGHT / CPU OFFLOAD** (offload-aware, so a big MoE that runs fast with experts on CPU isn't mislabeled) - before you download, and each result is tagged with the platforms it runs on plus **GATED** and **INSTALLED** badges. One click streams the download (multi-shard + vision mmproj handled) with live speed/ETA, **pause/resume** (large downloads resume via HTTP range instead of restarting from zero) and cancel, then registers it in your registry. |
-| **Build / Update** | Shows your current llama.cpp commit, checks GitHub for how far behind you are (cached, so opening the view doesn't re-hit GitHub every time — with a manual **Check GitHub now**), and rebuilds via CMake with flags **auto-detected for your CPU/GPU/Apple Silicon** (CUDA arch, AVX-512, quantized-KV flash attention, or Metal). Prior binaries are backed up; the build streams live and reports its duration. Also tracks the installed **vLLM** version against PyPI and updates it in place. |
-| **Setup** | Checks prerequisites (Git, CMake, Ninja, Python, C++ compiler, CUDA), installs missing ones **with your permission** (winget/choco on Windows, Homebrew on macOS; exact commands shown on Linux — the dashboard never runs `sudo`) or links official downloads. Detects hardware and scans your drives (or `$HOME` + mounts) for existing GGUF models. **Check for deleted models** prunes registry entries whose file has since been removed from disk. Installs the **vLLM** backend into WSL2 (Windows), and lets you pick a **favourite model to auto-load on launch**. |
+| **Build / Update** | Shows your current llama.cpp commit, checks GitHub for how far behind you are (cached, so opening the view doesn't re-hit GitHub every time — with a manual **Check GitHub now**), and rebuilds via CMake with flags **auto-detected for your CPU/GPU/Apple Silicon**. On Linux the build backend is selectable: **Auto / CUDA / ROCm-HIP / Vulkan / CPU**. Prior binaries are backed up; the build streams live and reports its duration. Also tracks the installed **vLLM** version against PyPI and updates it in place. |
+| **Setup** | Checks prerequisites (Git, CMake, Ninja, Python, C++ compiler, and backend-specific toolchains such as CUDA, ROCm/HIP, and Vulkan), installs missing ones **with your permission** (winget/choco on Windows, Homebrew on macOS; exact commands shown on Linux — the dashboard never runs `sudo`) or links official downloads. Detects hardware and scans your drives (or `$HOME` + mounts) for existing GGUF models. **Check for deleted models** prunes registry entries whose file has since been removed from disk. Installs the **vLLM** backend into WSL2 (Windows), and lets you pick a **favourite model to auto-load on launch**. |
 | **Context** | A **Context Wiki**: a working directory of Markdown context docs composed into named **profiles** and selected **per model**, then either **injected** into requests (through the Anthropic and OpenAI proxies) or **exported** into an agent's native context file (`CLAUDE.md` / `AGENTS.md`) inside a managed marker region. The injected prefix is stable, so the router's prompt cache reuses it across requests. |
 | **Help** | The full LlamaForge documentation, rendered **in-app** from the same Markdown source that builds the published docs site — searchable, with a per-page table of contents. |
 
@@ -93,7 +93,7 @@ LlamaForge is a llama.cpp control panel first. It can also build and drive **[ik
 For non-GGUF models it can also drive **[vLLM](https://github.com/vllm-project/vllm)** as a separate backend for full-precision / safetensors models (FP16, BF16, AWQ, GPTQ, FP8, NVFP4). All engines share the same Models list, Discover tab, and stats — each row is tagged **llama.cpp**, **ik_llama**, or **vLLM**.
 
 - **Windows:** vLLM runs inside **WSL2** with GPU passthrough. Install it from the **Setup** tab (uv + a standalone Python into `~/.llamaforge/vllm-venv`, no `sudo`); the dashboard bridges WSL's localhost port back to Windows. vLLM runs one model at a time and has no hot reload, so saving knobs on a loaded model restarts it — startup can take 1–5 minutes; watch the **vLLM Log** panel.
-- **Linux / macOS:** vLLM is a Windows/WSL2 feature; its tab and Discover's safetensors mode are hidden automatically. llama.cpp (CUDA/CPU on Linux, Metal on Apple Silicon) is the engine there.
+- **Linux / macOS:** vLLM is a Windows/WSL2 feature; its tab and Discover's safetensors mode are hidden automatically. llama.cpp on Linux can be built for **CUDA**, **ROCm/HIP**, **Vulkan**, or **CPU**; Apple Silicon stays on Metal.
 
 Everything you download for vLLM lands in the WSL model cache and is registered like any other model. If you only ever want llama.cpp, you can ignore vLLM entirely — nothing about it is installed unless you ask.
 
@@ -103,7 +103,7 @@ The same dashboard runs everywhere; only the launcher scripts differ.
 
 | | Windows | Linux | macOS (Apple Silicon) |
 |---|---|---|---|
-| llama.cpp | CUDA / CPU | CUDA / CPU | Metal |
+| llama.cpp | CUDA / CPU | CUDA / ROCm-HIP / Vulkan / CPU | Metal |
 | vLLM | via WSL2 | — | — |
 | bootstrap | `bootstrap.ps1` | `bootstrap.sh` | `bootstrap.sh` |
 | daily run | `LlamaForge.vbs` | `./run.sh` | `./run.sh` |
@@ -195,9 +195,9 @@ powershell -ExecutionPolicy Bypass -File stop.ps1   # Windows
 
 - Windows 10/11 (primary), or Linux / macOS (Apple Silicon) as an early preview
 - Python 3.10+ (backend is **pure stdlib** - nothing to `pip install`)
-- NVIDIA GPU for CUDA acceleration (Metal on Apple Silicon; CPU-only builds also
+- NVIDIA GPU for CUDA acceleration, or an AMD/Linux stack with ROCm-HIP or Vulkan (Metal on Apple Silicon; CPU-only builds also
   supported everywhere)
-- Everything else (Git, CMake, Ninja, C++ compiler, CUDA) is detected and can be
+- Everything else (Git, CMake, Ninja, C++ compiler, CUDA / ROCm-HIP / Vulkan as applicable) is detected and can be
   installed from the Setup tab where a package manager allows it
 - **vLLM backend (optional, Windows):** WSL2 with GPU passthrough — installed from
   the Setup tab

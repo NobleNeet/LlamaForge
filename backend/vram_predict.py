@@ -35,7 +35,9 @@ def build_hardware(cfg=None, gpus=None, ram_gb=None):
     gpus/ram_gb are injectable for tests; None triggers real detection."""
     cfg = cfg if cfg is not None else config.load()
     gpus = hardware.detect_gpus() if gpus is None else gpus
-    vram_mib = sum((g.get("vram_mib") or 0) for g in gpus)
+    if gpus and any(g.get("is_uma") for g in gpus):
+        return None
+    vram_mib = hardware.total_fit_vram_mib(gpus)
     ram_gb = hardware.detect_ram_gb() if ram_gb is None else ram_gb
     ram_gb = ram_gb or 16.0
     name = gpus[0]["name"] if gpus else "cpu"
@@ -92,6 +94,8 @@ def _mtime(path):
 
 
 def _hw_sig(hw):
+    if hw is None:
+        return ("uma",)
     return (round(hw.vram_gb, 1), round(hw.ram_gb, 1), hw.vram_bw, hw.ram_bw, hw.disk_bw)
 
 
@@ -160,6 +164,8 @@ def predict_local(gguf_path, size_bytes=None, cfg=None, context=4096, hw=None, m
         if size_bytes is None and gguf_path and os.path.exists(gguf_path):
             size_bytes = os.path.getsize(gguf_path)
         hw = hw if hw is not None else build_hardware(cfg)
+        if hw is None:
+            return _unknown("fit estimate unavailable for UMA/shared-memory GPU")
         if meta is None:
             meta = (gguf.metadata(gguf_path) or {}) if gguf_path else {}
         key = ("local", gguf_path, _mtime(gguf_path), size_bytes, _hw_sig(hw), context)
@@ -238,6 +244,8 @@ def predict_remote(repo, quant="q4_k_m", gguf_file=None, size_bytes=None,
     """Estimate for a repo BEFORE download, from its HF config.json. Never raises."""
     try:
         hw = hw if hw is not None else build_hardware(cfg)
+        if hw is None:
+            return _unknown("fit estimate unavailable for UMA/shared-memory GPU")
         key = ("remote", repo, quant, gguf_file, _hw_sig(hw), context)
         hit = _cache_get(key)
         if hit is not None:

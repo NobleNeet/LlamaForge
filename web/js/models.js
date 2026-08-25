@@ -52,9 +52,19 @@ export function renderGpus(g) {
     setHTML($("#gpus"), `<div class="gpu"><div class="stats">GPU telemetry unavailable</div></div>`);
     return;
   }
-  setHTML($("#gpus"), g.map(x => `<div class="gpu"><div class="top"><span class="name">${esc(x.name)}</span><span class="idx">CUDA${esc(x.index)}</span></div>
-    <div class="meter">${meter(x.used,x.total)}</div>
-    <div class="stats"><span><b>${esc((x.used/1024).toFixed(1))}</b>/${esc((x.total/1024).toFixed(1))} GB</span><span>FREE <b>${esc(((x.total-x.used)/1024).toFixed(1))}</b> GB</span><span>UTIL <b>${esc(x.util)}%</b></span><span>TEMP <b>${esc(x.temp)}&deg;C</b></span></div></div>`).join(""));
+  setHTML($("#gpus"), g.map(x => {
+    const backends = (x.backends || (x.backend ? [x.backend] : [])).map(b => esc(String(b).toUpperCase())).join(" / ");
+    const mem = x.total ? `${esc((x.used/1024).toFixed(1))}/${esc((x.total/1024).toFixed(1))} GB`
+                        : `memory ${esc(x.is_uma ? "unified" : "unknown")}`;
+    const free = (x.total != null && x.used != null) ? `<span>FREE <b>${esc(((x.total-x.used)/1024).toFixed(1))}</b> GB</span>` : "";
+    const util = x.util != null ? `<span>UTIL <b>${esc(x.util)}%</b></span>` : "";
+    const temp = x.temp != null ? `<span>TEMP <b>${esc(x.temp)}&deg;C</b></span>` : "";
+    const arch = x.architecture ? `<span>ARCH <b>${esc(x.architecture)}</b></span>` : "";
+    const uma = x.is_uma ? `<span>UMA <b>YES</b></span>` : "";
+    return `<div class="gpu"><div class="top"><span class="name">${esc(x.name)}</span><span class="idx">${esc(x.vendor||"GPU")}${backends?` · ${backends}`:""}</span></div>
+      <div class="meter">${meter(x.used||0, Math.max(x.total||1,1))}</div>
+      <div class="stats"><span><b>${mem}</b></span>${free}${util}${temp}${arch}${uma}</div></div>`;
+  }).join(""));
 }
 
 /* ---------- knob fields ---------- */

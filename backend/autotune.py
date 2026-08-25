@@ -19,11 +19,23 @@ _CTX_MAX = 150000
 
 
 def _total_vram_mib(hw):
-    return sum((g.get("vram_mib") or 0) for g in hw.get("gpus", []))
+    total = 0
+    for g in hw.get("gpus", []):
+        fit = g.get("fit_vram_mib")
+        if fit is None and not g.get("is_uma"):
+            fit = g.get("vram_mib")
+        if fit:
+            total += fit
+    return total
 
 
 def _has_gpu(hw):
     return bool(hw.get("gpus"))
+
+
+def _has_only_uma_gpu(hw):
+    gpus = hw.get("gpus") or []
+    return bool(gpus) and all(g.get("is_uma") for g in gpus)
 
 
 def _fit_ngl(layers, weights_mib, budget_mib):
@@ -48,6 +60,12 @@ def recommend(meta, hw, intent="balanced", size_bytes=None, prediction=None):
         why["n-gpu-layers"] = "No GPU detected - running on CPU."
         knobs["flash-attn"] = "off"
         why["flash-attn"] = "Flash-attention needs a supported GPU."
+    elif _has_only_uma_gpu(hw):
+        knobs["n-gpu-layers"] = "99"
+        why["n-gpu-layers"] = ("UMA GPU detected - enabling GPU offload, but not estimating a VRAM budget "
+                               "from shared memory.")
+        knobs["flash-attn"] = "on"
+        why["flash-attn"] = "GPU backend available - flash-attention enabled."
     else:
         total = _total_vram_mib(hw)
         budget = int(total * _HEADROOM[intent])

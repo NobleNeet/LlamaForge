@@ -37,19 +37,33 @@ export async function loadSetup() {
     <span class="v ${t.present?'ok':'bad'}">${t.present?esc(t.version||"present"):"MISSING"}
     ${!t.present&&t.installable?` <button data-install="${esc(name)}" style="padding:3px 8px;margin-left:8px">Install</button>`:""}
     ${!t.present&&!t.installable&&t.hint?`<div class="note" style="margin-top:4px">${esc(t.hint)}</div>`:""}</span></div>`;
-  const gpuLines = (hw.gpus||[]).map(g => `<div class="kv"><span class="k">GPU ${esc(g.index)}</span><span class="v">${esc(g.name)} &middot; cc ${esc(g.compute_cap||"?")}</span></div>`).join("");
+  const accelRow = (label, a) => {
+    if (!a || a.applicable === false) return "";
+    return `<div class="kv"><span class="k">${esc(label)}</span><span class="v ${a.present?'ok':'bad'}">${a.present?esc(a.version||"present"):"not found"}${!a.present&&a.hint?`<div class="note" style="margin-top:4px">${esc(a.hint)}</div>`:""}</span></div>`;
+  };
+  const gpuLines = (hw.gpus||[]).map(g => {
+    const be = (g.backends||[]).join(", ") || "none";
+    const arch = g.architecture ? ` &middot; ${esc(g.architecture)}` : "";
+    const mem = g.is_uma ? ` &middot; ${(g.vram_mib/1024).toFixed(1)} GB unified` : (g.vram_mib ? ` &middot; ${(g.vram_mib/1024).toFixed(1)} GB` : "");
+    return `<div class="kv"><span class="k">GPU ${esc(g.index)}</span><span class="v">${esc(g.vendor||"GPU")} &middot; ${esc(g.name)}${arch}${mem} &middot; backends: ${esc(be)}${g.is_uma?" &middot; UMA":""}</span></div>`;
+  }).join("");
+  const avail = (hw.available_backends||[]).length ? hw.available_backends.join(", ") : "cpu";
   const bw = cfgOf().vram_bandwidths || {};
   setHTML(v, `
     <div class="card"><h3>Prerequisites</h3>
       ${Object.entries(p.tools).map(([n,t])=>toolRow(n,t)).join("")}
       <div class="kv"><span class="k">${esc(p.msvc.label||"C++ compiler")}</span><span class="v ${p.msvc.present?'ok':'bad'}">${p.msvc.present?"present":"MISSING"+(p.msvc.url?" &mdash; "+esc(p.msvc.url):"")}</span></div>
       ${p.cuda.applicable===false?"":`<div class="kv"><span class="k">CUDA toolkit</span><span class="v ${p.cuda.present?'ok':'bad'}">${p.cuda.present?esc(p.cuda.version||"present"):"not found (CPU build only)"}</span></div>`}
+      ${accelRow("ROCm / HIP", p.rocm)}
+      ${accelRow("Vulkan", p.vulkan)}
       <div class="kv"><span class="k">installers</span><span class="v">${esc(Object.keys(p.installers||{}).filter(k=>p.installers[k]).join(" ")||"none")}</span></div>
       <div class="note">Missing prerequisites can be installed with your permission where a package manager allows it (winget/choco/brew). On Linux the exact install command is shown instead &mdash; the dashboard never runs sudo.</div>
     </div>
     <div class="card"><h3>Detected Hardware</h3>
       <div class="kv"><span class="k">CPU</span><span class="v">${esc(hw.cpu.name||"?")} (${esc(hw.cpu.cores||"?")}c/${esc(hw.cpu.threads||"?")}t)</span></div>
       ${gpuLines}
+      <div class="kv"><span class="k">Available acceleration</span><span class="v">${esc(avail)}</span></div>
+      <div class="kv"><span class="k">Selected llama.cpp backend</span><span class="v">${esc((cfgOf().llama_backend||"auto"))} &rarr; ${esc(hw.selected_backend||"cpu")}</span></div>
       <div class="flags">${Object.entries(hw.cmake_flags).map(([k,val])=>`<span class="flagpill">${esc(k)}=${esc(val)}</span>`).join("")}</div>
       ${hw.notes.map(n=>`<div class="note">&bull; ${esc(n)}</div>`).join("")}
     </div>
