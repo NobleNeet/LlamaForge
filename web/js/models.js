@@ -192,6 +192,27 @@ function toggleOnlySet(el) {
   applyKnobFilter(el.closest(".edit"));
 }
 function invalidateKnobs() { knobEpoch++; }
+function knobFieldShell(el) { return el.closest(".fld"); }
+function syncKnobSetState(el) {
+  const fld = knobFieldShell(el);
+  if (!fld) return;
+  fld.classList.toggle("set", !!el.value.trim());
+}
+function rowSettings(row) {
+  const settings = {};
+  $$("[data-k]", row).forEach(el => { settings[el.dataset.k] = el.value.trim(); });
+  return settings;
+}
+async function saveRowSettings(modelId, row) {
+  const r = await api("/api/save", {model: modelId, settings: rowSettings(row)});
+  if (!r.ok) throw new Error(r.error || "save failed");
+  return r;
+}
+async function persistOpenRowBeforeLoad(modelId) {
+  const row = $(`.row[data-id="${CSS.escape(modelId)}"]`);
+  if (!row || !row.classList.contains("open")) return null;
+  return await saveRowSettings(modelId, row);
+}
 
 /* ---------- the list ---------- */
 function loadingSecs(m) {
@@ -342,7 +363,13 @@ async function processQ() {
 }
 async function quickAction(act, id) {
   const be = beOf(id);
-  if (act === "load") { enqueueLoad(id); return; }
+  if (act === "load") {
+    if (be === "llamacpp") {
+      try { await persistOpenRowBeforeLoad(id); }
+      catch (e) { toast("Save failed: " + e, "err"); return; }
+    }
+    enqueueLoad(id); return;
+  }
   if (act === "unload") {
     await api(be === "vllm" ? "/api/vllm/unload" : "/api/unload", {model: id});
     toast("Unloaded", "ok"); await refresh(true); return;
@@ -493,7 +520,7 @@ function applyTuneResult(row, rec) {
     const k = el.dataset.k;
     if (knobs[k] != null && knobs[k] !== el.value) {
       el.value = knobs[k];
-      if (el.value.trim()) el.classList.add("set");
+      syncKnobSetState(el);
       changed.push(k);
     }
   });
@@ -531,7 +558,7 @@ async function handleTuneRefine(modelId) {
   const btn = $("[data-tune-refine]", row);
   btn.disabled = true; btn.textContent = "benchmarking...";
   try {
-    const r = await api("/api/autotune/refine", {model: modelId, intent});
+    const r = await api("/api/autotune/refine", {model: modelId, intent, knobs: rowSettings(row)});
     if (r.error) { toast(r.error, "err"); return; }
     const tok = (r.measurements?.chosen_tok_s || 0).toFixed(1);
     applyTuneResult(row, {knobs: r.knobs, intent});
@@ -616,6 +643,7 @@ export function initModels() {
     // flag knob edits so the user knows a Save is pending
     const row = e.target.closest("#view-models .row.open");
     if (!row || e.target.dataset.k == null) return;
+    syncKnobSetState(e.target);
     const msg = $("[data-msg]", row);
     if (msg) { msg.className = "msg work"; msg.textContent = "unsaved changes"; }
   });
@@ -709,9 +737,8 @@ export function initModels() {
     btn.disabled = true;
     try {
       if (act === "save") {
-        const settings = {}; $$("[data-k]", row).forEach(el => settings[el.dataset.k] = el.value.trim());
         msg.className = "msg work"; msg.textContent = "writing models.ini...";
-        const r = await api("/api/save", {model: id, settings});
+        const r = await saveRowSettings(id, row);
         if (r.ok) {
           msg.className = "msg ok";
           msg.textContent = r.was_running ? "saved - unloaded to apply" : "saved + reloaded";
@@ -719,6 +746,8 @@ export function initModels() {
           invalidateKnobs();   // server now matches the inputs; refresh "set" marks
         } else { msg.className = "msg err"; msg.textContent = r.error || "failed"; }
       } else if (act === "load") {
+        msg.className = "msg work"; msg.textContent = "saving knobs...";
+        await saveRowSettings(id, row);
         msg.className = "msg work"; msg.textContent = "loading (may take seconds)...";
         const r = await api("/api/load", {model: id});
         r.success ? toast("Loaded","ok") : (msg.className="msg err", msg.textContent=(r.error&&r.error.message)||"load failed");
@@ -728,9 +757,8 @@ export function initModels() {
       } else if (act === "client") {
         openClientConfig(id); btn.disabled = false; return;
       } else if (act === "vsave") {
-        const settings = {}; $$("[data-k]", row).forEach(el => settings[el.dataset.k] = el.value.trim());
         msg.className = "msg work"; msg.textContent = "saving vLLM knobs...";
-        const r = await api("/api/vllm/save", {model: id, settings});
+        const r = await api("/api/vllm/save", {model: id, settings: rowSettings(row)});
         msg.className = "msg ok"; msg.textContent = r.restarted ? "saved - restarting" : "saved";
         toast(r.restarted ? "Saved & restarting" : "Saved", "ok");
         invalidateKnobs();
