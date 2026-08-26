@@ -309,6 +309,55 @@ class AutotuneRefineCleaningTest(unittest.TestCase):
         self.assertEqual(writes[0][1]["spec-type"], "draft-mtp")
         self.assertEqual(writes[0][1]["spec-draft-model"], "/m/mtp.gguf")
 
+    def test_refine_load_restores_blank_sticky_mtp_settings(self):
+        writes = []
+
+        def fake_set_keys(section, updates, path=None):
+            writes.append((section, dict(updates)))
+
+        def fake_router(path, method="GET", body=None, timeout=30):
+            if path == "/models/load":
+                return 200, {}
+            return 200, {"data": [{"id": "m", "status": {"value": "offline"}}]}
+
+        with mock.patch.object(routes, "_find_model", return_value={"id": "m", "settings": {"model": "/m.gguf"}}), \
+             mock.patch.object(routes, "_autotune_recommend",
+                               return_value={"knobs": {"ctx-size": "65536", "n-gpu-layers": "4"}}), \
+             mock.patch.object(routes.autotune, "refine",
+                               side_effect=lambda base, intent, load_fn, measure_fn: (
+                                   load_fn({"ctx-size": "65536", "n-gpu-layers": "4",
+                                            "spec-type": "", "spec-draft-model": ""}),
+                                   {"knobs": base, "measurements": {"candidates": [], "chosen_tok_s": 0.0}}
+                               )[1]), \
+             mock.patch.object(routes.config, "set_keys", side_effect=fake_set_keys), \
+             mock.patch.object(routes, "router", side_effect=fake_router):
+            out = routes._autotune_refine({"model": "m", "intent": "balanced",
+                                           "knobs": {"spec-type": "draft-mtp",
+                                                     "spec-draft-model": "/m/mtp.gguf"}})
+        self.assertNotIn("error", out)
+        self.assertEqual(writes[0][1]["spec-type"], "draft-mtp")
+        self.assertEqual(writes[0][1]["spec-draft-model"], "/m/mtp.gguf")
+
+    def test_refine_uses_stored_sticky_settings_when_ui_omits_them(self):
+        seen = {}
+
+        def fake_refine(base, intent, load_fn, measure_fn):
+            seen["base"] = dict(base)
+            return {"knobs": base, "measurements": {"candidates": [], "chosen_tok_s": 0.0}}
+
+        with mock.patch.object(routes, "_find_model", return_value={"id": "m", "settings": {"model": "/m.gguf"}}), \
+             mock.patch.object(routes.config, "read_sections",
+                               return_value={"m": {"model": "/m.gguf", "spec-type": "draft-mtp",
+                                                   "spec-draft-model": "/m/mtp.gguf"}}), \
+             mock.patch.object(routes, "_autotune_recommend",
+                               return_value={"knobs": {"ctx-size": "65536", "n-gpu-layers": "4"}}), \
+             mock.patch.object(routes.autotune, "refine", side_effect=fake_refine):
+            out = routes._autotune_refine({"model": "m", "intent": "balanced",
+                                           "knobs": {"ctx-size": "65536"}})
+        self.assertNotIn("error", out)
+        self.assertEqual(seen["base"]["spec-type"], "draft-mtp")
+        self.assertEqual(seen["base"]["spec-draft-model"], "/m/mtp.gguf")
+
 
 class HubAddTest(unittest.TestCase):
     def test_missing_file_is_a_400(self):

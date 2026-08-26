@@ -427,6 +427,9 @@ def _autotune_refine(body):
     m = _find_model(mid)
     if not m:
         return {"error": f"unknown model: {mid}"}
+    stored = _clean_settings(config.read_sections().get(mid, {}))
+    merged = dict(stored)
+    merged.update(current)
     rec = _autotune_recommend({"model": mid, "intent": intent})
     if "error" in rec:
         return rec
@@ -434,28 +437,34 @@ def _autotune_refine(body):
     # the base. Carry through only unrelated current settings (e.g. MTP /
     # other manually-set knobs), so a previous "speed" run does not pin
     # cache/ctx/batch values when the user switches back to "balanced".
-    preserved = {k: v for k, v in current.items() if k not in managed}
+    preserved = {k: v for k, v in merged.items() if k not in managed and v is not None}
     base = {**preserved, **(rec.get("knobs") or {})}
     sticky = {k: v for k, v in preserved.items() if k in ("spec-type", "spec-draft-model")}
     _dbg("autotune.refine.begin",
          model=mid, intent=intent,
          received=_knob_snapshot(current),
+         stored=_knob_snapshot(stored),
          recommended=_knob_snapshot(rec.get("knobs") or {}),
          preserved=_knob_snapshot(preserved),
          base=_knob_snapshot(base))
 
     def load_fn(knobs):
+        raw = dict(knobs or {})
         clean = _clean_settings(knobs)
         for key, value in sticky.items():
-            if value is not None and key not in clean:
+            if value is not None and (key not in clean or clean.get(key) is None or str(clean.get(key)).strip() == ""):
                 clean[key] = value
         for key in managed:
             if key not in clean:
                 clean[key] = None
         _dbg("autotune.refine.load_candidate",
              model=mid, intent=intent,
+             raw=_knob_snapshot(raw),
              candidate=_knob_snapshot(clean))
         config.set_keys(mid, clean)
+        _dbg("autotune.refine.persisted",
+             model=mid, intent=intent,
+             settings=_knob_snapshot(config.read_sections().get(mid, {})))
         router("/models?reload=1")
         code, res = router("/models/load", "POST", {"model": mid})
         if code >= 400:
