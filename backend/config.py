@@ -424,6 +424,13 @@ def bindings_for_preset(name):
 
 CTX_GLOBAL_DEFAULT = str(gguf.CTX_FULL)   # "150000"
 
+# Keep models.ini on one stable key even when llama.cpp swaps which long alias
+# it prints first in --help. The router config parser may reject some aliases in
+# preset files, so old keys must be rewritten before the router reads them.
+PREFERRED_KNOB_ALIASES = {
+    "n-gpu-layers": ("gpu-layers",),
+}
+
 def apply_ctx_defaults(path=None):
     """Set sane ctx-size defaults across models.ini, idempotently.
 
@@ -481,6 +488,40 @@ def apply_ctx_defaults(path=None):
                 continue
             if over:
                 _set_keys_locked(sec, {"ctx-size": str(d)}, path)
+                changed.append(sec)
+        return {"changed": changed}
+
+
+def normalize_known_aliases(path=None):
+    """Rewrite old per-model knob aliases to the canonical keys in-place.
+
+    This runs before the router reads models.ini, so a prior UI save under an
+    alternate alias does not strand the whole router on a parse error.
+    Returns {"changed": [section, ...]}.
+    """
+    path = path or ini_path()
+    if not path or not os.path.exists(path):
+        return {"changed": []}
+    with _INI_LOCK:
+        secs = read_sections(path)
+        changed = []
+        for sec, kv in secs.items():
+            if sec == "version":
+                continue
+            updates = {}
+            touched = False
+            for key, aliases in PREFERRED_KNOB_ALIASES.items():
+                alias_values = [(alias, kv.get(alias)) for alias in aliases if alias in kv]
+                if not alias_values:
+                    continue
+                if kv.get(key) is None:
+                    updates[key] = alias_values[0][1]
+                    touched = True
+                for alias, _ in alias_values:
+                    updates[alias] = None
+                    touched = True
+            if touched:
+                _set_keys_locked(sec, updates, path)
                 changed.append(sec)
         return {"changed": changed}
 

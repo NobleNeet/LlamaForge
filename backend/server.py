@@ -329,6 +329,11 @@ def main():
             print(f"  created {config.ini_path()}")
     except OSError as e:    # unwritable path: say so, the router will fail next
         print(f"  WARNING: could not create models.ini ({e})")
+    try:                    # clean up stale aliases before the router parses models.ini
+        if config.normalize_known_aliases().get("changed"):
+            print(f"  normalized knob aliases in {config.ini_path()}")
+    except Exception:
+        pass
     try:                    # backfill ctx-size defaults, then nudge the router
         if config.apply_ctx_defaults().get("changed"):
             routes.router("/models?reload=1")
