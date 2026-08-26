@@ -400,17 +400,17 @@ def _autotune_refine(body):
     mid = body.get("model", "")
     intent = body.get("intent", "balanced")
     current = _clean_settings(body.get("knobs") or {})
+    managed = {
+        "n-gpu-layers", "flash-attn", "threads", "ctx-size",
+        "cache-type-k", "cache-type-v", "batch-size", "ubatch-size",
+        "temp", "top-p", "tensor-split",
+    }
     m = _find_model(mid)
     if not m:
         return {"error": f"unknown model: {mid}"}
     rec = _autotune_recommend({"model": mid, "intent": intent})
     if "error" in rec:
         return rec
-    managed = {
-        "n-gpu-layers", "flash-attn", "threads", "ctx-size",
-        "cache-type-k", "cache-type-v", "batch-size", "ubatch-size",
-        "temp", "top-p", "tensor-split",
-    }
     # Intent presets are the point of refine, so use the recommended knobs as
     # the base. Carry through only unrelated current settings (e.g. MTP /
     # other manually-set knobs), so a previous "speed" run does not pin
@@ -419,7 +419,11 @@ def _autotune_refine(body):
     base = {**preserved, **(rec.get("knobs") or {})}
 
     def load_fn(knobs):
-        config.set_keys(mid, _clean_settings(knobs))
+        clean = _clean_settings(knobs)
+        for key in managed:
+            if key not in clean:
+                clean[key] = None
+        config.set_keys(mid, clean)
         router("/models?reload=1")
         code, res = router("/models/load", "POST", {"model": mid})
         if code >= 400:

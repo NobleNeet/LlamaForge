@@ -200,7 +200,8 @@ class AutotuneRefineCleaningTest(unittest.TestCase):
             out = routes._autotune_refine({"model": "m", "intent": "balanced",
                                            "knobs": {"ctx-size": "65536", "temp": ""}})
         self.assertNotIn("error", out)
-        self.assertEqual(writes[0][1], {"ctx-size": "65536"})
+        self.assertEqual(writes[0][1]["ctx-size"], "65536")
+        self.assertIsNone(writes[0][1]["temp"])
 
     def test_refine_uses_intent_recommendation_over_current_conflicts(self):
         seen = {}
@@ -246,6 +247,39 @@ class AutotuneRefineCleaningTest(unittest.TestCase):
         self.assertNotIn("batch-size", seen["base"])
         self.assertNotIn("ubatch-size", seen["base"])
         self.assertEqual(seen["base"]["spec-type"], "draft-mtp")
+
+    def test_refine_load_clears_stale_managed_knobs_from_models_ini(self):
+        writes = []
+
+        def fake_set_keys(section, updates, path=None):
+            writes.append((section, dict(updates)))
+
+        def fake_router(path, method="GET", body=None, timeout=30):
+            if path == "/models/load":
+                return 200, {}
+            return 200, {"data": [{"id": "m", "status": {"value": "offline"}}]}
+
+        with mock.patch.object(routes, "_find_model", return_value={"id": "m", "settings": {"model": "/m.gguf"}}), \
+             mock.patch.object(routes, "_autotune_recommend",
+                               return_value={"knobs": {"ctx-size": "65536", "n-gpu-layers": "99"}}), \
+             mock.patch.object(routes.autotune, "refine",
+                               side_effect=lambda base, intent, load_fn, measure_fn: (
+                                   load_fn(base), {"knobs": base, "measurements": {"candidates": [], "chosen_tok_s": 0.0}}
+                               )[1]), \
+             mock.patch.object(routes.config, "set_keys", side_effect=fake_set_keys), \
+             mock.patch.object(routes, "router", side_effect=fake_router):
+            out = routes._autotune_refine({"model": "m", "intent": "balanced",
+                                           "knobs": {"ctx-size": "16384", "cache-type-k": "f16",
+                                                     "cache-type-v": "f16", "batch-size": "4096",
+                                                     "ubatch-size": "512", "spec-type": "draft-mtp"}})
+        self.assertNotIn("error", out)
+        self.assertEqual(writes[0][1]["ctx-size"], "65536")
+        self.assertEqual(writes[0][1]["n-gpu-layers"], "99")
+        self.assertIsNone(writes[0][1]["cache-type-k"])
+        self.assertIsNone(writes[0][1]["cache-type-v"])
+        self.assertIsNone(writes[0][1]["batch-size"])
+        self.assertIsNone(writes[0][1]["ubatch-size"])
+        self.assertEqual(writes[0][1]["spec-type"], "draft-mtp")
 
 
 class HubAddTest(unittest.TestCase):

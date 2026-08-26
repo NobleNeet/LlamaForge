@@ -14,6 +14,11 @@ import { activeTab } from "./ui.js";
 
 const LITE_KNOBS = new Set(["n-gpu-layers","ctx-size","cache-type-k","cache-type-v",
   "flash-attn","batch-size","ubatch-size","threads","tensor-split","temp","top-p"]);
+const AUTOTUNE_MANAGED_KNOBS = new Set([
+  "n-gpu-layers", "ctx-size", "cache-type-k", "cache-type-v",
+  "flash-attn", "batch-size", "ubatch-size", "threads", "tensor-split",
+  "temp", "top-p",
+]);
 
 /* ---------- view-local state ---------- */
 let openId = localStorage.getItem("lf_openid") || null;   // expanded row, persisted
@@ -532,6 +537,12 @@ function applyTuneResult(row, rec) {
   const knobs = rec.knobs || {}, changed = [];
   $$("[data-k]", row).forEach(el => {
     const next = knobPayloadValue(el, knobs);
+    if (next == null && AUTOTUNE_MANAGED_KNOBS.has(el.dataset.k) && el.value !== "") {
+      el.value = "";
+      syncKnobSetState(el);
+      changed.push(el.dataset.k);
+      return;
+    }
     if (next != null && next !== el.value) {
       el.value = next;
       syncKnobSetState(el);
