@@ -189,6 +189,8 @@ class AutotuneRefineCleaningTest(unittest.TestCase):
             return 200, {"data": [{"id": "m", "status": {"value": "offline"}}]}
 
         with mock.patch.object(routes, "_find_model", return_value={"id": "m", "settings": {"model": "/m.gguf"}}), \
+             mock.patch.object(routes, "_autotune_recommend",
+                               return_value={"knobs": {"ctx-size": "65536"}}), \
              mock.patch.object(routes.autotune, "refine",
                                side_effect=lambda base, intent, load_fn, measure_fn: (
                                    load_fn(base), {"knobs": base, "measurements": {"candidates": [], "chosen_tok_s": 0.0}}
@@ -199,6 +201,27 @@ class AutotuneRefineCleaningTest(unittest.TestCase):
                                            "knobs": {"ctx-size": "65536", "temp": ""}})
         self.assertNotIn("error", out)
         self.assertEqual(writes[0][1], {"ctx-size": "65536", "temp": None})
+
+    def test_refine_uses_intent_recommendation_over_current_conflicts(self):
+        seen = {}
+
+        def fake_refine(base, intent, load_fn, measure_fn):
+            seen["base"] = dict(base)
+            return {"knobs": base, "measurements": {"candidates": [], "chosen_tok_s": 0.0}}
+
+        with mock.patch.object(routes, "_find_model", return_value={"id": "m", "settings": {"model": "/m.gguf"}}), \
+             mock.patch.object(routes, "_autotune_recommend",
+                               return_value={"knobs": {"ctx-size": "16384", "batch-size": "2048",
+                                                       "ubatch-size": "512", "flash-attn": "on"}}), \
+             mock.patch.object(routes.autotune, "refine", side_effect=fake_refine):
+            out = routes._autotune_refine({"model": "m", "intent": "speed",
+                                           "knobs": {"ctx-size": "150000", "batch-size": "4096",
+                                                     "spec-type": "draft-mtp"}})
+        self.assertNotIn("error", out)
+        self.assertEqual(seen["base"]["ctx-size"], "16384")
+        self.assertEqual(seen["base"]["batch-size"], "2048")
+        self.assertEqual(seen["base"]["ubatch-size"], "512")
+        self.assertEqual(seen["base"]["spec-type"], "draft-mtp")
 
 
 class HubAddTest(unittest.TestCase):

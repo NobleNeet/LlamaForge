@@ -399,16 +399,17 @@ def _autotune_recommend(body):
 def _autotune_refine(body):
     mid = body.get("model", "")
     intent = body.get("intent", "balanced")
-    base = _clean_settings(body.get("knobs") or {})
+    current = _clean_settings(body.get("knobs") or {})
     m = _find_model(mid)
     if not m:
         return {"error": f"unknown model: {mid}"}
-    # If no base knobs provided, generate them via recommend first.
-    if not base:
-        rec = _autotune_recommend({"model": mid, "intent": intent})
-        if "error" in rec:
-            return rec
-        base = rec.get("knobs") or {}
+    rec = _autotune_recommend({"model": mid, "intent": intent})
+    if "error" in rec:
+        return rec
+    # Intent presets are the point of refine, so use the recommended knobs as
+    # the base and let unrelated current settings (e.g. model path, MTP draft)
+    # carry through around them.
+    base = {**current, **(rec.get("knobs") or {})}
 
     def load_fn(knobs):
         config.set_keys(mid, _clean_settings(knobs))
