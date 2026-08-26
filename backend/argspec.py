@@ -17,6 +17,21 @@ RESERVED = {
 
 SECTION_RE = re.compile(r"^-+\s*(.+?)\s*-+\s*$")
 
+# llama.cpp occasionally changes which long alias it prints first in --help
+# (for example --gpu-layers vs --n-gpu-layers). The dashboard persists knobs by
+# key name, so the UI must keep a stable canonical key across upstream churn.
+PREFERRED_LONGS = {
+    "gpu-layers": "n-gpu-layers",
+}
+
+
+def _canonical_long(longs):
+    for long_ in longs:
+        pref = PREFERRED_LONGS.get(long_)
+        if pref and pref in longs:
+            return pref
+    return longs[0]
+
 def _balance_parens(s):
     """Drop orphan ')' left over after trimming a '(default:/env:...)' tail.
     Upstream --help text (and our own truncation) can leave a dangling ')'
@@ -114,7 +129,7 @@ def parse_help(text):
         longs = [f[2:] for f in flags if f.startswith("--")]
         if not longs:
             continue
-        key = longs[0]                        # ini key = first long flag w/o --
+        key = _canonical_long(longs)
         desc = "  ".join(desc_parts)
         env = re.search(r"\(env:\s*([A-Z0-9_]+)\)", desc)
         dflt = re.search(r"\(default:\s*(.*?)\)", desc)
@@ -123,7 +138,10 @@ def parse_help(text):
         # canonical default: the value before any ", explanation" tail
         clean_default = re.split(r",\s", default_val)[0].strip() if default_val else ""
         pending = {
-            "key": key, "flags": flags, "aliases": longs, "section": section,
+            "key": key,
+            "flags": flags,
+            "aliases": [key] + [a for a in longs if a != key],
+            "section": section,
             "type": typ, "options": opts,
             "placeholder": placeholder,
             "desc": _balance_parens(re.sub(r"\s*\((env|default):.*", "", desc)),

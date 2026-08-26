@@ -621,10 +621,32 @@ def _apply_knobs_and_reload(mid, clean):
 
 def _clean_settings(updates):
     """Normalize a knob map from the UI: blank means 'unset this key'."""
+    alias_to_key = {}
+    key_to_aliases = {}
+    try:
+        sch = schema()
+        for grp in sch.get("groups", []):
+            for knob in grp.get("knobs", []):
+                key = knob.get("key")
+                aliases = [a for a in (knob.get("aliases") or []) if a]
+                if not key:
+                    continue
+                fam = [key] + [a for a in aliases if a != key]
+                key_to_aliases[key] = fam
+                for alias in fam:
+                    alias_to_key[alias] = key
+    except Exception:
+        alias_to_key = {}
+        key_to_aliases = {}
+
     clean = {}
-    for k, v in (updates or {}).items():
+    for raw_key, v in (updates or {}).items():
+        k = alias_to_key.get(raw_key, raw_key)
         v = ("" if v is None else str(v)).strip()
         clean[k] = None if v == "" else v
+        for alias in key_to_aliases.get(k, []):
+            if alias != k and alias not in clean:
+                clean[alias] = None
     return clean
 
 

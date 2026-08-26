@@ -100,6 +100,16 @@ class SaveAndPresetTest(unittest.TestCase):
         written = [c for c in self.calls if c[0] == "set"][0][1][1]
         self.assertEqual(written, {"ctx-size": "4096", "temp": None})
 
+    def test_save_clears_alias_when_schema_renames_a_knob(self):
+        fake_schema = {"groups": [{"name": "common", "knobs": [{
+            "key": "n-gpu-layers", "aliases": ["n-gpu-layers", "gpu-layers"]}]}]}
+        with mock.patch.object(routes, "schema", return_value=fake_schema), \
+             mock.patch.object(routes, "router", self._router()):
+            status, out = routes.post_save(Req(body={
+                "model": "m", "settings": {"gpu-layers": "99"}}))
+        written = [c for c in self.calls if c[0] == "set"][0][1][1]
+        self.assertEqual(written, {"n-gpu-layers": "99", "gpu-layers": None})
+
     def test_save_unloads_a_running_model_before_reload(self):
         with mock.patch.object(routes, "router", self._router(loaded_ids=["m"])):
             status, out = routes.post_save(

@@ -75,15 +75,16 @@ function curVal(m, knob) {
 function knobField(m, k) {
   const v = curVal(m, k), isSet = v !== "";
   const ph = k.default ? `inherit (${k.default})` : "inherit";
+  const aliasAttr = ` data-aliases="${esc((k.aliases || []).join(","))}"`;
   let ctrl;
   if (k.type === "enum") {
     const opts = [""].concat(k.options||[]).map(o => `<option value="${esc(o)}" ${String(o)===String(v)?"selected":""}>${o===""?"(inherit)":esc(o)}</option>`).join("");
-    ctrl = `<select data-k="${esc(k.key)}">${opts}</select>`;
+    ctrl = `<select data-k="${esc(k.key)}"${aliasAttr}>${opts}</select>`;
   } else if (k.type === "bool") {
     const opts = ["","true","false"].map(o => `<option value="${o}" ${String(o)===String(v)?"selected":""}>${o===""?"(inherit)":o}</option>`).join("");
-    ctrl = `<select data-k="${esc(k.key)}">${opts}</select>`;
+    ctrl = `<select data-k="${esc(k.key)}"${aliasAttr}>${opts}</select>`;
   } else {
-    ctrl = `<input data-k="${esc(k.key)}" value="${esc(v)}" placeholder="${esc(ph)}" ${(k.type==="int"||k.type==="float")?'inputmode="numeric"':''}>`;
+    ctrl = `<input data-k="${esc(k.key)}"${aliasAttr} value="${esc(v)}" placeholder="${esc(ph)}" ${(k.type==="int"||k.type==="float")?'inputmode="numeric"':''}>`;
   }
   return `<div class="fld ${isSet?"set":""}${LITE_KNOBS.has(k.key)?"":" advanced-only"}" data-desc="${esc((k.key+' '+k.desc).toLowerCase())}">
     <label title="${esc(k.desc)}">${esc(k.key)}</label>${ctrl}
@@ -193,10 +194,19 @@ function toggleOnlySet(el) {
 }
 function invalidateKnobs() { knobEpoch++; }
 function knobFieldShell(el) { return el.closest(".fld"); }
+function knobAliases(el) {
+  return (el.dataset.aliases || "").split(",").map(s => s.trim()).filter(Boolean);
+}
 function syncKnobSetState(el) {
   const fld = knobFieldShell(el);
   if (!fld) return;
   fld.classList.toggle("set", !!el.value.trim());
+}
+function knobPayloadValue(el, payload) {
+  for (const key of [el.dataset.k].concat(knobAliases(el))) {
+    if (payload[key] != null) return payload[key];
+  }
+  return null;
 }
 function rowSettings(row) {
   const settings = {};
@@ -517,11 +527,11 @@ function autoTuneBar(m) {
 function applyTuneResult(row, rec) {
   const knobs = rec.knobs || {}, changed = [];
   $$("[data-k]", row).forEach(el => {
-    const k = el.dataset.k;
-    if (knobs[k] != null && knobs[k] !== el.value) {
-      el.value = knobs[k];
+    const next = knobPayloadValue(el, knobs);
+    if (next != null && next !== el.value) {
+      el.value = next;
       syncKnobSetState(el);
-      changed.push(k);
+      changed.push(el.dataset.k);
     }
   });
   const msg = $("[data-msg]", row);
