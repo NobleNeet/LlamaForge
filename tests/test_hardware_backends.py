@@ -23,6 +23,16 @@ class TestHardwareParsing(unittest.TestCase):
         self.assertEqual(out[0]["name"], "AMD Radeon 8060S Graphics")
         self.assertEqual(out[1]["name"], "llvmpipe (LLVM 18.1.0)")
 
+    def test_software_vulkan_devices_are_flagged(self):
+        self.assertTrue(hardware._is_software_vulkan_device("llvmpipe (LLVM 18.1.0)"))
+        self.assertFalse(hardware._is_software_vulkan_device("AMD Radeon 8060S Graphics"))
+
+    def test_amd_card_names_can_be_renamed_from_vulkan(self):
+        base = [hardware._gpu_row(name="card1", vendor="AMD", index=0, total=1024, integrated=True, uma=True)]
+        vk = [{"name": "Radeon 8060S Graphics", "vendor": "AMD", "driver": "AMD proprietary"}]
+        out = hardware._rename_amd_base_with_vulkan_names(base, vk)
+        self.assertEqual(out[0]["name"], "Radeon 8060S Graphics")
+
     def test_merge_keeps_one_physical_gpu_for_hip_and_vulkan(self):
         base = [hardware._gpu_row(name="AMD Radeon 8060S Graphics", vendor="AMD",
                                   index=0, total=131072, integrated=True, uma=True)]

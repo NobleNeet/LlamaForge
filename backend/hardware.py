@@ -39,6 +39,15 @@ def _read_int(path):
         return None
 
 
+def _read_temp_c(path):
+    raw = _read_int(path)
+    if raw is None:
+        return None
+    if raw > 1000:
+        return int(raw / 1000)
+    return raw
+
+
 def detect_ram_gb():
     """Total system RAM in GB (SI, /1e9 to match GPU vendor GB units), 0 if unknown."""
     return round(osplat.total_ram_bytes() / 1e9, 1)
@@ -190,6 +199,15 @@ def _sysfs_gpu_cards(base="/sys/class/drm"):
         total = _read_int(os.path.join(devdir, "mem_info_vram_total"))
         used = _read_int(os.path.join(devdir, "mem_info_vram_used"))
         gtt = _read_int(os.path.join(devdir, "mem_info_gtt_total"))
+        util = _read_int(os.path.join(devdir, "gpu_busy_percent"))
+        temp = None
+        hwmons = os.path.join(devdir, "hwmon")
+        if os.path.isdir(hwmons):
+            for hm in sorted(os.listdir(hwmons)):
+                cand = _read_temp_c(os.path.join(hwmons, hm, "temp1_input"))
+                if cand is not None:
+                    temp = cand
+                    break
         is_uma = bool(gtt and not total)
         if is_uma and gtt:
             total = int(gtt / (1024 * 1024))
@@ -198,6 +216,7 @@ def _sysfs_gpu_cards(base="/sys/class/drm"):
         if used is not None:
             used = int(used / (1024 * 1024))
         rows.append(_gpu_row(name=name, vendor=vendor, index=idx, total=total, used=used,
+                             util=util, temp=temp,
                              integrated=is_uma or vendor == "Intel", uma=is_uma))
         idx += 1
     return rows
@@ -233,6 +252,30 @@ def _vulkan_devices(text):
             driver = m.group(1).strip()
     if name:
         out.append({"name": name, "driver": driver})
+    return out
+
+
+def _is_software_vulkan_device(name, driver=""):
+    blob = f"{name} {driver}".lower()
+    return any(tok in blob for tok in ("llvmpipe", "lavapipe", "swiftshader", "software rasterizer"))
+
+
+def _rename_amd_base_with_vulkan_names(base, vk_rows):
+    amd_base = [g for g in base if g.get("vendor") == "AMD"]
+    amd_vk = [g for g in vk_rows if g.get("vendor") == "AMD" and not _is_software_vulkan_device(
+        g.get("name", ""), g.get("driver", "")
+    )]
+    if not amd_base or len(amd_vk) != len(amd_base):
+        return base
+    out = [dict(g) for g in base]
+    renamed = 0
+    for row in out:
+        if row.get("vendor") != "AMD":
+            continue
+        vk = amd_vk[renamed]
+        if re.fullmatch(r"card\d+", row.get("name", ""), re.I) or not row.get("name"):
+            row["name"] = vk.get("name", row.get("name", ""))
+        renamed += 1
     return out
 
 
@@ -285,7 +328,10 @@ def _detect_amd_linux():
     for dev in _vulkan_devices(vk_info):
         name = dev.get("name", "")
         vendor = "AMD" if "radeon" in name.lower() or "amd" in name.lower() else ""
+        if _is_software_vulkan_device(name, dev.get("driver", "")):
+            continue
         vk.append(_gpu_row(name=name, vendor=vendor, backend="vulkan"))
+    base = _rename_amd_base_with_vulkan_names(base, vk)
     merged = _merge_gpu_lists(base, hip)
     merged = _merge_gpu_lists(merged, vk)
     for g in merged:
