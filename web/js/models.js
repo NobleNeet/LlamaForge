@@ -208,9 +208,13 @@ function knobPayloadValue(el, payload) {
   }
   return null;
 }
-function rowSettings(row) {
+function rowSettings(row, {dropBlank=false} = {}) {
   const settings = {};
-  $$("[data-k]", row).forEach(el => { settings[el.dataset.k] = el.value.trim(); });
+  $$("[data-k]", row).forEach(el => {
+    const v = el.value.trim();
+    if (dropBlank && v === "") return;
+    settings[el.dataset.k] = v;
+  });
   return settings;
 }
 async function saveRowSettings(modelId, row) {
@@ -568,7 +572,8 @@ async function handleTuneRefine(modelId) {
   const btn = $("[data-tune-refine]", row);
   btn.disabled = true; btn.textContent = "benchmarking...";
   try {
-    const r = await api("/api/autotune/refine", {model: modelId, intent, knobs: rowSettings(row)});
+    const r = await api("/api/autotune/refine", {model: modelId, intent,
+      knobs: rowSettings(row, {dropBlank: true})});
     if (r.error) { toast(r.error, "err"); return; }
     const tok = (r.measurements?.chosen_tok_s || 0).toFixed(1);
     applyTuneResult(row, {knobs: r.knobs, intent});

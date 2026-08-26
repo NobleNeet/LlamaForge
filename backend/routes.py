@@ -399,7 +399,7 @@ def _autotune_recommend(body):
 def _autotune_refine(body):
     mid = body.get("model", "")
     intent = body.get("intent", "balanced")
-    base = body.get("knobs")
+    base = _clean_settings(body.get("knobs") or {})
     m = _find_model(mid)
     if not m:
         return {"error": f"unknown model: {mid}"}
@@ -411,7 +411,7 @@ def _autotune_refine(body):
         base = rec.get("knobs") or {}
 
     def load_fn(knobs):
-        config.set_keys(mid, knobs)
+        config.set_keys(mid, _clean_settings(knobs))
         router("/models?reload=1")
         code, res = router("/models/load", "POST", {"model": mid})
         if code >= 400:

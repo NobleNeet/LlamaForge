@@ -176,6 +176,31 @@ class ScanPruneTest(unittest.TestCase):
         self.assertEqual(out["removed"], [])
 
 
+class AutotuneRefineCleaningTest(unittest.TestCase):
+    def test_refine_drops_blank_knobs_before_loading(self):
+        writes = []
+
+        def fake_set_keys(section, updates, path=None):
+            writes.append((section, dict(updates)))
+
+        def fake_router(path, method="GET", body=None, timeout=30):
+            if path == "/models/load":
+                return 200, {}
+            return 200, {"data": [{"id": "m", "status": {"value": "offline"}}]}
+
+        with mock.patch.object(routes, "_find_model", return_value={"id": "m", "settings": {"model": "/m.gguf"}}), \
+             mock.patch.object(routes.autotune, "refine",
+                               side_effect=lambda base, intent, load_fn, measure_fn: (
+                                   load_fn(base), {"knobs": base, "measurements": {"candidates": [], "chosen_tok_s": 0.0}}
+                               )[1]), \
+             mock.patch.object(routes.config, "set_keys", side_effect=fake_set_keys), \
+             mock.patch.object(routes, "router", side_effect=fake_router):
+            out = routes._autotune_refine({"model": "m", "intent": "balanced",
+                                           "knobs": {"ctx-size": "65536", "temp": ""}})
+        self.assertNotIn("error", out)
+        self.assertEqual(writes[0][1], {"ctx-size": "65536", "temp": None})
+
+
 class HubAddTest(unittest.TestCase):
     def test_missing_file_is_a_400(self):
         with self.assertRaises(ApiError) as cm:
