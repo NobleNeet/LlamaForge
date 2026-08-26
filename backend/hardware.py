@@ -91,7 +91,8 @@ def _dedupe_backends(items):
 
 def _gpu_row(name="", vendor="", backend=None, index=0, arch="", total=None,
              used=None, util=None, temp=None, integrated=False, uma=False,
-             compute_cap=""):
+             compute_cap="", local_total=None, local_used=None,
+             gtt_total=None, gtt_used=None):
     free = None
     if total is not None and used is not None:
         free = max(0, total - used)
@@ -109,6 +110,10 @@ def _gpu_row(name="", vendor="", backend=None, index=0, arch="", total=None,
         "memory_total_mib": total,
         "memory_used_mib": used,
         "memory_free_mib": free,
+        "local_memory_total_mib": local_total,
+        "local_memory_used_mib": local_used,
+        "gtt_total_mib": gtt_total,
+        "gtt_used_mib": gtt_used,
         "utilization": util,
         "temperature": temp,
         "used": used if used is not None else 0,
@@ -199,6 +204,7 @@ def _sysfs_gpu_cards(base="/sys/class/drm"):
         total = _read_int(os.path.join(devdir, "mem_info_vram_total"))
         used = _read_int(os.path.join(devdir, "mem_info_vram_used"))
         gtt = _read_int(os.path.join(devdir, "mem_info_gtt_total"))
+        gtt_used = _read_int(os.path.join(devdir, "mem_info_gtt_used"))
         util = _read_int(os.path.join(devdir, "gpu_busy_percent"))
         temp = None
         hwmons = os.path.join(devdir, "hwmon")
@@ -208,16 +214,24 @@ def _sysfs_gpu_cards(base="/sys/class/drm"):
                 if cand is not None:
                     temp = cand
                     break
-        is_uma = bool(gtt and not total)
-        if is_uma and gtt:
-            total = int(gtt / (1024 * 1024))
-        elif total is not None:
-            total = int(total / (1024 * 1024))
-        if used is not None:
-            used = int(used / (1024 * 1024))
+        local_total = int(total / (1024 * 1024)) if total is not None else None
+        local_used = int(used / (1024 * 1024)) if used is not None else None
+        gtt_total = int(gtt / (1024 * 1024)) if gtt is not None else None
+        gtt_used = int(gtt_used / (1024 * 1024)) if gtt_used is not None else None
+        # AMD APUs can expose a small local VRAM carve-out (e.g. 1 GiB) plus a
+        # much larger GTT/shared-memory aperture. Treat those as UMA for the UI.
+        is_uma = bool(gtt_total and (local_total is None or gtt_total > max(local_total * 4, 4096)))
+        if is_uma and gtt_total is not None:
+            total = gtt_total
+            used = gtt_used if gtt_used is not None else local_used
+        else:
+            total = local_total
+            used = local_used
         rows.append(_gpu_row(name=name, vendor=vendor, index=idx, total=total, used=used,
                              util=util, temp=temp,
-                             integrated=is_uma or vendor == "Intel", uma=is_uma))
+                             integrated=is_uma or vendor == "Intel", uma=is_uma,
+                             local_total=local_total, local_used=local_used,
+                             gtt_total=gtt_total, gtt_used=gtt_used))
         idx += 1
     return rows
 

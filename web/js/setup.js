@@ -44,7 +44,8 @@ export async function loadSetup() {
   const gpuLines = (hw.gpus||[]).map(g => {
     const be = (g.backends||[]).join(", ") || "none";
     const arch = g.architecture ? ` &middot; ${esc(g.architecture)}` : "";
-    const mem = g.is_uma ? ` &middot; ${(g.vram_mib/1024).toFixed(1)} GB unified` : (g.vram_mib ? ` &middot; ${(g.vram_mib/1024).toFixed(1)} GB` : "");
+    const total = g.memory_total_mib ?? g.vram_mib;
+    const mem = g.is_uma ? ` &middot; ${((total||0)/1024).toFixed(1)} GB unified` : (total ? ` &middot; ${(total/1024).toFixed(1)} GB` : "");
     return `<div class="kv"><span class="k">GPU ${esc(g.index)}</span><span class="v">${esc(g.vendor||"GPU")} &middot; ${esc(g.name)}${arch}${mem} &middot; backends: ${esc(be)}${g.is_uma?" &middot; UMA":""}</span></div>`;
   }).join("");
   const avail = (hw.available_backends||[]).length ? hw.available_backends.join(", ") : "cpu";

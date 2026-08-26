@@ -83,6 +83,27 @@ class ModelsIniAliasNormalizationTest(unittest.TestCase):
         self.assertTrue(text.endswith("\n"))
         self.assertNotIn("shell prompt garbage", text)
 
+    def test_sanitize_keeps_router_specific_model_keys_by_default(self):
+        fd, path = tempfile.mkstemp(suffix=".ini")
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(
+                "version = 1\n\n"
+                "[m]\n"
+                "model = /tmp/model.gguf\n"
+                "mmproj = /tmp/mmproj.gguf\n"
+                "spec-draft-model = /tmp/mtp.gguf\n"
+                "embeddings = true\n"
+            )
+        out = config.sanitize_models_ini(path, valid_keys={"ctx-size"})
+        self.assertEqual(out["changed"], [])
+        secs = config.read_sections(path)
+        self.assertEqual(secs["m"]["model"], "/tmp/model.gguf")
+        self.assertEqual(secs["m"]["mmproj"], "/tmp/mmproj.gguf")
+        self.assertEqual(secs["m"]["spec-draft-model"], "/tmp/mtp.gguf")
+        self.assertEqual(secs["m"]["embeddings"], "true")
+
 
 if __name__ == "__main__":
     unittest.main()

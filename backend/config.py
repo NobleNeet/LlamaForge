@@ -435,7 +435,16 @@ CTX_GLOBAL_DEFAULT = str(gguf.CTX_FULL)   # "150000"
 PREFERRED_KNOB_ALIASES = {
     "n-gpu-layers": ("gpu-layers",),
 }
-EXTRA_MODELS_INI_KEYS = {"embeddings"}
+# models.ini is not a pure 1:1 dump of editable per-model CLI flags. Some keys
+# are router/preset metadata and remain valid even when they are hidden from the
+# dashboard schema because the router owns them specially.
+EXTRA_MODELS_INI_KEYS = {
+    "model",
+    "mmproj",
+    "embeddings",
+    "spec-draft-model",
+    "load-on-startup",
+}
 
 def apply_ctx_defaults(path=None):
     """Set sane ctx-size defaults across models.ini, idempotently.

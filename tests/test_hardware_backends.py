@@ -33,6 +33,14 @@ class TestHardwareParsing(unittest.TestCase):
         out = hardware._rename_amd_base_with_vulkan_names(base, vk)
         self.assertEqual(out[0]["name"], "Radeon 8060S Graphics")
 
+    def test_gpu_row_keeps_local_and_gtt_memory_fields(self):
+        row = hardware._gpu_row(name="apu", vendor="AMD", total=122880, used=25095,
+                                local_total=1024, local_used=814, gtt_total=122880, gtt_used=25095,
+                                uma=True)
+        self.assertEqual(row["local_memory_total_mib"], 1024)
+        self.assertEqual(row["gtt_total_mib"], 122880)
+        self.assertTrue(row["is_uma"])
+
     def test_merge_keeps_one_physical_gpu_for_hip_and_vulkan(self):
         base = [hardware._gpu_row(name="AMD Radeon 8060S Graphics", vendor="AMD",
                                   index=0, total=131072, integrated=True, uma=True)]

@@ -62,13 +62,16 @@ export function renderGpus(g) {
     const mem = x.total ? `${esc((x.used/1024).toFixed(1))}/${esc((x.total/1024).toFixed(1))} GB`
                         : `memory ${esc(x.is_uma ? "unified" : "unknown")}`;
     const free = (x.total != null && x.used != null) ? `<span>FREE <b>${esc(((x.total-x.used)/1024).toFixed(1))}</b> GB</span>` : "";
+    const local = (x.is_uma && x.local_memory_total_mib != null)
+      ? `<span>LOCAL <b>${esc(((x.local_memory_used_mib||0)/1024).toFixed(1))}/${esc((x.local_memory_total_mib/1024).toFixed(1))}</b> GB</span>`
+      : "";
     const util = x.util != null ? `<span>UTIL <b>${esc(x.util)}%</b></span>` : "";
     const temp = x.temp != null ? `<span>TEMP <b>${esc(x.temp)}&deg;C</b></span>` : "";
     const arch = x.architecture ? `<span>ARCH <b>${esc(x.architecture)}</b></span>` : "";
     const uma = x.is_uma ? `<span>UMA <b>YES</b></span>` : "";
     return `<div class="gpu"><div class="top"><span class="name">${esc(x.name)}</span><span class="idx">${esc(x.vendor||"GPU")}${backends?` · ${backends}`:""}</span></div>
       <div class="meter">${meter(x.used||0, Math.max(x.total||1,1))}</div>
-      <div class="stats"><span><b>${mem}</b></span>${free}${util}${temp}${arch}${uma}</div></div>`;
+      <div class="stats"><span><b>${mem}</b></span>${free}${local}${util}${temp}${arch}${uma}</div></div>`;
   }).join(""));
 }
 
