@@ -142,7 +142,7 @@ class SaveAndPresetTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(out["was_running"])
         written = [c for c in self.calls if c[0] == "set"][0][1][1]
-        self.assertEqual(written, {"temp": "0.2", "ctx-size": None})
+        self.assertEqual(written, {"temp": "0.2", "ctx-size": None, "n-gpu-layers": "99"})
 
 
 class ScanPruneTest(unittest.TestCase):

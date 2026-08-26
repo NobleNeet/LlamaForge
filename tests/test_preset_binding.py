@@ -91,6 +91,7 @@ class BindMaterializeRouteTest(_ConfigTempCase):
         mid, clean = self.applied[0]
         self.assertEqual(mid, "qwopus")
         self.assertEqual(clean.get("temp"), "0.2")
+        self.assertEqual(clean.get("n-gpu-layers"), "99")
 
     def test_editing_a_bound_preset_resyncs_every_model(self):
         self._post(routes.post_presets_bind, model="qwopus", name="coding")
@@ -101,6 +102,7 @@ class BindMaterializeRouteTest(_ConfigTempCase):
         synced = {mid for mid, _ in self.applied}
         self.assertEqual(synced, {"qwopus", "ornith"})
         self.assertTrue(all(clean.get("temp") == "0.9" for _, clean in self.applied))
+        self.assertTrue(all(clean.get("n-gpu-layers") == "99" for _, clean in self.applied))
 
     def test_unbind_leaves_knobs_in_place(self):
         self._post(routes.post_presets_bind, model="qwopus", name="coding")

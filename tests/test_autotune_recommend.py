@@ -24,13 +24,13 @@ class TestRecommendCore(unittest.TestCase):
         self.assertEqual(r["knobs"]["n-gpu-layers"], "99")
         self.assertEqual(r["knobs"]["flash-attn"], "on")
 
-    def test_big_model_partial_offload(self):
+    def test_big_model_prefers_full_offload(self):
         hw = {"gpus": [gpu(8000)], "cpu": {"threads": 16, "cores": 8}}
-        # 40 GB weights on an 8 GB card -> partial offload, some layers of 80
+        # Even when the model is obviously larger than VRAM, recommend max
+        # offload and let llama.cpp decide whether the load fits.
         r = autotune.recommend({"block_count": 80}, hw, "balanced",
                                size_bytes=40 * 1024 * MIB)
-        ngl = int(r["knobs"]["n-gpu-layers"])
-        self.assertTrue(0 < ngl < 80)
+        self.assertEqual(r["knobs"]["n-gpu-layers"], "99")
 
     def test_rationale_present_for_each_knob(self):
         hw = {"gpus": [gpu(24000)], "cpu": {"threads": 24, "cores": 12}}

@@ -19,16 +19,16 @@ class TestPresets(unittest.TestCase):
     def test_save_and_read_back(self):
         config.save_preset("coding", {"temp": "0.2", "top-p": "0.9"})
         presets = config.get_presets()
-        self.assertEqual(presets["coding"], {"temp": "0.2", "top-p": "0.9"})
+        self.assertEqual(presets["coding"], {"temp": "0.2", "top-p": "0.9", "n-gpu-layers": "99"})
 
     def test_blank_values_dropped(self):
         config.save_preset("fast", {"temp": "0.7", "top-k": "  ", "n-gpu-layers": ""})
-        self.assertEqual(config.get_presets()["fast"], {"temp": "0.7"})
+        self.assertEqual(config.get_presets()["fast"], {"temp": "0.7", "n-gpu-layers": "99"})
 
     def test_overwrite_existing(self):
         config.save_preset("x", {"temp": "0.1"})
         config.save_preset("x", {"temp": "0.9"})
-        self.assertEqual(config.get_presets()["x"], {"temp": "0.9"})
+        self.assertEqual(config.get_presets()["x"], {"temp": "0.9", "n-gpu-layers": "99"})
 
     def test_blank_name_rejected(self):
         with self.assertRaises(ValueError):
@@ -44,7 +44,7 @@ class TestPresets(unittest.TestCase):
         config.save({**config.load(), "presets": "corrupt"})
         self.assertEqual(config.get_presets(), {})
         config.save_preset("ok", {"temp": "0.5"})
-        self.assertEqual(config.get_presets()["ok"], {"temp": "0.5"})
+        self.assertEqual(config.get_presets()["ok"], {"temp": "0.5", "n-gpu-layers": "99"})
 
 
 if __name__ == "__main__":

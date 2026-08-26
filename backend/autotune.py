@@ -38,15 +38,6 @@ def _has_only_uma_gpu(hw):
     return bool(gpus) and all(g.get("is_uma") for g in gpus)
 
 
-def _fit_ngl(layers, weights_mib, budget_mib):
-    """How many layers to offload. '99' = all (llama.cpp caps to the real count)."""
-    if not layers or not weights_mib:
-        return "99"                      # unknown size: try full offload, refine can back off
-    if budget_mib >= weights_mib:
-        return "99"
-    return str(max(0, int(layers * budget_mib / weights_mib)))
-
-
 def recommend(meta, hw, intent="balanced", size_bytes=None, prediction=None):
     intent = intent if intent in INTENTS else "balanced"
     knobs, why = {}, {}
@@ -67,18 +58,19 @@ def recommend(meta, hw, intent="balanced", size_bytes=None, prediction=None):
         knobs["flash-attn"] = "on"
         why["flash-attn"] = "GPU backend available - flash-attention enabled."
     else:
-        total = _total_vram_mib(hw)
-        budget = int(total * _HEADROOM[intent])
-        knobs["n-gpu-layers"] = _fit_ngl(layers, weights_mib, budget)
-        if knobs["n-gpu-layers"] == "99":
-            # Distinguish between unknown size and genuine fit
-            if not layers or not weights_mib:
-                why["n-gpu-layers"] = "Model size/layer count unknown - attempting full GPU offload."
-            else:
-                why["n-gpu-layers"] = f"Weights fit in {total} MiB VRAM - full GPU offload."
+        knobs["n-gpu-layers"] = "99"
+        if not layers or not weights_mib:
+            why["n-gpu-layers"] = (
+                "GPU detected - model size/layer count unknown, so preferring maximum offload "
+                "(99 = all layers; llama.cpp caps to the real count). If VRAM is insufficient, "
+                "the load may fail instead of auto-reducing."
+            )
         else:
-            why["n-gpu-layers"] = (f"~{int(weights_mib)} MiB weights vs {budget} MiB budget "
-                                   f"- offloading {knobs['n-gpu-layers']}/{layers} layers.")
+            why["n-gpu-layers"] = (
+                "GPU detected - preferring maximum offload (99 = all layers; llama.cpp caps to "
+                "the real count). If VRAM is insufficient, the load may fail instead of "
+                "auto-reducing."
+            )
         knobs["flash-attn"] = "on"
         why["flash-attn"] = "GPU present - flash-attention enabled."
 

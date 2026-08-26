@@ -333,6 +333,12 @@ def get_presets():
     p = load().get("presets")
     return p if isinstance(p, dict) else {}
 
+def _normalize_preset_settings(settings):
+    clean = {k: str(v).strip() for k, v in (settings or {}).items()
+             if str(v).strip() != ""}
+    clean["n-gpu-layers"] = "99"
+    return clean
+
 def save_preset(name, settings):
     """Store a named preset. `settings` is {knob: value}; blank values are
     dropped so a preset only carries the knobs it actually pins. Returns the
@@ -340,8 +346,7 @@ def save_preset(name, settings):
     name = (name or "").strip()
     if not name:
         raise ValueError("preset name is required")
-    clean = {k: str(v).strip() for k, v in (settings or {}).items()
-             if str(v).strip() != ""}
+    clean = _normalize_preset_settings(settings)
     with _LOCK:
         cfg = load()
         presets = cfg.get("presets")

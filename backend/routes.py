@@ -705,6 +705,13 @@ def _clean_settings(updates):
     return clean
 
 
+def _force_max_gpu_layers(clean):
+    out = dict(clean or {})
+    if out.get("n-gpu-layers") != "0":
+        out["n-gpu-layers"] = "99"
+    return out
+
+
 def _register_ggufs_beside(paths):
     """Add scanner-derived entries to models.ini and reload the router."""
     entries = scanner.build_entries(paths)
@@ -1026,7 +1033,7 @@ def post_presets_save(req):
         raise ApiError(400, str(e))
     # Re-sync every model bound to this preset: editing "coding" once updates
     # all models using it - the point of binding (issue #2).
-    clean = _clean_settings(presets.get(name, {}))
+    clean = _force_max_gpu_layers(_clean_settings(presets.get(name, {})))
     for mid in config.bindings_for_preset(name):
         _apply_knobs_and_reload(mid, clean)
     return 200, {"ok": True, "presets": presets}
@@ -1048,8 +1055,9 @@ def post_presets_bind(req):
         raise ApiError(400, str(e))
     if name:
         preset = config.get_presets().get(name, {})
-        _dbg("preset.bind", model=mid, preset=name, settings=_knob_snapshot(preset))
-        _apply_knobs_and_reload(mid, _clean_settings(preset))
+        clean = _force_max_gpu_layers(_clean_settings(preset))
+        _dbg("preset.bind", model=mid, preset=name, settings=_knob_snapshot(clean))
+        _apply_knobs_and_reload(mid, clean)
     return 200, {"ok": True, "bindings": binds}
 
 
@@ -1060,7 +1068,7 @@ def post_presets_apply(req):
     if preset is None:
         raise ApiError(400, f"unknown preset: {name}")
     # apply exactly like /api/save so a loaded model reloads with the knobs
-    clean = _clean_settings(preset)
+    clean = _force_max_gpu_layers(_clean_settings(preset))
     _dbg("preset.apply", model=mid, preset=name, settings=_knob_snapshot(clean))
     running = _apply_knobs_and_reload(mid, clean)
     return 200, {"ok": True, "applied": list(clean), "was_running": running}
