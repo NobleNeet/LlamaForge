@@ -53,6 +53,25 @@ VLLM_SETUP_JOB = vllm_job.WslJob(LOGDIR, "vllm-setup.log")
 REGISTRY = None
 
 
+def _dbg(event, **fields):
+    """Lightweight structured debug logging to the panel/backend log."""
+    try:
+        payload = json.dumps(fields, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        payload = str(fields)
+    print(f"DBG {event}: {payload}", flush=True)
+
+
+def _knob_snapshot(knobs, limit=24):
+    items = [(str(k), v) for k, v in (knobs or {}).items()
+             if v is not None and str(v).strip() != ""]
+    items.sort()
+    snap = {k: v for k, v in items[:limit]}
+    if len(items) > limit:
+        snap["..."] = f"{len(items) - limit} more"
+    return snap
+
+
 class ApiError(Exception):
     """Raise from a handler to return an error payload with a status."""
     def __init__(self, status, message):
@@ -417,16 +436,27 @@ def _autotune_refine(body):
     # cache/ctx/batch values when the user switches back to "balanced".
     preserved = {k: v for k, v in current.items() if k not in managed}
     base = {**preserved, **(rec.get("knobs") or {})}
+    _dbg("autotune.refine.begin",
+         model=mid, intent=intent,
+         received=_knob_snapshot(current),
+         recommended=_knob_snapshot(rec.get("knobs") or {}),
+         preserved=_knob_snapshot(preserved),
+         base=_knob_snapshot(base))
 
     def load_fn(knobs):
         clean = _clean_settings(knobs)
         for key in managed:
             if key not in clean:
                 clean[key] = None
+        _dbg("autotune.refine.load_candidate",
+             model=mid, intent=intent,
+             candidate=_knob_snapshot(clean))
         config.set_keys(mid, clean)
         router("/models?reload=1")
         code, res = router("/models/load", "POST", {"model": mid})
         if code >= 400:
+            _dbg("autotune.refine.load_failed",
+                 model=mid, intent=intent, code=code, response=res or {})
             raise RuntimeError((res or {}).get("error", "load failed"))
 
     def measure_fn():
@@ -935,12 +965,16 @@ def post_model_delete(req):
 def post_save(req):
     mid = req.body.get("model")
     clean = _clean_settings(req.body.get("settings", {}))
+    _dbg("model.save", model=mid, settings=_knob_snapshot(clean))
     running = _apply_knobs_and_reload(mid, clean)
     return 200, {"ok": True, "was_running": running}
 
 
 def post_load(req):
-    code, res = router("/models/load", "POST", {"model": req.body.get("model")})
+    mid = req.body.get("model")
+    sect = config.read_sections().get(mid, {})
+    _dbg("model.load", model=mid, settings=_knob_snapshot(sect))
+    code, res = router("/models/load", "POST", {"model": mid})
     return (200 if code == 200 else 400), res
 
 
@@ -964,6 +998,10 @@ def post_autotune_recommend(req):
 
 
 def post_autotune_refine(req):
+    _dbg("autotune.refine.request",
+         model=req.body.get("model", ""),
+         intent=req.body.get("intent", "balanced"),
+         knobs=_knob_snapshot(_clean_settings(req.body.get("knobs") or {})))
     return 200, _autotune_refine(req.body)
 
 
@@ -997,6 +1035,7 @@ def post_presets_bind(req):
         raise ApiError(400, str(e))
     if name:
         preset = config.get_presets().get(name, {})
+        _dbg("preset.bind", model=mid, preset=name, settings=_knob_snapshot(preset))
         _apply_knobs_and_reload(mid, _clean_settings(preset))
     return 200, {"ok": True, "bindings": binds}
 
@@ -1009,6 +1048,7 @@ def post_presets_apply(req):
         raise ApiError(400, f"unknown preset: {name}")
     # apply exactly like /api/save so a loaded model reloads with the knobs
     clean = _clean_settings(preset)
+    _dbg("preset.apply", model=mid, preset=name, settings=_knob_snapshot(clean))
     running = _apply_knobs_and_reload(mid, clean)
     return 200, {"ok": True, "applied": list(clean), "was_running": running}
 
