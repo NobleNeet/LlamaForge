@@ -430,6 +430,7 @@ CTX_GLOBAL_DEFAULT = str(gguf.CTX_FULL)   # "150000"
 PREFERRED_KNOB_ALIASES = {
     "n-gpu-layers": ("gpu-layers",),
 }
+EXTRA_MODELS_INI_KEYS = {"embeddings"}
 
 def apply_ctx_defaults(path=None):
     """Set sane ctx-size defaults across models.ini, idempotently.
@@ -524,6 +525,100 @@ def normalize_known_aliases(path=None):
                 _set_keys_locked(sec, updates, path)
                 changed.append(sec)
         return {"changed": changed}
+
+
+def sanitize_models_ini(path=None, valid_keys=None, alias_to_key=None, extra_valid=None):
+    """Rebuild models.ini using the current llama.cpp flag set.
+
+    Unknown or malformed keys are dropped, known aliases are rewritten to their
+    canonical key, blank values are removed, and any non-INI garbage lines are
+    discarded by reconstruction. Returns {"changed": [section, ...]}.
+    """
+    path = path or ini_path()
+    if not path or not os.path.exists(path):
+        return {"changed": []}
+    valid_keys = set(valid_keys or ())
+    alias_to_key = dict(alias_to_key or {})
+    extra_valid = set(extra_valid or EXTRA_MODELS_INI_KEYS)
+    with _INI_LOCK:
+        raw = ""
+        with open(path, encoding="utf-8-sig") as f:
+            raw = f.read()
+        secs = read_sections(path)
+        changed, had_garbage = [], _models_ini_has_garbage(raw)
+        cleaned = {}
+        for sec, kv in secs.items():
+            if sec == "version":
+                continue
+            out = {}
+            section_changed = False
+            for raw_key, raw_val in kv.items():
+                key = alias_to_key.get(raw_key, raw_key)
+                val = ("" if raw_val is None else str(raw_val)).strip()
+                if not val:
+                    section_changed = True
+                    continue
+                if valid_keys and key not in valid_keys and key not in extra_valid:
+                    section_changed = True
+                    continue
+                if raw_key != key:
+                    section_changed = True
+                out[key] = val
+            if sec != "*" and out.get("model") is None:
+                if kv:
+                    section_changed = True
+                out = {}
+            if section_changed:
+                changed.append(sec)
+            if out:
+                cleaned[sec] = out
+        if not changed and not had_garbage:
+            return {"changed": []}
+        _rewrite_models_ini(path, cleaned)
+        if had_garbage and "__file__" not in changed:
+            changed = ["__file__"] + changed
+        return {"changed": changed}
+
+
+def _models_ini_has_garbage(text):
+    """True when the raw file contains anything but blank/comment/section/key."""
+    cur = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(";"):
+            continue
+        if re.match(r"^\[(.+?)\]$", line):
+            cur = line[1:-1]
+            continue
+        if "=" in line:
+            key = line.split("=", 1)[0].strip()
+            if cur is None:
+                if key == "version":
+                    continue
+                return True
+            continue
+        return True
+    return not text.endswith("\n")
+
+
+def _rewrite_models_ini(path, sections):
+    lines = [
+        "; LlamaForge model registry - read by llama-server's router.",
+        "; Rewritten automatically to match the current llama-server flag set.",
+        "version = 1",
+        "",
+    ]
+    ordered = []
+    if "*" in sections:
+        ordered.append("*")
+    ordered.extend(sec for sec in sections if sec != "*")
+    for i, sec in enumerate(ordered):
+        lines.append(f"[{sec}]")
+        for k, v in sections[sec].items():
+            lines.append(f"{k} = {v}")
+        if i != len(ordered) - 1:
+            lines.append("")
+    _write(path, lines + [""])
 
 def ensure_models_ini(path=None, defaults=None):
     """Create models.ini with a [*] global section if it isn't there yet.

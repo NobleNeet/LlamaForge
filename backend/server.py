@@ -12,7 +12,7 @@ Pure Python stdlib.
 import json, os, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import config, wiki, anthropic_shim
+import config, wiki, anthropic_shim, argspec
 import routes
 from routes import ApiError, Req
 
@@ -330,8 +330,10 @@ def main():
     except OSError as e:    # unwritable path: say so, the router will fail next
         print(f"  WARNING: could not create models.ini ({e})")
     try:                    # clean up stale aliases before the router parses models.ini
-        if config.normalize_known_aliases().get("changed"):
-            print(f"  normalized knob aliases in {config.ini_path()}")
+        meta = argspec.build_key_aliases(routes.cfg().get("server_bin", ""))
+        if config.sanitize_models_ini(config.ini_path(), valid_keys=meta.get("keys"),
+                                      alias_to_key=meta.get("alias_to_key")).get("changed"):
+            print(f"  sanitized {config.ini_path()} for current llama-server")
     except Exception:
         pass
     try:                    # backfill ctx-size defaults, then nudge the router

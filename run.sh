@@ -58,6 +58,23 @@ EOF
   echo "created $models_ini"
 fi
 
+# Repair stale knob aliases before the router parses models.ini. The backend
+# also does this on startup, but the router is launched here first.
+if [ -n "$models_ini" ] && [ -f "$models_ini" ]; then
+  LF_MODELS_INI="$models_ini" LF_SERVER_BIN="$server_bin" PYTHONPATH="$here/backend" python3 - <<'PY'
+import os
+import argspec
+import config
+
+path = os.environ.get("LF_MODELS_INI", "")
+server_bin = os.environ.get("LF_SERVER_BIN", "")
+if path and server_bin:
+    meta = argspec.build_key_aliases(server_bin)
+    config.sanitize_models_ini(path, valid_keys=meta.get("keys"),
+                               alias_to_key=meta.get("alias_to_key"))
+PY
+fi
+
 # 1. llama.cpp router (only if not already up)
 if ! listening "$router_port"; then
   if [ -x "$server_bin" ]; then

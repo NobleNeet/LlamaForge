@@ -12,6 +12,26 @@ class CanonicalAliasTest(unittest.TestCase):
         self.assertEqual(items[0]["key"], "n-gpu-layers")
         self.assertEqual(items[0]["aliases"], ["n-gpu-layers", "gpu-layers"])
 
+    def test_wrapped_removed_args_do_not_turn_into_fake_flags(self):
+        text = """----- speculative params -----
+
+--spec-draft-threads, -td, --threads-draft N
+                                        number of threads to use during generation (default: same as
+                                        --threads)
+--spec-draft-cpu-strict, --cpu-strict-draft <0|1>
+                                        Use strict CPU placement for draft model (default: same as
+                                        --cpu-strict)
+--spec-ngram-size-n N                   the argument has been removed. use the respective
+                                        --spec-ngram-*-size-n or --spec-ngram-mod-n-match
+"""
+        keys = [it["key"] for it in argspec.parse_help(text)]
+        self.assertIn("spec-draft-threads", keys)
+        self.assertIn("spec-draft-cpu-strict", keys)
+        self.assertIn("spec-ngram-size-n", keys)
+        self.assertNotIn("threads)", keys)
+        self.assertNotIn("cpu-strict)", keys)
+        self.assertNotIn("spec-ngram-*-size-n", keys)
+
 
 if __name__ == "__main__":
     unittest.main()

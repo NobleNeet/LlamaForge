@@ -90,22 +90,32 @@ def parse_help(text):
 
     for raw in text.splitlines():
         line = raw.rstrip()
+        stripped = line.strip()
         if not line.strip():
             continue
-        sm = SECTION_RE.match(line.strip())
-        if sm and "params" in sm.group(1).lower() or (sm and len(sm.group(1)) < 40 and not line.startswith(" ")):
+        sm = SECTION_RE.match(stripped)
+        if sm and "params" in sm.group(1).lower() or (sm and len(sm.group(1)) < 40 and not raw.startswith((" ", "\t"))):
             flush(); section = sm.group(1).strip(); continue
 
-        # continuation line (indented, no flag) -> append to current desc
-        if pending and (raw.startswith("   ") and not raw.lstrip().startswith("-")):
-            extra = raw.strip()
+        # help output wraps long descriptions/default notes onto indented lines.
+        # Treat any indented line as continuation; some wrapped tails begin with
+        # "--foo)" and were previously mistaken for brand new flags.
+        if pending and raw.startswith((" ", "\t")):
+            extra = stripped
             env = re.search(r"\(env:\s*([A-Z0-9_]+)\)", extra)
             if env: pending["env"] = env.group(1)
             dflt = re.search(r"\(default:\s*(.*?)\)", extra)
             if dflt and not pending.get("default"): pending["default"] = dflt.group(1)
+            if extra and not extra.startswith("(env:") and not extra.startswith("(default:"):
+                desc = pending.get("desc", "")
+                if desc:
+                    pending["desc"] = (desc + " " + extra).strip()
+                else:
+                    pending["desc"] = extra
             continue
 
-        if not line.lstrip().startswith("-"):
+        # Real option definitions are left-aligned in llama.cpp --help.
+        if not raw.startswith("-"):
             continue
         # column-aligned help: split on runs of 2+ spaces
         parts = re.split(r"\s{2,}", line.strip())
@@ -156,20 +166,9 @@ def build_schema(server_bin):
     """Run the server's --help and return grouped, editable knobs."""
     if not server_bin:
         return {"error": "server_bin is not set in config.json", "groups": []}
-    try:
-        # utf-8 explicitly: text=True alone decodes with the locale codepage on
-        # Windows (cp1252), which can blow up or mangle upstream help text.
-        r = subprocess.run([server_bin, "--help"], capture_output=True,
-                           text=True, encoding="utf-8", errors="replace",
-                           timeout=20)
-    except Exception as e:
-        return {"error": str(e), "groups": []}
-    # some builds/forks route usage through the log system -> stderr
-    out = r.stdout if r.stdout.strip() else r.stderr
-    if not out.strip():
-        return {"error": f"`{server_bin} --help` produced no output "
-                         f"(exit code {r.returncode}) - missing DLLs or wrong binary?",
-                "groups": []}
+    out, err = _help_text(server_bin)
+    if err:
+        return {"error": err, "groups": []}
     items = [i for i in parse_help(out) if not i["reserved"]]
     if not items:
         return {"error": "could not parse any arguments from --help output "
@@ -179,6 +178,41 @@ def build_schema(server_bin):
         groups.setdefault(it["section"], []).append(it)
     ordered = [{"name": k, "knobs": v} for k, v in groups.items()]
     return {"groups": ordered, "count": len(items)}
+
+
+def _help_text(server_bin):
+    """Run the server's --help and return (text, error_message)."""
+    if not server_bin:
+        return "", "server_bin is not set in config.json"
+    try:
+        # utf-8 explicitly: text=True alone decodes with the locale codepage on
+        # Windows (cp1252), which can blow up or mangle upstream help text.
+        r = subprocess.run([server_bin, "--help"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace",
+                           timeout=20)
+    except Exception as e:
+        return "", str(e)
+    # some builds/forks route usage through the log system -> stderr
+    out = r.stdout if r.stdout.strip() else r.stderr
+    if not out.strip():
+        return "", (f"`{server_bin} --help` produced no output "
+                    f"(exit code {r.returncode}) - missing DLLs or wrong binary?")
+    return out, ""
+
+
+def build_key_aliases(server_bin):
+    """Return the current valid keys and alias->canonical map for models.ini."""
+    out, err = _help_text(server_bin)
+    if err:
+        return {"error": err, "keys": set(), "alias_to_key": {}}
+    alias_to_key, keys = {}, set()
+    for it in parse_help(out):
+        key = it["key"]
+        keys.add(key)
+        for alias in it.get("aliases", []):
+            alias_to_key[alias] = key
+            keys.add(alias)
+    return {"keys": keys, "alias_to_key": alias_to_key}
 
 if __name__ == "__main__":
     import json, sys

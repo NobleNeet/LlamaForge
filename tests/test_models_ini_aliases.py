@@ -47,6 +47,42 @@ class ModelsIniAliasNormalizationTest(unittest.TestCase):
         self.assertEqual(secs["m"]["n-gpu-layers"], "4")
         self.assertNotIn("gpu-layers", secs["m"])
 
+    def test_sanitize_drops_invalid_and_blank_keys_and_rebuilds_file(self):
+        fd, path = tempfile.mkstemp(suffix=".ini")
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(
+                "shell prompt garbage\n"
+                "version = 1\n\n"
+                "[*]\n"
+                "ctx-size = 150000\n"
+                "jinja = true\n"
+                "load-on-startup = false\n\n"
+                "[m]\n"
+                "threads) = \n"
+                "gpu-layers = 99\n"
+                "spec-ngram-*-size-n = \n"
+                "model = /tmp/model.gguf\n"
+                "flash-attn = on"
+            )
+        out = config.sanitize_models_ini(
+            path,
+            valid_keys={"ctx-size", "jinja", "load-on-startup", "n-gpu-layers",
+                        "model", "flash-attn"},
+            alias_to_key={"gpu-layers": "n-gpu-layers", "n-gpu-layers": "n-gpu-layers"},
+        )
+        self.assertIn("__file__", out["changed"])
+        secs = config.read_sections(path)
+        self.assertEqual(secs["m"]["n-gpu-layers"], "99")
+        self.assertNotIn("gpu-layers", secs["m"])
+        self.assertNotIn("threads)", secs["m"])
+        self.assertNotIn("spec-ngram-*-size-n", secs["m"])
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertTrue(text.endswith("\n"))
+        self.assertNotIn("shell prompt garbage", text)
+
 
 if __name__ == "__main__":
     unittest.main()
