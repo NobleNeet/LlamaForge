@@ -200,7 +200,7 @@ class AutotuneRefineCleaningTest(unittest.TestCase):
             out = routes._autotune_refine({"model": "m", "intent": "balanced",
                                            "knobs": {"ctx-size": "65536", "temp": ""}})
         self.assertNotIn("error", out)
-        self.assertEqual(writes[0][1], {"ctx-size": "65536", "temp": None})
+        self.assertEqual(writes[0][1], {"ctx-size": "65536"})
 
     def test_refine_uses_intent_recommendation_over_current_conflicts(self):
         seen = {}
@@ -221,6 +221,30 @@ class AutotuneRefineCleaningTest(unittest.TestCase):
         self.assertEqual(seen["base"]["ctx-size"], "16384")
         self.assertEqual(seen["base"]["batch-size"], "2048")
         self.assertEqual(seen["base"]["ubatch-size"], "512")
+        self.assertEqual(seen["base"]["spec-type"], "draft-mtp")
+
+    def test_refine_drops_previous_managed_knobs_when_intent_changes(self):
+        seen = {}
+
+        def fake_refine(base, intent, load_fn, measure_fn):
+            seen["base"] = dict(base)
+            return {"knobs": base, "measurements": {"candidates": [], "chosen_tok_s": 0.0}}
+
+        with mock.patch.object(routes, "_find_model", return_value={"id": "m", "settings": {"model": "/m.gguf"}}), \
+             mock.patch.object(routes, "_autotune_recommend",
+                               return_value={"knobs": {"ctx-size": "65536", "cache-type-k": "q8_0",
+                                                       "cache-type-v": "q8_0", "n-gpu-layers": "99"}}), \
+             mock.patch.object(routes.autotune, "refine", side_effect=fake_refine):
+            out = routes._autotune_refine({"model": "m", "intent": "balanced",
+                                           "knobs": {"ctx-size": "16384", "cache-type-k": "f16",
+                                                     "cache-type-v": "f16", "batch-size": "4096",
+                                                     "ubatch-size": "512", "spec-type": "draft-mtp"}})
+        self.assertNotIn("error", out)
+        self.assertEqual(seen["base"]["ctx-size"], "65536")
+        self.assertEqual(seen["base"]["cache-type-k"], "q8_0")
+        self.assertEqual(seen["base"]["cache-type-v"], "q8_0")
+        self.assertNotIn("batch-size", seen["base"])
+        self.assertNotIn("ubatch-size", seen["base"])
         self.assertEqual(seen["base"]["spec-type"], "draft-mtp")
 
 

@@ -406,10 +406,17 @@ def _autotune_refine(body):
     rec = _autotune_recommend({"model": mid, "intent": intent})
     if "error" in rec:
         return rec
+    managed = {
+        "n-gpu-layers", "flash-attn", "threads", "ctx-size",
+        "cache-type-k", "cache-type-v", "batch-size", "ubatch-size",
+        "temp", "top-p", "tensor-split",
+    }
     # Intent presets are the point of refine, so use the recommended knobs as
-    # the base and let unrelated current settings (e.g. model path, MTP draft)
-    # carry through around them.
-    base = {**current, **(rec.get("knobs") or {})}
+    # the base. Carry through only unrelated current settings (e.g. MTP /
+    # other manually-set knobs), so a previous "speed" run does not pin
+    # cache/ctx/batch values when the user switches back to "balanced".
+    preserved = {k: v for k, v in current.items() if k not in managed}
+    base = {**preserved, **(rec.get("knobs") or {})}
 
     def load_fn(knobs):
         config.set_keys(mid, _clean_settings(knobs))
