@@ -32,6 +32,12 @@ class CanonicalAliasTest(unittest.TestCase):
         self.assertNotIn("cpu-strict)", keys)
         self.assertNotIn("spec-ngram-*-size-n", keys)
 
+    def test_multi_value_positional_option_is_not_preset_editable(self):
+        text = "--control-vector-layer-range START END  layer range to apply\n"
+        items = argspec.parse_help(text)
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0]["reserved"])
+
 
 if __name__ == "__main__":
     unittest.main()

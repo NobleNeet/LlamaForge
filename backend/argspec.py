@@ -79,6 +79,18 @@ def _classify(placeholder, default):
         return "path", None
     return "str", None
 
+
+def _preset_supported(placeholder):
+    """Whether llama.cpp's models.ini can express this option as one key=value.
+
+    Router presets currently reject options that require multiple positional
+    values, e.g. `--control-vector-layer-range START END`.
+    """
+    p = (placeholder or "").strip()
+    if not p:
+        return True
+    return not re.fullmatch(r"[A-Z][A-Z0-9_-]*(\s+[A-Z][A-Z0-9_-]*)+", p)
+
 def parse_help(text):
     section = "general"
     items, pending = [], None
@@ -157,7 +169,7 @@ def parse_help(text):
             "desc": _balance_parens(re.sub(r"\s*\((env|default):.*", "", desc)),
             "default": clean_default,
             "env": env.group(1) if env else "",
-            "reserved": any(l in RESERVED for l in longs),
+            "reserved": any(l in RESERVED for l in longs) or not _preset_supported(placeholder),
         }
     flush()
     return items
@@ -207,6 +219,8 @@ def build_key_aliases(server_bin):
         return {"error": err, "keys": set(), "alias_to_key": {}}
     alias_to_key, keys = {}, set()
     for it in parse_help(out):
+        if it.get("reserved"):
+            continue
         key = it["key"]
         keys.add(key)
         for alias in it.get("aliases", []):
