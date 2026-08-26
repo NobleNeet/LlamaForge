@@ -436,6 +436,7 @@ def _autotune_refine(body):
     # cache/ctx/batch values when the user switches back to "balanced".
     preserved = {k: v for k, v in current.items() if k not in managed}
     base = {**preserved, **(rec.get("knobs") or {})}
+    sticky = {k: v for k, v in preserved.items() if k in ("spec-type", "spec-draft-model")}
     _dbg("autotune.refine.begin",
          model=mid, intent=intent,
          received=_knob_snapshot(current),
@@ -445,6 +446,9 @@ def _autotune_refine(body):
 
     def load_fn(knobs):
         clean = _clean_settings(knobs)
+        for key, value in sticky.items():
+            if value is not None and key not in clean:
+                clean[key] = value
         for key in managed:
             if key not in clean:
                 clean[key] = None
