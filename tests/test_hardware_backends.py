@@ -55,6 +55,17 @@ class TestHardwareParsing(unittest.TestCase):
         self.assertEqual(out[0]["architecture"], "gfx1151")
         self.assertTrue(out[0]["is_uma"])
 
+    def test_merge_after_renaming_generic_amd_card_name_still_dedupes(self):
+        base = [hardware._gpu_row(name="card1", vendor="AMD", index=0, total=122880, used=25095, uma=True)]
+        vk = [hardware._gpu_row(name="Radeon 8060S Graphics (RADV GFX1151)", vendor="AMD", backend="vulkan")]
+        renamed = hardware._rename_amd_base_with_vulkan_names(base, vk)
+        hip = [dict(renamed[0], backend="hip", backends=["hip"], architecture="gfx1151")]
+        out = hardware._merge_gpu_lists(renamed, hip)
+        out = hardware._merge_gpu_lists(out, vk)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["name"], "Radeon 8060S Graphics (RADV GFX1151)")
+        self.assertEqual(out[0]["backends"], ["hip", "vulkan"])
+
 
 class TestRecommend(unittest.TestCase):
     def test_auto_prefers_cuda_then_hip_then_vulkan(self):

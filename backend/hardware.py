@@ -328,15 +328,6 @@ def _detect_amd_linux():
                 base.append(_gpu_row(name=row["name"], vendor="AMD", index=idx))
     rocminfo = _run(["rocminfo"], timeout=20)
     arches = _rocminfo_arches(rocminfo)
-    hip = []
-    if base and (rocminfo or _run(["hipconfig", "-l"], timeout=10).strip()):
-        for i, g in enumerate(base):
-            row = dict(g)
-            row["backends"] = _dedupe_backends((row.get("backends") or []) + ["hip"])
-            row["backend"] = "hip"
-            if not row.get("architecture") and arches:
-                row["architecture"] = arches[min(i, len(arches) - 1)]
-            hip.append(row)
     vk = []
     vk_info = _run(["vulkaninfo", "--summary"], timeout=20) or _run(["vulkaninfo"], timeout=20)
     for dev in _vulkan_devices(vk_info):
@@ -346,6 +337,15 @@ def _detect_amd_linux():
             continue
         vk.append(_gpu_row(name=name, vendor=vendor, backend="vulkan"))
     base = _rename_amd_base_with_vulkan_names(base, vk)
+    hip = []
+    if base and (rocminfo or _run(["hipconfig", "-l"], timeout=10).strip()):
+        for i, g in enumerate(base):
+            row = dict(g)
+            row["backends"] = _dedupe_backends((row.get("backends") or []) + ["hip"])
+            row["backend"] = "hip"
+            if not row.get("architecture") and arches:
+                row["architecture"] = arches[min(i, len(arches) - 1)]
+            hip.append(row)
     merged = _merge_gpu_lists(base, hip)
     merged = _merge_gpu_lists(merged, vk)
     for g in merged:
