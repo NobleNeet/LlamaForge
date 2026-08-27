@@ -270,6 +270,46 @@ class ScanMissingScopeTest(unittest.TestCase):
         self.assertEqual(out["missing"], [])
 
 
+class NetworkConfigTest(unittest.TestCase):
+    def test_network_updates_router_port_and_restarts_on_new_port(self):
+        saved = {}
+        with mock.patch.object(routes, "cfg", return_value={"router_host": "127.0.0.1",
+                                                            "router_api_key": "",
+                                                            "router_port": 8080}), \
+             mock.patch.object(config, "update",
+                               side_effect=lambda ch: (saved.update(ch), dict(saved))[1]), \
+             mock.patch.object(routes, "_active_server_bin", return_value="/bin/llama-server"), \
+             mock.patch.object(config, "ini_path", return_value="/tmp/models.ini"), \
+             mock.patch.object(routes.router_ctl, "restart", return_value=(True, "")) as restart:
+            status, out = routes.post_network(Req(body={"host": "0.0.0.0", "port": 9090, "api_key": "secret"}))
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["router_port"], 9090)
+        self.assertEqual(saved["router_host"], "0.0.0.0")
+        self.assertEqual(out["port"], 9090)
+        restart.assert_called_once_with("/bin/llama-server", "/tmp/models.ini",
+                                        9090, "0.0.0.0", "secret", routes.LOGDIR)
+
+    def test_network_keeps_existing_key_when_field_is_omitted(self):
+        saved = {}
+        with mock.patch.object(routes, "cfg", return_value={"router_host": "127.0.0.1",
+                                                            "router_api_key": "keepme",
+                                                            "router_port": 8080}), \
+             mock.patch.object(config, "update",
+                               side_effect=lambda ch: (saved.update(ch), dict(saved))[1]), \
+             mock.patch.object(routes, "_active_server_bin", return_value="/bin/llama-server"), \
+             mock.patch.object(config, "ini_path", return_value="/tmp/models.ini"), \
+             mock.patch.object(routes.router_ctl, "restart", return_value=(True, "")):
+            status, out = routes.post_network(Req(body={"host": "127.0.0.1", "port": 8181}))
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["router_api_key"], "keepme")
+        self.assertEqual(saved["router_port"], 8181)
+
+    def test_network_rejects_invalid_port(self):
+        with self.assertRaises(ApiError) as cm:
+            routes.post_network(Req(body={"host": "127.0.0.1", "port": 70000}))
+        self.assertEqual(cm.exception.status, 400)
+
+
 class AutotuneRefineCleaningTest(unittest.TestCase):
     def test_refine_drops_blank_knobs_before_loading(self):
         writes = []

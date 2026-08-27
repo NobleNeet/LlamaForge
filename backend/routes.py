@@ -1428,15 +1428,18 @@ def _record_server_bin(key, path):
 def post_network(req):
     c = cfg()
     host = req.body.get("host", "127.0.0.1")
+    port = req.body.get("port", c.get("router_port", 8080))
+    if not isinstance(port, int) or not (1 <= port <= 65535):
+        raise ApiError(400, "port must be an integer between 1 and 65535")
     api_key = req.body.get("api_key")
     if api_key is None:
         api_key = c.get("router_api_key", "")   # field left blank -> keep existing key
-    c = config.update({"router_host": host, "router_api_key": api_key})
+    c = config.update({"router_host": host, "router_api_key": api_key, "router_port": port})
     sbin = _active_server_bin(c)
     ini = config.ini_path()
-    ok, err = router_ctl.restart(sbin, ini, c["router_port"],
+    ok, err = router_ctl.restart(sbin, ini, port,
                                  host, api_key, LOGDIR)
-    return (200 if ok else 500), {"ok": ok, "error": err, "host": host}
+    return (200 if ok else 500), {"ok": ok, "error": err, "host": host, "port": port}
 
 
 def post_engine_switch(req):
