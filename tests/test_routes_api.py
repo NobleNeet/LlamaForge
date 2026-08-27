@@ -273,15 +273,19 @@ class ScanMissingScopeTest(unittest.TestCase):
 class NetworkConfigTest(unittest.TestCase):
     def test_network_updates_router_port_and_restarts_on_new_port(self):
         saved = {}
+        base = {"router_host": "127.0.0.1", "router_api_key": "", "router_port": 8080,
+                "panel_host": "127.0.0.1", "panel_port": 8090}
         with mock.patch.object(routes, "cfg", return_value={"router_host": "127.0.0.1",
                                                             "router_api_key": "",
                                                             "router_port": 8080,
-                                                            "panel_host": "127.0.0.1"}), \
+                                                            "panel_host": "127.0.0.1",
+                                                            "panel_port": 8090}), \
              mock.patch.object(config, "update",
-                               side_effect=lambda ch: (saved.update(ch), dict(saved))[1]), \
+                               side_effect=lambda ch: (saved.update(ch), dict(base, **saved))[1]), \
              mock.patch.object(routes, "_active_server_bin", return_value="/bin/llama-server"), \
              mock.patch.object(config, "ini_path", return_value="/tmp/models.ini"), \
-             mock.patch.object(routes.router_ctl, "restart", return_value=(True, "")) as restart:
+             mock.patch.object(routes.router_ctl, "restart", return_value=(True, "")) as restart, \
+             mock.patch.object(routes, "PANEL_RESTART") as panel_restart:
             status, out = routes.post_network(Req(body={"host": "0.0.0.0", "port": 9090,
                                                         "panel_host": "0.0.0.0", "api_key": "secret"}))
         self.assertEqual(status, 200)
@@ -292,24 +296,30 @@ class NetworkConfigTest(unittest.TestCase):
         self.assertTrue(out["panel_restart_required"])
         restart.assert_called_once_with("/bin/llama-server", "/tmp/models.ini",
                                         9090, "0.0.0.0", "secret", routes.LOGDIR)
+        panel_restart.assert_called_once_with("0.0.0.0", 8090)
 
     def test_network_keeps_existing_key_when_field_is_omitted(self):
         saved = {}
+        base = {"router_host": "127.0.0.1", "router_api_key": "keepme", "router_port": 8080,
+                "panel_host": "127.0.0.1", "panel_port": 8090}
         with mock.patch.object(routes, "cfg", return_value={"router_host": "127.0.0.1",
                                                             "router_api_key": "keepme",
                                                             "router_port": 8080,
-                                                            "panel_host": "127.0.0.1"}), \
+                                                            "panel_host": "127.0.0.1",
+                                                            "panel_port": 8090}), \
              mock.patch.object(config, "update",
-                               side_effect=lambda ch: (saved.update(ch), dict(saved))[1]), \
+                               side_effect=lambda ch: (saved.update(ch), dict(base, **saved))[1]), \
              mock.patch.object(routes, "_active_server_bin", return_value="/bin/llama-server"), \
              mock.patch.object(config, "ini_path", return_value="/tmp/models.ini"), \
-             mock.patch.object(routes.router_ctl, "restart", return_value=(True, "")):
+             mock.patch.object(routes.router_ctl, "restart", return_value=(True, "")), \
+             mock.patch.object(routes, "PANEL_RESTART") as panel_restart:
             status, out = routes.post_network(Req(body={"host": "127.0.0.1", "port": 8181}))
         self.assertEqual(status, 200)
         self.assertEqual(saved["router_api_key"], "keepme")
         self.assertEqual(saved["router_port"], 8181)
         self.assertEqual(saved["panel_host"], "127.0.0.1")
         self.assertFalse(out["panel_restart_required"])
+        panel_restart.assert_not_called()
 
     def test_network_rejects_invalid_port(self):
         with self.assertRaises(ApiError) as cm:

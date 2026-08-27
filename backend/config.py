@@ -50,7 +50,8 @@ DEFAULTS = {
     "active_engine": "llamacpp",              # which binary the router uses: llamacpp | ikllama
     "llama_backend": "auto",                  # build backend selection: auto|cuda|hip|vulkan|cpu
     "auto_load_model": "",                    # model id to load automatically on launch ("" = none)
-    "presets":     {},                       # named knob sets: {name: {knob: value}}
+    "presets":     {},                       # legacy global knob sets from older installs
+    "model_presets": {},                     # {model_id: {preset_name: {knob: value}}}
     "preset_bindings": {},                    # {model_id: preset_name} auto-applied on bind/edit
     "ui_mode":     "lite",                    # "lite" (curated knobs) or "advanced" (all ~220)
     "onboarded":   False,                     # first-run wizard shown once, then True
@@ -329,10 +330,32 @@ def _remove_section_locked(section, path):
 
 # ---------------- knob presets ----------------
 
-def get_presets():
-    """Named knob sets from config.json, e.g. {"coding": {"temp": "0.2"}}."""
-    p = load().get("presets")
+def _legacy_presets(cfg=None):
+    p = (cfg or load()).get("presets")
     return p if isinstance(p, dict) else {}
+
+def _all_model_presets(cfg=None):
+    p = (cfg or load()).get("model_presets")
+    return p if isinstance(p, dict) else {}
+
+def get_model_presets():
+    return _all_model_presets()
+
+def get_presets(model_id=""):
+    """Named knob sets for one model.
+
+    Older installs stored presets globally. A model with no dedicated preset
+    bucket still sees those legacy presets until the first model-scoped write,
+    which materializes its own independent copy.
+    """
+    model_id = (model_id or "").strip()
+    if not model_id:
+        return {}
+    cfg = load()
+    per = _all_model_presets(cfg).get(model_id)
+    if isinstance(per, dict):
+        return per
+    return dict(_legacy_presets(cfg))
 
 def _normalize_preset_settings(settings):
     clean = {k: str(v).strip() for k, v in (settings or {}).items()
@@ -340,37 +363,54 @@ def _normalize_preset_settings(settings):
     clean["n-gpu-layers"] = "99"
     return clean
 
-def save_preset(name, settings):
+def _model_preset_bucket(cfg, model_id, create=False, migrate_legacy=False):
+    allp = cfg.get("model_presets")
+    if not isinstance(allp, dict):
+        allp = {}
+    bucket = allp.get(model_id)
+    if isinstance(bucket, dict):
+        return allp, bucket
+    if not create:
+        return allp, None
+    bucket = dict(_legacy_presets(cfg)) if migrate_legacy else {}
+    allp[model_id] = bucket
+    cfg["model_presets"] = allp
+    return allp, bucket
+
+def save_preset(model_id, name, settings):
     """Store a named preset. `settings` is {knob: value}; blank values are
     dropped so a preset only carries the knobs it actually pins. Returns the
-    full preset map."""
+    model's full preset map."""
+    model_id = (model_id or "").strip()
+    if not model_id:
+        raise ValueError("model id is required")
     name = (name or "").strip()
     if not name:
         raise ValueError("preset name is required")
     clean = _normalize_preset_settings(settings)
     with _LOCK:
         cfg = load()
-        presets = cfg.get("presets")
-        if not isinstance(presets, dict):
-            presets = {}
+        _, presets = _model_preset_bucket(cfg, model_id, create=True, migrate_legacy=True)
         presets[name] = clean
-        cfg["presets"] = presets
         save(cfg)
         return presets
 
-def delete_preset(name):
+def delete_preset(model_id, name):
     """Remove a named preset and any model bindings that pointed at it. Returns
     True if the preset existed."""
+    model_id = (model_id or "").strip()
+    if not model_id:
+        raise ValueError("model id is required")
     with _LOCK:
         cfg = load()
-        presets = cfg.get("presets")
+        _, presets = _model_preset_bucket(cfg, model_id, create=True, migrate_legacy=True)
         if not (isinstance(presets, dict) and name in presets):
             return False
         del presets[name]
-        cfg["presets"] = presets
         binds = cfg.get("preset_bindings")
         if isinstance(binds, dict):
-            cfg["preset_bindings"] = {m: n for m, n in binds.items() if n != name}
+            cfg["preset_bindings"] = {m: n for m, n in binds.items()
+                                      if not (m == model_id and n == name)}
         save(cfg)
         return True
 
@@ -398,7 +438,7 @@ def bind_preset(model_id, name):
         if name == "":
             binds.pop(model_id, None)
         else:
-            if name not in (cfg.get("presets") or {}):
+            if name not in get_presets(model_id):
                 raise ValueError(f"unknown preset: {name}")
             binds[model_id] = name
         cfg["preset_bindings"] = binds
@@ -423,7 +463,12 @@ def prune_binding(model_id):
     return unbind_preset(model_id)
 
 def bindings_for_preset(name):
-    """Model ids bound to preset `name`."""
+    """Model ids bound to preset `name`.
+
+    Names are model-scoped now, so callers should usually filter by model_id
+    directly via get_bindings()[model_id]. This helper remains for legacy call
+    sites and only returns exact-name matches.
+    """
     return [m for m, n in get_bindings().items() if n == name]
 
 # ---------------- automatic ctx-size defaults ----------------

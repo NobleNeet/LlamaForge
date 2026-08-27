@@ -33,11 +33,11 @@ These are the endpoints external coding agents (Claude Code, Codex, etc.) talk t
 | GET | `/api/state` | Full dashboard state: models (llama.cpp + vLLM merged), GPU telemetry, platform, current `config.json`, and onboarding status. |
 | GET | `/api/schema` | The knob schema (available `llama-server` flags), built from `llama-server --help`. |
 | POST | `/api/save` | Save per-model knob overrides into `models.ini` (`config.set_keys`). Reloads the running model if it was loaded. |
-| GET | `/api/presets` | List saved knob presets from `config.json`. |
-| POST | `/api/presets/save` | Save a named knob preset. |
-| POST | `/api/presets/delete` | Delete a named preset. |
-| POST | `/api/presets/apply` | Apply a saved preset's knobs to a model, same reload behavior as `/api/save`. |
-| POST | `/api/presets/bind` | Bind a preset as a model's default (materializes its knobs; `name: ""` unbinds). Re-saving a bound preset re-syncs every model using it. |
+| GET | `/api/presets` | List a model's saved knob presets from `config.json` (query param `model`). |
+| POST | `/api/presets/save` | Save a named knob preset for one model. |
+| POST | `/api/presets/delete` | Delete a named preset from one model. |
+| POST | `/api/presets/apply` | Apply one model's saved preset knobs back onto that same model, with the same reload behavior as `/api/save`. |
+| POST | `/api/presets/bind` | Bind one of a model's own presets as that model's default (materializes its knobs; `name: ""` unbinds). Re-saving a bound preset re-syncs that same model. |
 | GET | `/api/model/metadata` | GGUF metadata for a model id (query param `model`). |
 | GET | `/api/model/diag` | Diagnostic read of the router log against a model's merged (`[*]` + per-model) settings (query param `model`). |
 | POST | `/api/autotune/recommend` | Recommend knob values for a model given hardware constraints. Body: `{model, intent}` where `intent` is `balanced`, `speed`, `context`, or `coding`. Returns `{knobs, reasons}`. |
@@ -81,7 +81,7 @@ These are the endpoints external coding agents (Claude Code, Codex, etc.) talk t
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/network` | Current router host/port, whether an API key is set, LAN IP, and whether the router is running. |
-| POST | `/api/network` | Update `router_host`/`router_port`/`router_api_key` plus `panel_host` in `config.json`, restart the router, and report whether the dashboard itself needs a restart. |
+| POST | `/api/network` | Update `router_host`/`router_port`/`router_api_key` plus `panel_host` in `config.json`, restart the router, and automatically restart the dashboard too when its own bind host changes. |
 | GET | `/api/router/log` | Tail of the router's log. |
 | GET | `/api/stats` | Usage stats summary. |
 | POST | `/api/stats/reset` | Reset usage stats. |

@@ -253,9 +253,9 @@ export async function loadSetup() {
     const r = await api("/api/network", {host, port, panel_host: panelHost, api_key: lan?(apiKey||undefined):""});
     if (r.ok) {
       msg.className = "msg ok";
-      msg.textContent = r.panel_restart_required ? "router applied; restart dashboard to apply dashboard LAN setting" : "applied";
+      msg.textContent = r.panel_restart_required ? "applied; restarting dashboard..." : "applied";
       toast(`${lan?"LAN access enabled":"Local-only access enabled"} on :${port}`, "ok");
-      setTimeout(loadSetup, 1500);
+      setTimeout(loadSetup, r.panel_restart_required ? 2500 : 1500);
     } else { msg.className = "msg err"; msg.textContent = r.error || "failed"; }
   };
   const distroSel = $("#vllm-distro");

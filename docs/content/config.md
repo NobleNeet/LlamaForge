@@ -34,7 +34,8 @@ order: 1
 | `ik_llama_git_remote` | string | `"https://github.com/ikawrakow/ik_llama.cpp"` | Remote used to clone/update ik_llama. |
 | `ik_llama_cmake_flags` | object | `{}` | Persisted CMake build flags for the ik_llama build. |
 | `auto_load_model` | string | `""` | Model id to load automatically on launch. Empty string disables auto-load. |
-| `presets` | object | `{}` | Named knob sets: `{name: {knob: value}}`, managed from the dashboard. |
+| `presets` | object | `{}` | Legacy global presets from older installs. New saves are model-scoped. |
+| `model_presets` | object | `{}` | Named knob sets per model: `{model_id: {preset_name: {knob: value}}}`. |
 | `preset_bindings` | object | `{}` | Preset bound as each model's default: `{model_id: preset_name}`. |
 | `ui_mode` | string | `"lite"` | `"lite"` shows a curated knob set; `"advanced"` exposes all ~220 llama-server flags. |
 | `onboarded` | bool | `False` | Whether the first-run wizard has already been shown; set to `True` once dismissed. |

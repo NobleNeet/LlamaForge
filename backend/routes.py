@@ -51,6 +51,7 @@ VLLM_SETUP_JOB = vllm_job.WslJob(LOGDIR, "vllm-setup.log")
 # this module itself as their dependency bundle: it keeps them free of import
 # cycles and lets a test hand in a stub with the same handful of functions.
 REGISTRY = None
+PANEL_RESTART = None
 
 
 def _dbg(event, **fields):
@@ -959,7 +960,8 @@ def get_model_diag(req):
 
 
 def get_presets(req):
-    return 200, {"presets": config.get_presets()}
+    mid = req.q("model")
+    return 200, {"presets": config.get_presets(mid), "model_presets": config.get_model_presets()}
 
 
 def get_agent_config(req):
@@ -1098,21 +1100,24 @@ def post_autotune_refine(req):
 
 
 def post_presets_save(req):
+    mid = req.body.get("model", "")
     name = req.body.get("name", "")
     try:
-        presets = config.save_preset(name, req.body.get("settings", {}))
+        presets = config.save_preset(mid, name, req.body.get("settings", {}))
     except ValueError as e:
         raise ApiError(400, str(e))
-    # Re-sync every model bound to this preset: editing "coding" once updates
-    # all models using it - the point of binding (issue #2).
     clean = _force_max_gpu_layers(_clean_settings(presets.get(name, {})))
-    for mid in config.bindings_for_preset(name):
+    if config.get_bindings().get(mid) == name:
         _apply_knobs_and_reload(mid, clean)
     return 200, {"ok": True, "presets": presets}
 
 
 def post_presets_delete(req):
-    return 200, {"ok": config.delete_preset(req.body.get("name", ""))}
+    try:
+        ok = config.delete_preset(req.body.get("model", ""), req.body.get("name", ""))
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    return 200, {"ok": ok}
 
 
 def post_presets_bind(req):
@@ -1126,7 +1131,7 @@ def post_presets_bind(req):
     except ValueError as e:
         raise ApiError(400, str(e))
     if name:
-        preset = config.get_presets().get(name, {})
+        preset = config.get_presets(mid).get(name, {})
         clean = _force_max_gpu_layers(_clean_settings(preset))
         _dbg("preset.bind", model=mid, preset=name, settings=_knob_snapshot(clean))
         _apply_knobs_and_reload(mid, clean)
@@ -1136,7 +1141,7 @@ def post_presets_bind(req):
 def post_presets_apply(req):
     mid = req.body.get("model", "")
     name = req.body.get("name", "")
-    preset = config.get_presets().get(name)
+    preset = config.get_presets(mid).get(name)
     if preset is None:
         raise ApiError(400, f"unknown preset: {name}")
     # apply exactly like /api/save so a loaded model reloads with the knobs
@@ -1448,6 +1453,11 @@ def post_network(req):
     ini = config.ini_path()
     ok, err = router_ctl.restart(sbin, ini, port,
                                  host, api_key, LOGDIR)
+    if ok and panel_restart_required and callable(PANEL_RESTART):
+        try:
+            PANEL_RESTART(panel_host, c["panel_port"])
+        except Exception:
+            panel_restart_required = False
     return (200 if ok else 500), {"ok": ok, "error": err, "host": host, "port": port,
                                   "panel_host": panel_host,
                                   "panel_restart_required": panel_restart_required}

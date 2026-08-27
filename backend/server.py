@@ -9,12 +9,13 @@ write SSE to the socket themselves rather than returning a payload.
 
 Pure Python stdlib.
 """
-import json, os, urllib.parse
+import json, os, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import config, wiki, anthropic_shim, argspec
 import routes
 from routes import ApiError, Req
+import osplat
 
 # Everything else is reached as routes.<name> rather than imported by name: a
 # `from routes import cfg` binds the function object here, so a test patching
@@ -37,6 +38,9 @@ from routes import ApiError, Req
 # application/json - requiring JSON on state-changing routes means an attacker's
 # page cannot forge one without a preflight it will fail.
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+CREATE_NO_WINDOW = 0x08000000
+_HTTPD = None
+_PANEL_RESTARTING = False
 
 
 def _allowed_hosts(bind_host, lan_ip=""):
@@ -80,6 +84,39 @@ def _origin_ok(origin, port, allowed_hosts=None):
     if u.scheme not in ("http", "https"):
         return False
     return _host_ok(u.netloc, port, allowed_hosts)
+
+
+def request_panel_restart(bind_host, port):
+    """Restart the dashboard process after the current response completes."""
+    global _PANEL_RESTARTING
+    if _PANEL_RESTARTING:
+        return
+    _PANEL_RESTARTING = True
+
+    def worker():
+        try:
+            time.sleep(0.4)
+            if _HTTPD is not None:
+                _HTTPD.shutdown()
+                _HTTPD.server_close()
+            logdir = routes.LOGDIR
+            os.makedirs(logdir, exist_ok=True)
+            out = open(os.path.join(logdir, "panel.out.log"), "a", encoding="utf-8", errors="replace")
+            err = open(os.path.join(logdir, "panel.err.log"), "a", encoding="utf-8", errors="replace")
+            kw = ({"creationflags": CREATE_NO_WINDOW} if osplat.IS_WIN
+                  else {"start_new_session": True})
+            try:
+                subprocess.Popen([sys.executable, "server.py"],
+                                 cwd=os.path.dirname(os.path.abspath(__file__)),
+                                 stdout=out, stderr=err, stdin=subprocess.DEVNULL,
+                                 close_fds=True, **kw)
+            finally:
+                out.close()
+                err.close()
+        finally:
+            os._exit(0)
+
+    threading.Thread(target=worker, daemon=True, name="panel-restart").start()
 
 
 class H(BaseHTTPRequestHandler):
@@ -331,8 +368,10 @@ def _auto_load(model_id):
 
 
 def main():
+    global _HTTPD
     import stats
     config.migrate()
+    routes.PANEL_RESTART = request_panel_restart
     c = routes.cfg()
     port = c["panel_port"]
     bind_host = c.get("panel_host", "127.0.0.1")
@@ -369,7 +408,8 @@ def main():
         import threading
         threading.Thread(target=_auto_load, args=(c["auto_load_model"],),
                          daemon=True, name="auto-load").start()
-    ThreadingHTTPServer((bind_host, port), H).serve_forever()
+    _HTTPD = ThreadingHTTPServer((bind_host, port), H)
+    _HTTPD.serve_forever()
 
 
 if __name__ == "__main__":

@@ -466,7 +466,8 @@ function openClientConfig(id) {
 
 /* ---------- presets ---------- */
 function presetBar(m) {
-  const P = cfgOf().presets || {};
+  const all = cfgOf().model_presets || {};
+  const P = all[m.id] || cfgOf().presets || {};
   const bound = (cfgOf().preset_bindings || {})[m.id] || "";
   const chips = Object.keys(P).map(n => {
     const isBound = n === bound;
@@ -502,7 +503,7 @@ async function savePresetFrom(model) {
   if (!Object.keys(settings).length) { toast("No knobs set to save", "err"); return; }
   const name = prompt("Preset name (e.g. coding, creative, fast):");
   if (!name || !name.trim()) return;
-  const r = await api("/api/presets/save", {name: name.trim(), settings});
+  const r = await api("/api/presets/save", {model, name: name.trim(), settings});
   if (r.ok) { toast(`Saved preset "${name.trim()}"`, "ok"); await refresh(true); }
   else toast(r.error || "save failed", "err");
 }
@@ -747,7 +748,7 @@ export function initModels() {
       const pbind = e.target.closest("[data-preset-bind]");
       if (pbind) { await bindPreset(pbind.dataset.presetBindModel, pbind.dataset.presetBind); return; }
       const pdel = e.target.closest("[data-preset-del]");
-      if (pdel) { await api("/api/presets/delete", {name: pdel.dataset.presetDel}); toast("Preset deleted","ok"); await refresh(true); return; }
+      if (pdel) { await api("/api/presets/delete", {model: pApply.dataset.presetModel, name: pdel.dataset.presetDel}); toast("Preset deleted","ok"); await refresh(true); return; }
       await applyPreset(pApply.dataset.presetModel, pApply.dataset.presetApply); return;
     }
     const pSave = e.target.closest("[data-preset-save]");
