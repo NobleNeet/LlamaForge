@@ -155,7 +155,7 @@ export async function loadSetup() {
         <button id="api-idle-save" class="ghost">Save</button>
         <span class="msg" id="api-idle-msg"></span>
       </div>
-      <div class="note">`0` disables this timer. When set above `0`, a llama.cpp model that served requests through `/v1/chat/completions` or `/v1/messages` is unloaded after that many idle minutes. Active or streaming requests are never interrupted.</div>
+      <div class="note"><code>0</code> disables this timer. When set above <code>0</code>, a llama.cpp model that served requests through <code>/v1/chat/completions</code> or <code>/v1/messages</code> is unloaded after that many idle minutes. Active or streaming requests are never interrupted.</div>
       <div class="note">The selected model loads automatically once the router is ready after launch &mdash; handy for always-on setups. An optional tray icon (loaded-model count, quick open) is available if you <b>pip install pystray pillow</b>; without them LlamaForge stays pure-stdlib.</div>
     </div>
     <div class="card"><h3>Network Access</h3>
