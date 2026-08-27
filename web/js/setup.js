@@ -317,11 +317,16 @@ async function scanDrives() {
   const r = await api("/api/scan", {roots});
   const known = new Set(models().map(m => m.id));
   const fresh = r.entries.filter(e => !known.has(e.id));
-  msg.className = "msg ok"; msg.textContent = `${r.entries.length} found, ${fresh.length} new`;
+  const removed = (r.removed || []).length;
+  msg.className = "msg ok";
+  msg.textContent = removed
+    ? `${r.entries.length} found, ${fresh.length} new, ${removed} removed`
+    : `${r.entries.length} found, ${fresh.length} new`;
   const scanned = (r.roots || roots).length
     ? `<div class="note">Scanned: ${esc((r.roots || roots).join(", "))}</div>`
     : `<div class="note">Scanned the default system roots.</div>`;
-  setHTML($("#scan-out"), `${scanned}<div class="note" style="margin-top:8px">${esc(fresh.length)} new models not yet in your config:</div>
+  const pruned = removed ? `<div class="note" style="margin-top:8px">${esc(removed)} configured model(s) outside the current scan scope were removed.</div>` : "";
+  setHTML($("#scan-out"), `${scanned}${pruned}<div class="note" style="margin-top:8px">${esc(fresh.length)} new models not yet in your config:</div>
     <div class="list" style="margin-top:10px">${fresh.map(e=>`<div class="row"><div class="rhead" style="cursor:default;grid-template-columns:1fr auto">
       <span class="mid">${esc(e.id)}${e.mmproj?'<span class="tag vis">vision</span>':''}${e.embeddings?'<span class="tag">embed</span>':''}</span>
       <span class="ctxpill">${esc(e.gib)} GiB</span></div></div>`).join("")||'<div class="note">nothing new</div>'}</div>
@@ -335,22 +340,23 @@ async function scanDrives() {
 }
 
 async function checkMissing() {
+  const roots = currentScanDirs();
   const out = $("#missing-out");
-  setHTML(out, `<div class="note">checking configured models against disk...</div>`);
+  setHTML(out, `<div class="note">checking configured models against disk and scan scope...</div>`);
   let r;
   try { r = await api("/api/scan/missing"); }
   catch (e) { setHTML(out, `<div class="note" style="color:var(--red)">backend unreachable</div>`); return; }
   const miss = (r && r.missing) || [];
-  if (!miss.length) { setHTML(out, `<div class="note">All configured models still exist on disk.</div>`); return; }
-  setHTML(out, `<div class="note">${esc(miss.length)} configured model(s) whose file is gone:</div>
+  if (!miss.length) { setHTML(out, `<div class="note">All configured models are still present and inside the current scan scope.</div>`); return; }
+  setHTML(out, `<div class="note">${esc(miss.length)} configured model(s) are missing or outside the current scan scope:</div>
     <div class="list" style="margin-top:10px">${miss.map(m=>`<div class="row"><div class="rhead" style="cursor:default;grid-template-columns:1fr auto">
       <span class="mid">${esc(m.id)}${m.loaded?'<span class="tag">loaded</span>':''}</span>
-      <span class="ctxpill" title="${esc(m.model)}" style="color:var(--red);border-color:var(--red)">missing file</span></div></div>`).join("")}</div>
-    <div class="actions"><button class="primary" id="btn-prune">Remove ${miss.length} missing</button><span class="msg" id="prune-msg"></span></div>`);
+      <span class="ctxpill" title="${esc(m.model)}" style="color:var(--red);border-color:var(--red)">${esc(m.reason || "remove")}</span></div></div>`).join("")}</div>
+    <div class="actions"><button class="primary" id="btn-prune">Remove ${miss.length}</button><span class="msg" id="prune-msg"></span></div>`);
   $("#btn-prune").onclick = async () => {
     const pm = $("#prune-msg"); pm.className = "msg work"; pm.textContent = "removing...";
-    const rr = await api("/api/scan/prune", {ids: miss.map(m => m.id)});
-    toast(`Removed ${rr.removed.length} missing model(s)`, "ok");
+    const rr = await api("/api/scan/prune", {ids: miss.map(m => m.id), roots});
+    toast(`Removed ${rr.removed.length} model(s)`, "ok");
     emit("refresh", true); checkMissing();
   };
 }

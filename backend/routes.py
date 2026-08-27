@@ -818,15 +818,83 @@ def get_stats(req):
     return 200, stats.TRACKER.summary()
 
 
-def get_scan_missing(req):
+def _normalized_scan_roots(body_roots=None):
+    if body_roots is not None:
+        roots = _v_dirs(body_roots)
+        if roots is None:
+            raise ApiError(400, "roots must be a list of strings")
+        return roots
+    return _v_dirs(cfg().get("model_dirs") or [])
+
+
+def _path_under_roots(path, roots):
+    if not path or not roots:
+        return True
+    try:
+        target = os.path.normcase(os.path.realpath(path))
+    except Exception:
+        target = os.path.normcase(os.path.abspath(path))
+    for root in roots:
+        try:
+            base = os.path.normcase(os.path.realpath(root))
+        except Exception:
+            base = os.path.normcase(os.path.abspath(root))
+        try:
+            if os.path.commonpath([target, base]) == base:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _scan_prune_candidates(roots=None):
     ini = config.read_sections()
+    out = []
+    for sec, kv in ini.items():
+        if sec == "*" or not kv.get("model"):
+            continue
+        reason = None
+        if not os.path.exists(kv["model"]):
+            reason = "missing file"
+        elif roots and not _path_under_roots(kv["model"], roots):
+            reason = "outside scan roots"
+        if reason:
+            out.append({"id": sec, "model": kv["model"], "reason": reason})
+    return out
+
+
+def _remove_models(ids, roots=None):
+    removed = []
     st, data = router("/models")
     loaded = {m["id"] for m in data.get("data", [])
               if st == 200 and m.get("status", {}).get("value") == "loaded"}
-    missing = [{"id": sec, "model": kv["model"], "loaded": sec in loaded}
-               for sec, kv in ini.items()
-               if sec != "*" and kv.get("model") and not os.path.exists(kv["model"])]
-    return 200, {"missing": missing}
+    for mid in ids:
+        sect = config.read_sections().get(mid)
+        if sect is None:
+            continue
+        mpath = sect.get("model")
+        missing = bool(mpath) and not os.path.exists(mpath)
+        out_of_scope = bool(roots) and bool(mpath) and not missing and not _path_under_roots(mpath, roots)
+        if not missing and not out_of_scope:
+            continue
+        if mid in loaded:
+            router("/models/unload", "POST", {"model": mid})
+        if config.remove_section(mid):
+            removed.append(mid)
+    if removed:
+        router("/models?reload=1")
+    return removed
+
+
+def get_scan_missing(req):
+    roots = _normalized_scan_roots()
+    st, data = router("/models")
+    loaded = {m["id"] for m in data.get("data", [])
+              if st == 200 and m.get("status", {}).get("value") == "loaded"}
+    missing = _scan_prune_candidates(roots)
+    for row in missing:
+        row["loaded"] = row["id"] in loaded
+    return 200, {"missing": missing, "roots": roots}
 
 
 def get_network(req):
@@ -1112,15 +1180,10 @@ def post_setup_install(req):
 
 
 def post_scan(req):
-    roots = req.body.get("roots")
-    if roots is not None:
-        roots = _v_dirs(roots)
-        if roots is None:
-            raise ApiError(400, "roots must be a list of strings")
-    else:
-        roots = _v_dirs(cfg().get("model_dirs") or [])
+    roots = _normalized_scan_roots(req.body.get("roots"))
     used = roots or scanner.list_drives()
-    return 200, {"entries": scanner.scan(used), "roots": used}
+    removed = _remove_models([row["id"] for row in _scan_prune_candidates(used)], roots=used)
+    return 200, {"entries": scanner.scan(used), "roots": used, "removed": removed}
 
 
 def post_scan_apply(req):
@@ -1147,23 +1210,8 @@ def post_scan_apply(req):
 
 
 def post_scan_prune(req):
-    ids, removed = req.body.get("ids", []), []
-    st, data = router("/models")
-    loaded = {m["id"] for m in data.get("data", [])
-              if st == 200 and m.get("status", {}).get("value") == "loaded"}
-    for mid in ids:
-        sect = config.read_sections().get(mid)
-        if sect is None:
-            continue
-        mpath = sect.get("model")
-        if mpath and os.path.exists(mpath):
-            continue                     # file reappeared - don't remove
-        if mid in loaded:
-            router("/models/unload", "POST", {"model": mid})
-        if config.remove_section(mid):
-            removed.append(mid)
-    if removed:
-        router("/models?reload=1")
+    roots = _normalized_scan_roots(req.body.get("roots"))
+    removed = _remove_models(req.body.get("ids", []), roots=roots)
     return 200, {"removed": removed}
 
 

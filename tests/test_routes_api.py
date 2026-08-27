@@ -179,10 +179,23 @@ class ScanPruneTest(unittest.TestCase):
             status, out = routes.post_scan_prune(Req(body={"ids": ["ghost"]}))
         self.assertEqual(out["removed"], [])
 
+    def test_prune_removes_models_outside_scan_roots(self):
+        sections = {"keep": {"model": "/models/a.gguf"},
+                    "drop": {"model": "/other/b.gguf"}}
+        with mock.patch.object(config, "read_sections", return_value=sections), \
+             mock.patch.object(routes, "router", self._no_router), \
+             mock.patch.object(os.path, "exists", return_value=True):
+            status, out = routes.post_scan_prune(
+                Req(body={"ids": ["keep", "drop"], "roots": ["/models"]}))
+        self.assertEqual(out["removed"], ["drop"])
+        self.assertEqual(self.removed, ["drop"])
+
 
 class ScanRootsTest(unittest.TestCase):
     def test_scan_uses_explicit_roots_from_request(self):
         with mock.patch.object(routes.scanner, "scan", return_value=[{"id": "m"}]) as scan, \
+             mock.patch.object(routes, "_scan_prune_candidates", return_value=[]), \
+             mock.patch.object(routes, "_remove_models", return_value=[]), \
              mock.patch.object(routes.scanner, "list_drives", return_value=["/default"]):
             status, out = routes.post_scan(Req(body={"roots": [" /a ", "/b", "/a"]}))
         self.assertEqual(status, 200)
@@ -192,6 +205,8 @@ class ScanRootsTest(unittest.TestCase):
     def test_scan_uses_saved_model_dirs_when_request_omits_roots(self):
         with mock.patch.object(routes, "cfg", return_value={"model_dirs": [" /m1 ", "/m2", "/m1"]}), \
              mock.patch.object(routes.scanner, "scan", return_value=[] ) as scan, \
+             mock.patch.object(routes, "_scan_prune_candidates", return_value=[]), \
+             mock.patch.object(routes, "_remove_models", return_value=[]), \
              mock.patch.object(routes.scanner, "list_drives", return_value=["/default"]):
             status, out = routes.post_scan(Req(body={}))
         self.assertEqual(status, 200)
@@ -201,6 +216,8 @@ class ScanRootsTest(unittest.TestCase):
     def test_scan_falls_back_to_default_roots_when_no_dirs_are_saved(self):
         with mock.patch.object(routes, "cfg", return_value={"model_dirs": []}), \
              mock.patch.object(routes.scanner, "scan", return_value=[] ) as scan, \
+             mock.patch.object(routes, "_scan_prune_candidates", return_value=[]), \
+             mock.patch.object(routes, "_remove_models", return_value=[]), \
              mock.patch.object(routes.scanner, "list_drives", return_value=["/home/u", "/mnt"]):
             status, out = routes.post_scan(Req(body={}))
         self.assertEqual(status, 200)
@@ -211,6 +228,46 @@ class ScanRootsTest(unittest.TestCase):
         with self.assertRaises(ApiError) as cm:
             routes.post_scan(Req(body={"roots": "not-a-list"}))
         self.assertEqual(cm.exception.status, 400)
+
+    def test_scan_removes_configured_models_outside_explicit_roots(self):
+        with mock.patch.object(routes.scanner, "scan", return_value=[]), \
+             mock.patch.object(routes, "_scan_prune_candidates",
+                               return_value=[{"id": "drop", "model": "/other/m.gguf", "reason": "outside scan roots"}]), \
+             mock.patch.object(routes, "_remove_models", return_value=["drop"]) as remove, \
+             mock.patch.object(routes.scanner, "list_drives", return_value=["/default"]):
+            status, out = routes.post_scan(Req(body={"roots": ["/models"]}))
+        self.assertEqual(status, 200)
+        self.assertEqual(out["removed"], ["drop"])
+        remove.assert_called_once_with(["drop"], roots=["/models"])
+
+
+class ScanMissingScopeTest(unittest.TestCase):
+    def _router(self, *a, **k):
+        return 200, {"data": [{"id": "drop", "status": {"value": "loaded"}}]}
+
+    def test_missing_lists_out_of_scope_models_when_scan_dirs_are_saved(self):
+        sections = {"keep": {"model": "/models/a.gguf"},
+                    "drop": {"model": "/other/b.gguf"}}
+        with mock.patch.object(routes, "cfg", return_value={"model_dirs": ["/models"]}), \
+             mock.patch.object(config, "read_sections", return_value=sections), \
+             mock.patch.object(routes, "router", side_effect=self._router), \
+             mock.patch.object(os.path, "exists", return_value=True):
+            status, out = routes.get_scan_missing(Req())
+        self.assertEqual(status, 200)
+        self.assertEqual(out["roots"], ["/models"])
+        self.assertEqual(out["missing"], [{"id": "drop", "model": "/other/b.gguf",
+                                           "reason": "outside scan roots", "loaded": True}])
+
+    def test_missing_omits_out_of_scope_logic_when_no_scan_dirs_are_saved(self):
+        sections = {"keep": {"model": "/models/a.gguf"},
+                    "drop": {"model": "/other/b.gguf"}}
+        with mock.patch.object(routes, "cfg", return_value={"model_dirs": []}), \
+             mock.patch.object(config, "read_sections", return_value=sections), \
+             mock.patch.object(routes, "router", return_value=(200, {"data": []})), \
+             mock.patch.object(os.path, "exists", return_value=True):
+            status, out = routes.get_scan_missing(Req())
+        self.assertEqual(status, 200)
+        self.assertEqual(out["missing"], [])
 
 
 class AutotuneRefineCleaningTest(unittest.TestCase):
