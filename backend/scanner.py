@@ -48,20 +48,42 @@ def list_drives():
 
 def find_ggufs(roots, min_mb=50):
     hits = []
+    min_bytes = min_mb * 1024 * 1024
     for root in roots:
         for dirpath, dirnames, files in os.walk(root):
             low = dirpath.lower().replace("\\", "/")
             if "$recycle.bin" in low or "/.git" in low or "/.trash" in low or "/proc" == low[:5]:
                 dirnames[:] = []
                 continue
+            shard_sets = defaultdict(list)
             for fn in files:
-                if fn.lower().endswith(".gguf"):
-                    full = os.path.join(dirpath, fn)
+                if not fn.lower().endswith(".gguf"):
+                    continue
+                full = os.path.join(dirpath, fn)
+                sh = _shard(full)
+                if sh:
+                    key = re.sub(r"-\d{5}-of-\d{5}\.gguf$", "", fn, flags=re.I)
+                    shard_sets[key].append(full)
+                    continue
+                try:
+                    if os.path.getsize(full) >= min_bytes:
+                        hits.append(full)
+                except OSError:
+                    pass
+            for paths in shard_sets.values():
+                sized = []
+                total = 0
+                for full in paths:
                     try:
-                        if os.path.getsize(full) >= min_mb * 1024 * 1024:
-                            hits.append(full)
+                        size = os.path.getsize(full)
                     except OSError:
-                        pass
+                        continue
+                    sized.append((full, size))
+                    total += size
+                if total < min_bytes or not sized:
+                    continue
+                for full, _ in sorted(sized):
+                    hits.append(full)
     return hits
 
 def _slug(s):

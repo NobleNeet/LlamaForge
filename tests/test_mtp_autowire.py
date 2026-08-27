@@ -96,6 +96,33 @@ class BuildEntriesMtpTest(unittest.TestCase):
         self.assertIn("org-b--release--model", ids)
 
 
+class FindGgufsShardTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def test_keeps_small_first_shard_when_set_total_exceeds_threshold(self):
+        d = os.path.join(self.tmp, "Qwen3.8-Flash-Next-GGUF")
+        os.makedirs(d, exist_ok=True)
+        sizes = {
+            "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf": 11 * 1024 * 1024,
+            "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf": 47 * 1024 * 1024,
+            "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf": 31 * 1024 * 1024,
+        }
+        for name, size in sizes.items():
+            with open(os.path.join(d, name), "wb") as f:
+                f.truncate(size)
+        hits = sorted(os.path.basename(p) for p in scanner.find_ggufs([self.tmp], min_mb=50))
+        self.assertEqual(hits, sorted(sizes))
+
+    def test_drops_shard_set_when_total_stays_below_threshold(self):
+        d = os.path.join(self.tmp, "tiny")
+        os.makedirs(d, exist_ok=True)
+        for idx in ("00001", "00002", "00003"):
+            with open(os.path.join(d, f"m-{idx}-of-00003.gguf"), "wb") as f:
+                f.truncate(10 * 1024 * 1024)
+        self.assertEqual(scanner.find_ggufs([self.tmp], min_mb=50), [])
+
+
 class ScanApplyMtpTest(unittest.TestCase):
     """Route-level: additive wiring that never clobbers a hand-set spec-type."""
 
