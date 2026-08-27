@@ -28,6 +28,7 @@ let onlySet = false, kquery = "", mquery = "", favOnly = false;
 let vllmSchemaPending = false;
 let loadBusy = false;
 let knobEpoch = 0;
+let unloadedCollapsed = localStorage.getItem("lf_unloaded_collapsed") === "1";
 const cmpSet = new Set();         // model ids picked for compare
 const diagCache = {};             // failure diagnosis per model id
 const metaCache = {};             // GGUF metadata per model id
@@ -41,6 +42,9 @@ function setOpenId(id) {
   else localStorage.removeItem("lf_openid");
 }
 function saveFavs() { localStorage.setItem("lf_favs", JSON.stringify([...favs])); }
+function saveUnloadedCollapsed() {
+  localStorage.setItem("lf_unloaded_collapsed", unloadedCollapsed ? "1" : "0");
+}
 
 function toggleFav(id) {
   favs.has(id) ? favs.delete(id) : favs.add(id);
@@ -284,11 +288,51 @@ function knobSig(m) {
     m.backend === "vllm" ? (S.VLLM_SCHEMA ? S.VLLM_SCHEMA.count||0 : -1)
                          : (S.SCHEMA ? S.SCHEMA.count||0 : -1), knobEpoch]);
 }
+function ensureModelSections(list, loadedCount, unloadedCount) {
+  let loadedSec = $('[data-section="loaded"]', list);
+  let unloadedSec = $('[data-section="unloaded"]', list);
+  if (!loadedSec || !unloadedSec || list.firstElementChild?.classList?.contains("skel")) {
+    setHTML(list, `<div class="model-section" data-section="loaded">
+        <button class="sectionhead static" type="button" disabled>
+          <span class="sectiontitle">currently loaded models</span>
+          <span class="sectionmeta" data-section-meta="loaded"></span>
+        </button>
+        <div class="sectionbody" data-section-body="loaded"></div>
+      </div>
+      <div class="model-section" data-section="unloaded">
+        <button class="sectionhead" type="button" data-section-toggle="unloaded" aria-expanded="true">
+          <span class="sectiontitle">models available on this server</span>
+          <span class="sectionmeta" data-section-meta="unloaded"></span>
+          <span class="sectionchev" data-section-chev="unloaded"></span>
+        </button>
+        <div class="sectionbody" data-section-body="unloaded"></div>
+      </div>`);
+    loadedSec = $('[data-section="loaded"]', list);
+    unloadedSec = $('[data-section="unloaded"]', list);
+  }
+  const loadedMeta = $('[data-section-meta="loaded"]', list);
+  if (loadedMeta) loadedMeta.textContent = String(loadedCount);
+  const unloadedMeta = $('[data-section-meta="unloaded"]', list);
+  if (unloadedMeta) unloadedMeta.textContent = unloadedCollapsed ? `${unloadedCount} hidden` : String(unloadedCount);
+  const unloadedBody = $('[data-section-body="unloaded"]', list);
+  const unloadedBtn = $('[data-section-toggle="unloaded"]', list);
+  const unloadedChev = $('[data-section-chev="unloaded"]', list);
+  if (unloadedSec) unloadedSec.classList.toggle("collapsed", unloadedCollapsed);
+  if (unloadedBody) unloadedBody.hidden = unloadedCollapsed;
+  if (unloadedBtn) unloadedBtn.setAttribute("aria-expanded", unloadedCollapsed ? "false" : "true");
+  if (unloadedChev) unloadedChev.textContent = unloadedCollapsed ? "▶" : "▼";
+  return {
+    loadedHost: $('[data-section-body="loaded"]', list),
+    unloadedHost: unloadedBody,
+  };
+}
 
 export function renderModels() {
   if (!S.STATE) return;
   const all = modelRows();
   const ms = shownModels();
+  const loadedMs = ms.filter(m => m.status === "loaded" || m.status === "loading");
+  const unloadedMs = ms.filter(m => m.status !== "loaded" && m.status !== "loading");
   const nLoaded = all.filter(m => m.status === "loaded").length;
   const count = $("#count");
   if (count) count.textContent = `${nLoaded} LOADED / ${all.length} TOTAL` +
@@ -300,35 +344,44 @@ export function renderModels() {
   const list = $("#list");
   if (!list) return;
   if (!ms.length) { setHTML(list, `<div class="skel">NO MODELS MATCH</div>`); return; }
-  if (list.firstElementChild && list.firstElementChild.classList.contains("skel")) setHTML(list, "");
-
+  const { loadedHost, unloadedHost } = ensureModelSections(list, loadedMs.length, unloadedMs.length);
   const existing = new Map($$(".row", list).map(r => [r.dataset.id, r]));
-  let prev = null;
-  for (const m of ms) {
-    let row = existing.get(m.id);
-    if (!row) {
-      row = document.createElement("div");
-      row.className = "row";
-      row.dataset.id = m.id;
-      row.innerHTML = `<div class="rhead"></div><div class="edit"></div>`;
-    } else existing.delete(m.id);
 
-    const hs = headSig(m, cols, showBackend);
-    if (row._hs !== hs) {
-      const head = row.firstElementChild;
-      head.style.gridTemplateColumns = cols;
-      setHTML(head, rowHead(m, showBackend));
-      row._hs = hs;
+  const placeRows = (models, host) => {
+    if (!host) return;
+    const empty = $(".sectionempty", host);
+    if (empty) empty.remove();
+    let prev = null;
+    for (const m of models) {
+      let row = existing.get(m.id);
+      if (!row) {
+        row = document.createElement("div");
+        row.className = "row";
+        row.dataset.id = m.id;
+        row.innerHTML = `<div class="rhead"></div><div class="edit"></div>`;
+      } else existing.delete(m.id);
+
+      const hs = headSig(m, cols, showBackend);
+      if (row._hs !== hs) {
+        const head = row.firstElementChild;
+        head.style.gridTemplateColumns = cols;
+        setHTML(head, rowHead(m, showBackend));
+        row._hs = hs;
+      }
+      row.classList.toggle("open", m.id === openId);
+      row.classList.toggle("sel", m.id === selId);
+      syncEditor(row, m);
+
+      const want = prev ? prev.nextElementSibling : host.firstElementChild;
+      if (want !== row) host.insertBefore(row, want);
+      prev = row;
     }
-    row.classList.toggle("open", m.id === openId);
-    row.classList.toggle("sel", m.id === selId);
-    syncEditor(row, m);
-
-    // place the row without moving one already in the right slot
-    const want = prev ? prev.nextElementSibling : list.firstElementChild;
-    if (want !== row) list.insertBefore(row, want);
-    prev = row;
-  }
+    if (!models.length) {
+      setHTML(host, `<div class="sectionempty">none</div>`);
+    }
+  };
+  placeRows(loadedMs, loadedHost);
+  if (!unloadedCollapsed) placeRows(unloadedMs, unloadedHost);
   for (const stale of existing.values()) stale.remove();
 }
 /* Bring one row's editor in line with the model, preserving user input. */
@@ -758,6 +811,14 @@ export function initModels() {
     // quick load/unload in the row header
     const quick = e.target.closest("#view-models [data-quick]");
     if (quick) { e.stopPropagation(); quickAction(quick.dataset.quick, quick.dataset.qid); return; }
+    const secToggle = e.target.closest("#view-models [data-section-toggle]");
+    if (secToggle) {
+      e.stopPropagation();
+      unloadedCollapsed = !unloadedCollapsed;
+      saveUnloadedCollapsed();
+      renderModels();
+      return;
+    }
     // presets
     const pBind = e.target.closest("[data-preset-bind]");
     if (pBind) {
