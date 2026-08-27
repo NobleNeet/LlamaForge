@@ -1112,8 +1112,15 @@ def post_setup_install(req):
 
 
 def post_scan(req):
-    roots = req.body.get("roots") or cfg().get("model_dirs") or None
-    return 200, {"entries": scanner.scan(roots)}
+    roots = req.body.get("roots")
+    if roots is not None:
+        roots = _v_dirs(roots)
+        if roots is None:
+            raise ApiError(400, "roots must be a list of strings")
+    else:
+        roots = _v_dirs(cfg().get("model_dirs") or [])
+    used = roots or scanner.list_drives()
+    return 200, {"entries": scanner.scan(used), "roots": used}
 
 
 def post_scan_apply(req):
@@ -1278,7 +1285,16 @@ def _v_mode(v):  return v if v in ("lite", "advanced") else None
 def _v_theme(v): return v if v in ("", "light", "dark") else None
 def _v_backend(v): return v if v in ("auto", "cuda", "hip", "vulkan", "cpu") else None
 def _v_dirs(v):
-    return v if isinstance(v, list) and all(isinstance(x, str) for x in v) else None
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+        return None
+    out, seen = [], set()
+    for raw in v:
+        p = raw.strip()
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
 
 def _v_bandwidths(v):
     """{vram_bw,ram_bw,disk_bw} -> GB/s. Only those keys, each a positive number.

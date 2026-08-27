@@ -71,6 +71,10 @@ class ConfigAllowlistTest(unittest.TestCase):
         self.assertEqual(self.saved["vllm_port"], 8081)
         self.assertEqual(self.saved["model_dirs"], ["/models", "/mnt/d"])
 
+    def test_model_dirs_are_trimmed_and_deduped(self):
+        routes.post_config(Req(body={"model_dirs": [" /models ", "", "/mnt/d", "/models"]}))
+        self.assertEqual(self.saved["model_dirs"], ["/models", "/mnt/d"])
+
 
 class SaveAndPresetTest(unittest.TestCase):
     """/api/save and /api/presets/apply share the write-then-reload sequence
@@ -174,6 +178,39 @@ class ScanPruneTest(unittest.TestCase):
              mock.patch.object(routes, "router", self._no_router):
             status, out = routes.post_scan_prune(Req(body={"ids": ["ghost"]}))
         self.assertEqual(out["removed"], [])
+
+
+class ScanRootsTest(unittest.TestCase):
+    def test_scan_uses_explicit_roots_from_request(self):
+        with mock.patch.object(routes.scanner, "scan", return_value=[{"id": "m"}]) as scan, \
+             mock.patch.object(routes.scanner, "list_drives", return_value=["/default"]):
+            status, out = routes.post_scan(Req(body={"roots": [" /a ", "/b", "/a"]}))
+        self.assertEqual(status, 200)
+        self.assertEqual(out["roots"], ["/a", "/b"])
+        scan.assert_called_once_with(["/a", "/b"])
+
+    def test_scan_uses_saved_model_dirs_when_request_omits_roots(self):
+        with mock.patch.object(routes, "cfg", return_value={"model_dirs": [" /m1 ", "/m2", "/m1"]}), \
+             mock.patch.object(routes.scanner, "scan", return_value=[] ) as scan, \
+             mock.patch.object(routes.scanner, "list_drives", return_value=["/default"]):
+            status, out = routes.post_scan(Req(body={}))
+        self.assertEqual(status, 200)
+        self.assertEqual(out["roots"], ["/m1", "/m2"])
+        scan.assert_called_once_with(["/m1", "/m2"])
+
+    def test_scan_falls_back_to_default_roots_when_no_dirs_are_saved(self):
+        with mock.patch.object(routes, "cfg", return_value={"model_dirs": []}), \
+             mock.patch.object(routes.scanner, "scan", return_value=[] ) as scan, \
+             mock.patch.object(routes.scanner, "list_drives", return_value=["/home/u", "/mnt"]):
+            status, out = routes.post_scan(Req(body={}))
+        self.assertEqual(status, 200)
+        self.assertEqual(out["roots"], ["/home/u", "/mnt"])
+        scan.assert_called_once_with(["/home/u", "/mnt"])
+
+    def test_scan_rejects_bad_roots_shape(self):
+        with self.assertRaises(ApiError) as cm:
+            routes.post_scan(Req(body={"roots": "not-a-list"}))
+        self.assertEqual(cm.exception.status, 400)
 
 
 class AutotuneRefineCleaningTest(unittest.TestCase):

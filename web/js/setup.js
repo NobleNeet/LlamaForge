@@ -6,6 +6,57 @@ import { emit } from "./bus.js";
 
 let vllmSetupPoll = null;
 
+function normalizeScanDirs(values) {
+  const seen = new Set();
+  const out = [];
+  (values || []).forEach(v => {
+    const s = String(v == null ? "" : v).trim();
+    if (!s || seen.has(s)) return;
+    seen.add(s);
+    out.push(s);
+  });
+  return out;
+}
+
+function scanDirRows(values) {
+  const rows = normalizeScanDirs(values);
+  if (!rows.length) {
+    return `<div class="row scan-dir-row">
+      <input class="scan-dir-input" placeholder="/home/me/.lmstudio/models or /mnt/models" style="flex:1">
+      <button type="button" class="ghost" data-scan-dir-add>Add</button>
+    </div>`;
+  }
+  return rows.map((path, i) => `<div class="row scan-dir-row">
+      <input class="scan-dir-input" value="${esc(path)}" placeholder="/home/me/.lmstudio/models or /mnt/models" style="flex:1">
+      <button type="button" class="ghost" data-scan-dir-remove="${i}">Remove</button>
+    </div>`).join("")
+    + `<div class="row scan-dir-row">
+      <input class="scan-dir-input" placeholder="/another/path" style="flex:1">
+      <button type="button" class="ghost" data-scan-dir-add>Add</button>
+    </div>`;
+}
+
+function currentScanDirs() {
+  return normalizeScanDirs($$(".scan-dir-input").map(el => el.value));
+}
+
+function renderScanDirEditor(values) {
+  const host = $("#scan-dir-list");
+  if (!host) return;
+  setHTML(host, scanDirRows(values));
+  $$("[data-scan-dir-remove]", host).forEach(btn => btn.onclick = () => {
+    const next = currentScanDirs();
+    next.splice(Number(btn.dataset.scanDirRemove), 1);
+    renderScanDirEditor(next);
+  });
+  $$("[data-scan-dir-add]", host).forEach(btn => btn.onclick = () => {
+    const next = currentScanDirs();
+    renderScanDirEditor([...next, ""]);
+    const inputs = $$(".scan-dir-input", host);
+    if (inputs.length) inputs[inputs.length - 1].focus();
+  });
+}
+
 function pollVllmSetup() {
   clearInterval(vllmSetupPoll);
   const log = $("#vllm-setup-log"); if (log) log.style.display = "";
@@ -79,7 +130,14 @@ export async function loadSetup() {
       </div>
     </div>
     <div class="card"><h3>Scan Drives for Models</h3>
-      <div class="actions"><button id="btn-scan">Scan for GGUF models</button><button class="ghost" id="btn-missing">Check for deleted models</button><span class="msg" id="scan-msg"></span></div>
+      <div class="note">Limit GGUF discovery to specific directories. Leave this list empty to fall back to the default system roots.</div>
+      <div id="scan-dir-list" style="margin-top:10px"></div>
+      <div class="actions">
+        <button id="btn-scan-save" class="ghost">Save scan directories</button>
+        <button id="btn-scan">Scan for GGUF models</button>
+        <button class="ghost" id="btn-missing">Check for deleted models</button>
+        <span class="msg" id="scan-msg"></span>
+      </div>
       <div id="scan-out"></div>
       <div id="missing-out"></div>
     </div>
@@ -130,6 +188,15 @@ export async function loadSetup() {
     const r = await api("/api/setup/install", {tool: b.dataset.install});
     toast(r.ok?"Installed":"Install failed", r.ok?"ok":"err"); loadSetup();
   });
+  renderScanDirEditor((cfgOf().model_dirs || []).slice());
+  const scanSave = $("#btn-scan-save");
+  if (scanSave) scanSave.onclick = async () => {
+    const dirs = currentScanDirs();
+    await api("/api/config", {model_dirs: dirs});
+    const msg = $("#scan-msg");
+    msg.className = "msg ok";
+    msg.textContent = dirs.length ? `saved ${dirs.length} scan director${dirs.length === 1 ? "y" : "ies"}` : "saved default scan roots";
+  };
   $("#btn-scan").onclick = scanDrives;
   $("#btn-missing").onclick = checkMissing;
   const autoSel = $("#auto-load");
@@ -243,13 +310,18 @@ async function applyAgentConfig() {
 
 /* ---------- drive scanning ---------- */
 async function scanDrives() {
+  const roots = currentScanDirs();
   const msg = $("#scan-msg");
-  msg.className = "msg work"; msg.textContent = "scanning all drives (may take a moment)...";
-  const r = await api("/api/scan", {});
+  msg.className = "msg work";
+  msg.textContent = roots.length ? "scanning selected directories..." : "scanning default roots...";
+  const r = await api("/api/scan", {roots});
   const known = new Set(models().map(m => m.id));
   const fresh = r.entries.filter(e => !known.has(e.id));
   msg.className = "msg ok"; msg.textContent = `${r.entries.length} found, ${fresh.length} new`;
-  setHTML($("#scan-out"), `<div class="note">${esc(fresh.length)} new models not yet in your config:</div>
+  const scanned = (r.roots || roots).length
+    ? `<div class="note">Scanned: ${esc((r.roots || roots).join(", "))}</div>`
+    : `<div class="note">Scanned the default system roots.</div>`;
+  setHTML($("#scan-out"), `${scanned}<div class="note" style="margin-top:8px">${esc(fresh.length)} new models not yet in your config:</div>
     <div class="list" style="margin-top:10px">${fresh.map(e=>`<div class="row"><div class="rhead" style="cursor:default;grid-template-columns:1fr auto">
       <span class="mid">${esc(e.id)}${e.mmproj?'<span class="tag vis">vision</span>':''}${e.embeddings?'<span class="tag">embed</span>':''}</span>
       <span class="ctxpill">${esc(e.gib)} GiB</span></div></div>`).join("")||'<div class="note">nothing new</div>'}</div>

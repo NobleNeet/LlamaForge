@@ -24,7 +24,7 @@ Each tool in `prereqs.TOOLS` carries its own `winget`/`choco`/`brew`/`pkg` ident
 
 After a successful install, the running process's `PATH` is refreshed from the registry (`osplat.refresh_path()`, Windows-only) and the tool is re-probed, so a freshly installed `ninja` or `cmake` is detected immediately. Only if it still isn't visible does the result ask you to restart LlamaForge — the old behavior (always MISSING until a restart) is gone.
 
-**Drive scan for GGUFs.** `backend/scanner.py`'s `scan()` (via `POST /api/scan`) walks a set of root directories looking for `.gguf` files at least 50 MB, skipping recycle bins, `.git`, and `.trash` folders. The roots default to `list_drives()`: on Windows, every fixed drive letter (`GetLogicalDrives` + `GetDriveTypeW == DRIVE_FIXED`, so removable/network drives are excluded); on macOS, `$HOME` plus `/Volumes` if it exists; on Linux, `$HOME` plus any of `/mnt`, `/media`, `/srv`, `/data` that exist. Multi-shard GGUF sets collapse to their first shard, `mmproj*` files attach to their sibling model instead of appearing standalone, `mtp-*` speculative draft sidecars attach as a `spec-draft-model` (see [models.ini Format](models-ini.md)), and files with `embed` in the name are flagged as embedding endpoints. Confirmed results are written into `models.ini` via `POST /api/scan/apply`.
+**Drive scan for GGUFs.** `backend/scanner.py`'s `scan()` (via `POST /api/scan`) walks a set of root directories looking for `.gguf` files at least 50 MB, skipping recycle bins, `.git`, and `.trash` folders. In the Setup tab you can provide any number of explicit scan directories; if that list is empty, the roots fall back to `list_drives()`: on Windows, every fixed drive letter (`GetLogicalDrives` + `GetDriveTypeW == DRIVE_FIXED`, so removable/network drives are excluded); on macOS, `$HOME` plus `/Volumes` if it exists; on Linux, `$HOME` plus any of `/mnt`, `/media`, `/srv`, `/data` that exist. Multi-shard GGUF sets collapse to their first shard, `mmproj*` files attach to their sibling model instead of appearing standalone, `mtp-*` speculative draft sidecars attach as a `spec-draft-model` (see [models.ini Format](models-ini.md)), and files with `embed` in the name are flagged as embedding endpoints. Confirmed results are written into `models.ini` via `POST /api/scan/apply`.
 
 **Registry prune.** `POST /api/scan/prune` ("Check for deleted models") takes a list of model IDs, re-checks each one's `model` path in `models.ini` against disk, and — only for entries whose file no longer exists — unloads it from the router if currently loaded, then removes its section from `models.ini` with `config.remove_section()`. An entry whose file has reappeared since the check is left alone. This edits `models.ini` only; it never touches files on disk.
 
@@ -35,9 +35,10 @@ The tab also surfaces `hardware.recommend()`'s detected CPU/GPU/backends (shared
 1. Open the **Setup** tab. **Prerequisites** lists Git, CMake, Ninja, Python, your C++ compiler, and acceleration-specific toolchains such as CUDA, ROCm/HIP, and Vulkan when applicable.
 2. Click **Install** next to a missing tool to install it with your OS's package manager (Windows: winget, falling back to choco; macOS: Homebrew). On Linux, copy the shown command into a terminal yourself — the dashboard never runs `sudo`.
 3. Review **Detected Hardware** — your CPU and any GPUs found, shared with the Build tab's flag recommendations.
-4. Click **Scan for GGUF models** to walk your fixed drives (or `$HOME` plus mounted volumes) for `.gguf` files; review the results and apply the ones you want registered.
-5. Click **Check for deleted models** to find registry entries whose backing file no longer exists on disk, then prune the ones you confirm.
-6. Optionally pick a model under **Startup** to auto-load when LlamaForge launches.
+4. Under **Scan Drives for Models**, add zero or more explicit directories to search. Leave the list empty to use the platform-default roots.
+5. Click **Scan for GGUF models** to walk those directories for `.gguf` files; review the results and apply the ones you want registered.
+6. Click **Check for deleted models** to find registry entries whose backing file no longer exists on disk, then prune the ones you confirm.
+7. Optionally pick a model under **Startup** to auto-load when LlamaForge launches.
 
 ## Screenshot
 
@@ -51,7 +52,7 @@ The tab also surfaces `hardware.recommend()`'s detected CPU/GPU/backends (shared
 | Windows install | `prereqs.install()` | `winget install --id <id> -e ...`, falling back to `choco install <id> -y` if winget is absent or fails. |
 | macOS install | `prereqs.install()` | `brew install <pkg>` — requires Homebrew, no sudo. |
 | Linux install | `prereqs.install()` | Never runs sudo; returns the exact `apt-get`/`dnf`/`pacman` command to run yourself. |
-| Drive scan roots | `scanner.list_drives()` | Windows: all fixed drive letters. macOS: `$HOME` + `/Volumes`. Linux: `$HOME` + any of `/mnt`, `/media`, `/srv`, `/data` that exist. |
+| Drive scan roots | `config.model_dirs` or `scanner.list_drives()` | User-specified directories from Setup take precedence; empty falls back to Windows fixed drives, macOS `$HOME` + `/Volumes`, or Linux `$HOME` + existing `/mnt` `/media` `/srv` `/data`. |
 | GGUF discovery | `scanner.find_ggufs()` | `.gguf` files ≥ 50 MB; skips recycle bin/`.git`/`.trash`; collapses multi-shard sets; attaches `mmproj` and `mtp-*` siblings; flags `embed` files. |
 | PATH refresh after install | `osplat.refresh_path()` | Windows-only; re-reads PATH from the registry so a just-installed tool is detected without a restart. |
 | Registry prune | `POST /api/scan/prune` | Removes a `models.ini` section only if its `model` file no longer exists on disk; unloads it from the router first if loaded. |

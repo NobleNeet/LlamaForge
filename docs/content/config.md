@@ -16,7 +16,7 @@ order: 1
 | `build_dir` | string | `""` | CMake build directory for `llama.cpp` (usually `<llama_src>/build`). |
 | `server_bin` | string | `""` | Path to the built `llama-server` (or `llama-server.exe`) binary. |
 | `models_ini` | string | `<repo root>/models.ini` | Path to the `models.ini` preset file passed to `llama-server --models-preset`. |
-| `model_dirs` | list | `[]` | Directories the Discover/scan feature searches for GGUF files. |
+| `model_dirs` | list | `[]` | Directories the Setup scan targets for GGUF discovery, and the base location for Discover downloads. Empty means use the platform-default scan roots. |
 | `router_port` | int | `8080` | Port `llama-server` (the router) listens on. |
 | `panel_port` | int | `8090` | Port the LlamaForge dashboard (`backend/server.py`) listens on. |
 | `router_host` | string | `"127.0.0.1"` | Router bind address. `127.0.0.1` = local only; `0.0.0.0` = reachable on the LAN. |
