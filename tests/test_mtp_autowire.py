@@ -81,6 +81,20 @@ class BuildEntriesMtpTest(unittest.TestCase):
         (entry,) = self._entries(paths, nextn=True).values()
         self.assertNotIn("draft_model", entry)
 
+    def test_duplicate_basenames_disambiguate_by_multiple_parent_dirs(self):
+        paths = [
+            "/models/org-a/release/model.gguf",
+            "/alt/org-a/release/model.gguf",
+            "/elsewhere/org-b/release/model.gguf",
+        ]
+        entries = scanner.build_entries(paths)
+        ids = sorted(e["id"] for e in entries)
+        self.assertEqual(len(ids), 3)
+        self.assertEqual(len(set(ids)), 3)
+        self.assertIn("alt--org-a--release--model", ids)
+        self.assertIn("models--org-a--release--model", ids)
+        self.assertIn("org-b--release--model", ids)
+
 
 class ScanApplyMtpTest(unittest.TestCase):
     """Route-level: additive wiring that never clobbers a hand-set spec-type."""

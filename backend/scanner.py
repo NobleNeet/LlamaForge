@@ -7,7 +7,7 @@ Rules:
 - attach an mmproj sibling only to vision-capable models
 - treat *embed* models as embedding endpoints
 - multi-shard sets (foo-00001-of-00005.gguf) collapse to the first shard
-- disambiguate duplicate names by parent-folder prefix
+- disambiguate duplicate names by walking up parent folders until unique
 """
 import os, re
 from collections import defaultdict
@@ -100,15 +100,56 @@ def build_entries(paths):
             seen_shard_sets.add(key)
         mains.append(p)
 
-    stem_counts = defaultdict(int)
-    for p in mains:
-        stem_counts[_slug(_base(p))] += 1
+    def mk_id_map(items):
+        groups = defaultdict(list)
+        for p in items:
+            groups[_slug(_base(p))].append(p)
+        out = {}
+        for base_id, paths in groups.items():
+            if len(paths) == 1:
+                out[paths[0]] = base_id
+                continue
+            parents_by_path = {}
+            for p in sorted(paths):
+                parents = []
+                cur = os.path.dirname(p)
+                while cur and cur not in (os.path.sep, ".", ""):
+                    part = _slug(_base(cur))
+                    if part:
+                        parents.append(part)
+                    nxt = os.path.dirname(cur)
+                    if nxt == cur:
+                        break
+                    cur = nxt
+                parents_by_path[p] = parents
+            depths = {p: 1 for p in paths}
+            while True:
+                cand_to_paths = defaultdict(list)
+                for p in paths:
+                    parents = parents_by_path[p]
+                    depth = min(depths[p], len(parents))
+                    if depth <= 0:
+                        cand = base_id
+                    else:
+                        cand = "--".join(list(reversed(parents[:depth])) + [base_id])
+                    cand_to_paths[cand].append(p)
+                clashes = [ps for ps in cand_to_paths.values() if len(ps) > 1]
+                if not clashes:
+                    for cand, ps in cand_to_paths.items():
+                        out[ps[0]] = cand
+                    break
+                for ps in clashes:
+                    for p in ps:
+                        if depths[p] < len(parents_by_path[p]):
+                            depths[p] += 1
+                        else:
+                            # Root-level duplicates with identical ancestry are
+                            # practically impossible here, but keep forward
+                            # progress deterministic if they ever happen.
+                            depths[p] = len(parents_by_path[p])
+        return out
 
-    def mk_id(p):
-        b = _slug(_base(p))
-        if stem_counts[b] > 1:
-            return _slug(_base(os.path.dirname(p))) + "--" + b
-        return b
+    id_map = mk_id_map(mains)
 
     entries = []
     for p in sorted(mains):
@@ -116,7 +157,7 @@ def build_entries(paths):
             gib = round(os.path.getsize(p) / 1024**3, 2)
         except OSError:
             gib = 0
-        e = {"id": mk_id(p), "model": p.replace("\\", "/"), "gib": gib}
+        e = {"id": id_map[p], "model": p.replace("\\", "/"), "gib": gib}
         # Only attach mmproj if the model is vision-capable.
         mm = mmproj_by_dir.get(os.path.dirname(p))
         if mm:
