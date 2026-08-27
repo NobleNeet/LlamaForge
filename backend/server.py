@@ -41,6 +41,98 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 CREATE_NO_WINDOW = 0x08000000
 _HTTPD = None
 _PANEL_RESTARTING = False
+_API_IDLE_LOCK = threading.Lock()
+_API_IDLE_LAST = {}
+_API_IDLE_INFLIGHT = {}
+
+
+def _api_idle_timeout_secs(c=None):
+    try:
+        mins = int((c or routes.cfg()).get("api_idle_unload_minutes", 0) or 0)
+    except Exception:
+        mins = 0
+    return max(0, mins) * 60
+
+
+def _reset_api_idle_state():
+    with _API_IDLE_LOCK:
+        _API_IDLE_LAST.clear()
+        _API_IDLE_INFLIGHT.clear()
+
+
+def _track_api_model_begin(model):
+    if not model or _api_idle_timeout_secs() <= 0:
+        return
+    now = time.time()
+    with _API_IDLE_LOCK:
+        _API_IDLE_LAST[model] = now
+        _API_IDLE_INFLIGHT[model] = _API_IDLE_INFLIGHT.get(model, 0) + 1
+
+
+def _track_api_model_end(model):
+    if not model:
+        return
+    now = time.time()
+    with _API_IDLE_LOCK:
+        if model in _API_IDLE_LAST or model in _API_IDLE_INFLIGHT:
+            _API_IDLE_LAST[model] = now
+        inflight = max(0, _API_IDLE_INFLIGHT.get(model, 0) - 1)
+        if inflight:
+            _API_IDLE_INFLIGHT[model] = inflight
+        else:
+            _API_IDLE_INFLIGHT.pop(model, None)
+
+
+def _forget_api_model(model, source=""):
+    if not model:
+        return
+    with _API_IDLE_LOCK:
+        had = (model in _API_IDLE_LAST) or (model in _API_IDLE_INFLIGHT)
+        _API_IDLE_LAST.pop(model, None)
+        _API_IDLE_INFLIGHT.pop(model, None)
+    if had:
+        routes._dbg("api.idle.clear", model=model, source=source)
+
+
+def _reap_api_idle_models(now=None):
+    timeout = _api_idle_timeout_secs()
+    if timeout <= 0:
+        return []
+    now = time.time() if now is None else now
+    st, data = routes.router("/models", timeout=3)
+    if st != 200:
+        return []
+    loaded = {m.get("id") for m in data.get("data", [])
+              if m.get("status", {}).get("value") == "loaded"}
+    with _API_IDLE_LOCK:
+        tracked = dict(_API_IDLE_LAST)
+        inflight = dict(_API_IDLE_INFLIGHT)
+    unloaded = []
+    for model, last in tracked.items():
+        if model not in loaded:
+            _forget_api_model(model, source="not-loaded")
+            continue
+        if inflight.get(model, 0) > 0:
+            continue
+        idle_for = now - last
+        if idle_for < timeout:
+            continue
+        routes._dbg("api.idle.unload", model=model, idle_seconds=round(idle_for, 1),
+                    timeout_seconds=timeout)
+        code, _res = routes.router("/models/unload", "POST", {"model": model})
+        if code == 200:
+            unloaded.append(model)
+            _forget_api_model(model, source="idle-timeout")
+    return unloaded
+
+
+def _api_idle_loop(poll_secs=15):
+    while True:
+        time.sleep(poll_secs)
+        try:
+            _reap_api_idle_models()
+        except Exception as e:
+            routes._dbg("api.idle.error", error=str(e))
 
 
 def _allowed_hosts(bind_host, lan_ip=""):
@@ -241,8 +333,13 @@ class H(BaseHTTPRequestHandler):
                 return self._send(st, err)
             if body.get("stream"):
                 return self._anthropic_stream(body)
-            status, out = routes._anthropic_messages(body, headers)
-            return self._send(status, out)
+            model = routes._resolve_anthropic_model(body.get("model", ""))
+            _track_api_model_begin(model)
+            try:
+                status, out = routes._anthropic_messages(body, headers)
+                return self._send(status, out)
+            finally:
+                _track_api_model_end(model)
         if p == "/v1/chat/completions":
             if not routes._shim_auth_ok(headers):
                 return self._send(401, {"error": {"message": "invalid key",
@@ -252,8 +349,13 @@ class H(BaseHTTPRequestHandler):
             if fwd.get("stream"):
                 fwd.setdefault("stream_options", {"include_usage": True})
                 return self._openai_proxy_stream(fwd)
-            status, data = routes._router_openai(fwd, stream=False)
-            return self._send(status, data)
+            model = fwd.get("model", "")
+            _track_api_model_begin(model)
+            try:
+                status, data = routes._router_openai(fwd, stream=False)
+                return self._send(status, data)
+            finally:
+                _track_api_model_end(model)
 
         handler = routes.POST_ROUTES.get(p)
         if not handler:
@@ -319,29 +421,38 @@ class H(BaseHTTPRequestHandler):
         body = routes._inject_anthropic_system(body, wiki.compose(wiki.active_profile(model)))
         oai = anthropic_shim.to_openai_request({**body, "model": model, "stream": True})
         oai["stream_options"] = {"include_usage": True}
-        status, resp = routes._router_openai(oai, stream=True)
-        self._begin_stream()
-        routes._write_anthropic_stream(self._writer(), model, status, resp)
-        if hasattr(resp, "close"):
-            try:
-                resp.close()
-            except Exception:
-                pass
+        _track_api_model_begin(model)
+        try:
+            status, resp = routes._router_openai(oai, stream=True)
+            self._begin_stream()
+            routes._write_anthropic_stream(self._writer(), model, status, resp)
+            if hasattr(resp, "close"):
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+        finally:
+            _track_api_model_end(model)
 
     def _openai_proxy_stream(self, body):
-        status, resp = routes._router_openai(body, stream=True)
-        self._begin_stream()
-        write = self._writer()
-        if status >= 400:
-            write(("data: " + json.dumps(resp) + "\n\n").encode())
-            return
-        for line in resp:
-            write(line if line.endswith(b"\n") else line + b"\n")
-        if hasattr(resp, "close"):
-            try:
-                resp.close()
-            except Exception:
-                pass
+        model = body.get("model", "")
+        _track_api_model_begin(model)
+        try:
+            status, resp = routes._router_openai(body, stream=True)
+            self._begin_stream()
+            write = self._writer()
+            if status >= 400:
+                write(("data: " + json.dumps(resp) + "\n\n").encode())
+                return
+            for line in resp:
+                write(line if line.endswith(b"\n") else line + b"\n")
+            if hasattr(resp, "close"):
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+        finally:
+            _track_api_model_end(model)
 
 
 def _tray_counts():
@@ -372,6 +483,8 @@ def main():
     import stats
     config.migrate()
     routes.PANEL_RESTART = request_panel_restart
+    routes.MODEL_LOAD_HOOK = lambda mid, source="", backend="": _forget_api_model(mid, source or "load")
+    routes.MODEL_UNLOAD_HOOK = lambda mid, source="", backend="": _forget_api_model(mid, source or "unload")
     c = routes.cfg()
     port = c["panel_port"]
     bind_host = c.get("panel_host", "127.0.0.1")
@@ -408,6 +521,8 @@ def main():
         import threading
         threading.Thread(target=_auto_load, args=(c["auto_load_model"],),
                          daemon=True, name="auto-load").start()
+    threading.Thread(target=_api_idle_loop,
+                     daemon=True, name="api-idle-reaper").start()
     _HTTPD = ThreadingHTTPServer((bind_host, port), H)
     _HTTPD.serve_forever()
 

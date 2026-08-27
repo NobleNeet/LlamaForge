@@ -147,6 +147,15 @@ export async function loadSetup() {
           <option value="">none</option>
           ${models().map(m=>`<option value="${esc(m.id)}" ${cfgOf().auto_load_model===m.id?"selected":""}>${esc(m.id)}</option>`).join("")}
         </select></span></div>
+      <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:flex-end">
+        <div class="fld" style="max-width:220px">
+          <label>API idle unload minutes</label>
+          <input id="api-idle-mins" type="number" min="0" step="1" value="${esc(String(cfgOf().api_idle_unload_minutes ?? 0))}">
+        </div>
+        <button id="api-idle-save" class="ghost">Save</button>
+        <span class="msg" id="api-idle-msg"></span>
+      </div>
+      <div class="note">`0` disables this timer. When set above `0`, a llama.cpp model that served requests through `/v1/chat/completions` or `/v1/messages` is unloaded after that many idle minutes. Active or streaming requests are never interrupted.</div>
       <div class="note">The selected model loads automatically once the router is ready after launch &mdash; handy for always-on setups. An optional tray icon (loaded-model count, quick open) is available if you <b>pip install pystray pillow</b>; without them LlamaForge stays pure-stdlib.</div>
     </div>
     <div class="card"><h3>Network Access</h3>
@@ -212,6 +221,20 @@ export async function loadSetup() {
   if (autoSel) autoSel.onchange = async () => {
     await api("/api/config", {auto_load_model: autoSel.value});
     toast(autoSel.value?`Auto-load: ${autoSel.value}`:"Auto-load disabled", "ok");
+  };
+  const idleSave = $("#api-idle-save");
+  if (idleSave) idleSave.onclick = async () => {
+    const input = $("#api-idle-mins");
+    const msg = $("#api-idle-msg");
+    const mins = Number(input.value);
+    if (!Number.isInteger(mins) || mins < 0) {
+      msg.className = "msg err";
+      msg.textContent = "minutes must be 0 or more";
+      return;
+    }
+    await api("/api/config", {api_idle_unload_minutes: mins});
+    msg.className = "msg ok";
+    msg.textContent = mins ? `saved (${mins} min)` : "disabled";
   };
   const bwSave = $("#bw-save");
   if (bwSave) bwSave.onclick = async () => {

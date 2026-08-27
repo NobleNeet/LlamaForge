@@ -52,6 +52,8 @@ VLLM_SETUP_JOB = vllm_job.WslJob(LOGDIR, "vllm-setup.log")
 # cycles and lets a test hand in a stub with the same handful of functions.
 REGISTRY = None
 PANEL_RESTART = None
+MODEL_LOAD_HOOK = None
+MODEL_UNLOAD_HOOK = None
 
 
 def _dbg(event, **fields):
@@ -671,6 +673,11 @@ def _apply_knobs_and_reload(mid, clean):
                   for m in data.get("data", [])) if st == 200 else False
     if running:
         router("/models/unload", "POST", {"model": mid})
+        if callable(MODEL_UNLOAD_HOOK):
+            try:
+                MODEL_UNLOAD_HOOK(mid, source="apply_knobs_and_reload", backend="llamacpp")
+            except Exception:
+                pass
     router("/models?reload=1")
     return running
 
@@ -1028,12 +1035,22 @@ def _backend_for(req):
 def post_model_load(req):
     mid, backend = _backend_for(req)
     ok, err = backend.load(mid)
+    if ok and callable(MODEL_LOAD_HOOK):
+        try:
+            MODEL_LOAD_HOOK(mid, source=req.path or "/api/models/load", backend=backend.name)
+        except Exception:
+            pass
     return (200 if ok else 400), {"ok": ok, "error": err, "backend": backend.name}
 
 
 def post_model_unload(req):
     mid, backend = _backend_for(req)
     ok, err = backend.unload(mid)
+    if ok and callable(MODEL_UNLOAD_HOOK):
+        try:
+            MODEL_UNLOAD_HOOK(mid, source=req.path or "/api/models/unload", backend=backend.name)
+        except Exception:
+            pass
     return (200 if ok else 400), {"ok": ok, "error": err, "backend": backend.name}
 
 
@@ -1069,11 +1086,22 @@ def post_load(req):
     sect = config.read_sections().get(mid, {})
     _dbg("model.load", model=mid, settings=_knob_snapshot(sect))
     code, res = router("/models/load", "POST", {"model": mid})
+    if code == 200 and callable(MODEL_LOAD_HOOK):
+        try:
+            MODEL_LOAD_HOOK(mid, source=req.path or "/api/load", backend="llamacpp")
+        except Exception:
+            pass
     return (200 if code == 200 else 400), res
 
 
 def post_unload(req):
-    code, res = router("/models/unload", "POST", {"model": req.body.get("model")})
+    mid = req.body.get("model")
+    code, res = router("/models/unload", "POST", {"model": mid})
+    if code == 200 and callable(MODEL_UNLOAD_HOOK):
+        try:
+            MODEL_UNLOAD_HOOK(mid, source=req.path or "/api/unload", backend="llamacpp")
+        except Exception:
+            pass
     return (200 if code == 200 else 400), res
 
 
@@ -1084,6 +1112,11 @@ def post_unload_all(req):
               and m.get("status", {}).get("value") in ("loaded", "loading")]
     for mid in loaded:
         router("/models/unload", "POST", {"model": mid})
+        if callable(MODEL_UNLOAD_HOOK):
+            try:
+                MODEL_UNLOAD_HOOK(mid, source=req.path or "/api/unload_all", backend="llamacpp")
+            except Exception:
+                pass
     return 200, {"ok": True, "unloaded": loaded}
 
 
@@ -1340,6 +1373,7 @@ def post_stats_reset(req):
 def _v_bool(v):  return bool(v) if isinstance(v, bool) else None
 def _v_str(v):   return v if isinstance(v, str) else None
 def _v_port(v):  return v if isinstance(v, int) and 1 <= v <= 65535 else None
+def _v_nonneg_int(v): return v if isinstance(v, int) and v >= 0 else None
 def _v_mode(v):  return v if v in ("lite", "advanced") else None
 def _v_theme(v): return v if v in ("", "light", "dark") else None
 def _v_backend(v): return v if v in ("auto", "cuda", "hip", "vulkan", "cpu") else None
@@ -1376,6 +1410,7 @@ CONFIG_WRITABLE = {
     "cvd":                     _v_bool,
     "onboarded":               _v_bool,
     "auto_load_model":         _v_str,
+    "api_idle_unload_minutes": _v_nonneg_int,
     "wsl_distro":              _v_str,
     "vllm_port":               _v_port,
     "model_dirs":              _v_dirs,

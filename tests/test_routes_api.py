@@ -53,6 +53,7 @@ class ConfigAllowlistTest(unittest.TestCase):
         for body in ({"ui_mode": "root"}, {"theme": "neon"}, {"cvd": "yes"},
                      {"vllm_port": 99999}, {"vllm_port": "8081"},
                      {"model_dirs": "not-a-list"}, {"onboarded": 1},
+                     {"api_idle_unload_minutes": -1},
                      {"llama_backend": "metal"}):
             with self.assertRaises(ApiError, msg=str(body)):
                 routes.post_config(Req(body=body))
@@ -67,9 +68,11 @@ class ConfigAllowlistTest(unittest.TestCase):
 
     def test_valid_ports_and_dirs_pass(self):
         routes.post_config(Req(body={"vllm_port": 8081,
-                                     "model_dirs": ["/models", "/mnt/d"]}))
+                                     "model_dirs": ["/models", "/mnt/d"],
+                                     "api_idle_unload_minutes": 7}))
         self.assertEqual(self.saved["vllm_port"], 8081)
         self.assertEqual(self.saved["model_dirs"], ["/models", "/mnt/d"])
+        self.assertEqual(self.saved["api_idle_unload_minutes"], 7)
 
     def test_model_dirs_are_trimmed_and_deduped(self):
         routes.post_config(Req(body={"model_dirs": [" /models ", "", "/mnt/d", "/models"]}))
@@ -147,6 +150,28 @@ class SaveAndPresetTest(unittest.TestCase):
         self.assertTrue(out["was_running"])
         written = [c for c in self.calls if c[0] == "set"][0][1][1]
         self.assertEqual(written, {"temp": "0.2", "ctx-size": None, "n-gpu-layers": "99"})
+
+
+class ModelLifecycleHookTest(unittest.TestCase):
+    def test_load_and_unload_routes_call_hooks_on_success(self):
+        seen = []
+
+        def fake_router(path, method="GET", body=None, timeout=30):
+            if path in ("/models/load", "/models/unload"):
+                return 200, {"ok": True}
+            return 200, {}
+
+        with mock.patch.object(routes, "router", side_effect=fake_router), \
+             mock.patch.object(routes, "MODEL_LOAD_HOOK",
+                               side_effect=lambda mid, source="", backend="": seen.append(("load", mid, source, backend))), \
+             mock.patch.object(routes, "MODEL_UNLOAD_HOOK",
+                               side_effect=lambda mid, source="", backend="": seen.append(("unload", mid, source, backend))):
+            status, _ = routes.post_load(Req(body={"model": "m"}, path="/api/load"))
+            self.assertEqual(status, 200)
+            status, _ = routes.post_unload(Req(body={"model": "m"}, path="/api/unload"))
+            self.assertEqual(status, 200)
+        self.assertEqual(seen, [("load", "m", "/api/load", "llamacpp"),
+                                ("unload", "m", "/api/unload", "llamacpp")])
 
 
 class ScanPruneTest(unittest.TestCase):

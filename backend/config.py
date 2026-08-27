@@ -50,6 +50,7 @@ DEFAULTS = {
     "active_engine": "llamacpp",              # which binary the router uses: llamacpp | ikllama
     "llama_backend": "auto",                  # build backend selection: auto|cuda|hip|vulkan|cpu
     "auto_load_model": "",                    # model id to load automatically on launch ("" = none)
+    "api_idle_unload_minutes": 0,            # 0 = disabled; unload API-used llama.cpp models after N idle minutes
     "presets":     {},                       # legacy global knob sets from older installs
     "model_presets": {},                     # {model_id: {preset_name: {knob: value}}}
     "preset_bindings": {},                    # {model_id: preset_name} auto-applied on bind/edit
