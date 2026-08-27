@@ -899,12 +899,16 @@ def get_scan_missing(req):
 
 def get_network(req):
     c = cfg()
+    panel_host = c.get("panel_host", "127.0.0.1")
     return 200, {
         "host": c.get("router_host", "127.0.0.1"),
         "port": c["router_port"],
+        "panel_host": panel_host,
+        "panel_port": c["panel_port"],
         "has_api_key": bool(c.get("router_api_key")),
         "lan_ip": router_ctl.lan_ip(),
         "router_running": router_ctl.is_running(c["router_port"]),
+        "panel_running": router_ctl.is_running(c["panel_port"]),
     }
 
 
@@ -1428,18 +1432,25 @@ def _record_server_bin(key, path):
 def post_network(req):
     c = cfg()
     host = req.body.get("host", "127.0.0.1")
+    panel_host = req.body.get("panel_host", c.get("panel_host", "127.0.0.1"))
+    if panel_host not in ("127.0.0.1", "0.0.0.0"):
+        raise ApiError(400, "panel_host must be 127.0.0.1 or 0.0.0.0")
     port = req.body.get("port", c.get("router_port", 8080))
     if not isinstance(port, int) or not (1 <= port <= 65535):
         raise ApiError(400, "port must be an integer between 1 and 65535")
     api_key = req.body.get("api_key")
     if api_key is None:
         api_key = c.get("router_api_key", "")   # field left blank -> keep existing key
-    c = config.update({"router_host": host, "router_api_key": api_key, "router_port": port})
+    panel_restart_required = panel_host != c.get("panel_host", "127.0.0.1")
+    c = config.update({"router_host": host, "router_api_key": api_key,
+                       "router_port": port, "panel_host": panel_host})
     sbin = _active_server_bin(c)
     ini = config.ini_path()
     ok, err = router_ctl.restart(sbin, ini, port,
                                  host, api_key, LOGDIR)
-    return (200 if ok else 500), {"ok": ok, "error": err, "host": host, "port": port}
+    return (200 if ok else 500), {"ok": ok, "error": err, "host": host, "port": port,
+                                  "panel_host": panel_host,
+                                  "panel_restart_required": panel_restart_required}
 
 
 def post_engine_switch(req):

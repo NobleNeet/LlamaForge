@@ -39,6 +39,19 @@ class GuardUnitTest(unittest.TestCase):
                   "null", "file://"):
             self.assertFalse(server._origin_ok(o, 8090), o)
 
+    def test_allowed_hosts_include_lan_ip_when_panel_is_lan_bound(self):
+        allowed = server._allowed_hosts("0.0.0.0", "192.168.1.50")
+        self.assertIn("127.0.0.1", allowed)
+        self.assertIn("192.168.1.50", allowed)
+
+    def test_host_accepts_lan_ip_when_explicitly_allowed(self):
+        allowed = server._allowed_hosts("0.0.0.0", "192.168.1.50")
+        self.assertTrue(server._host_ok("192.168.1.50:8090", 8090, allowed))
+
+    def test_origin_accepts_lan_ip_when_explicitly_allowed(self):
+        allowed = server._allowed_hosts("0.0.0.0", "192.168.1.50")
+        self.assertTrue(server._origin_ok("http://192.168.1.50:8090", 8090, allowed))
+
 
 class LiveServerTest(unittest.TestCase):
     """Exercises dispatch end to end over a real socket."""
@@ -59,6 +72,7 @@ class LiveServerTest(unittest.TestCase):
         # the guard reads panel_port from config; point it at the test socket
         self.cfg_patch = mock.patch.object(
             routes, "cfg", return_value={"panel_port": self.port,
+                                         "panel_host": "127.0.0.1",
                                          "anthropic_shim_enabled": False})
         self.cfg_patch.start()
         self.addCleanup(self.cfg_patch.stop)
@@ -127,6 +141,20 @@ class LiveServerTest(unittest.TestCase):
         status, _ = self._req("/api/_probe", headers={"Host": "attacker.test"})
         self.assertEqual(status, 403)
         self.assertEqual(self.seen, [])
+
+    def test_lan_host_is_accepted_when_panel_is_lan_bound(self):
+        self.cfg_patch.stop()
+        self.cfg_patch = mock.patch.object(
+            routes, "cfg", return_value={"panel_port": self.port,
+                                         "panel_host": "0.0.0.0",
+                                         "anthropic_shim_enabled": False})
+        self.cfg_patch.start()
+        with mock.patch.object(routes.router_ctl, "lan_ip", return_value="192.168.1.50"):
+            status, body = self._req("/api/_probe",
+                                     headers={"Host": f"192.168.1.50:{self.port}",
+                                              "Origin": f"http://192.168.1.50:{self.port}"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["ok"], True)
 
     def test_form_content_type_post_is_refused(self):
         """The CSRF vector: a cross-site <form> can only send these types, and

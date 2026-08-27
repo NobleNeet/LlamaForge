@@ -81,7 +81,7 @@ These are the endpoints external coding agents (Claude Code, Codex, etc.) talk t
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/network` | Current router host/port, whether an API key is set, LAN IP, and whether the router is running. |
-| POST | `/api/network` | Update `router_host`/`router_api_key` in `config.json` and restart the router (`router_ctl.restart`). |
+| POST | `/api/network` | Update `router_host`/`router_port`/`router_api_key` plus `panel_host` in `config.json`, restart the router, and report whether the dashboard itself needs a restart. |
 | GET | `/api/router/log` | Tail of the router's log. |
 | GET | `/api/stats` | Usage stats summary. |
 | POST | `/api/stats/reset` | Reset usage stats. |

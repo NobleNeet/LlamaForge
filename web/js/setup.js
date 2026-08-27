@@ -151,15 +151,20 @@ export async function loadSetup() {
     </div>
     <div class="card"><h3>Network Access</h3>
       <div class="kv"><span class="k">router status</span><span class="v ${net.router_running?'ok':'bad'}">${net.router_running?"running":"not running"}</span></div>
+      <div class="kv"><span class="k">dashboard status</span><span class="v ${net.panel_running?'ok':'bad'}">${net.panel_running?"running":"not running"}</span></div>
       <div class="kv"><span class="k">currently bound to</span><span class="v">${esc(net.host)}:${esc(net.port)}${net.host!=="127.0.0.1"?" (LAN-accessible)":" (local only)"}</span></div>
+      <div class="kv"><span class="k">dashboard bound to</span><span class="v">${esc(net.panel_host || "127.0.0.1")}:${esc(net.panel_port)}${(net.panel_host || "127.0.0.1")!=="127.0.0.1"?" (LAN-accessible)":" (local only)"}</span></div>
       <div class="kv"><span class="k">this machine's LAN IP</span><span class="v">${esc(net.lan_ip||"not detected")}</span></div>
-      <div class="note">By default the router only answers on 127.0.0.1 (this machine only). Enabling LAN access lets other devices on your network reach it at <b>http://${esc(net.lan_ip||"<lan-ip>")}:${esc(net.port)}/</b> &mdash; with no key set, anyone on your network can use it unauthenticated. An API key is optional but recommended.</div>
+      <div class="note">By default both services answer on 127.0.0.1 only. Enabling LAN access lets other devices on your network reach the router at <b>http://${esc(net.lan_ip||"<lan-ip>")}:${esc(net.port)}/</b> and the dashboard at <b>http://${esc(net.lan_ip||"<lan-ip>")}:${esc(net.panel_port)}/</b>. The router can require an API key; the dashboard remains unauthenticated, so only expose it on a trusted LAN.</div>
       <div class="fld" style="margin-top:10px;max-width:180px">
         <label>Router port</label>
         <input id="net-port" type="number" min="1" max="65535" step="1" value="${esc(net.port)}">
       </div>
       <div class="actions" style="margin-top:10px">
         <label style="font-size:11px;color:var(--dim)"><input type="checkbox" id="net-lan" ${net.host!=="127.0.0.1"?"checked":""}> allow access from other devices on my network</label>
+      </div>
+      <div class="actions" style="margin-top:6px">
+        <label style="font-size:11px;color:var(--dim)"><input type="checkbox" id="panel-lan" ${(net.panel_host||"127.0.0.1")!=="127.0.0.1"?"checked":""}> allow dashboard access from other devices on my network</label>
       </div>
       <div id="net-keyrow" style="display:${net.host!=="127.0.0.1"?"":"none"};margin-top:10px">
         <label style="font-size:11px;color:var(--dim);display:block;margin-bottom:8px"><input type="checkbox" id="net-require-key" checked> require an API key (won't enable LAN access until a key is set)</label>
@@ -229,7 +234,9 @@ export async function loadSetup() {
   };
   $("#btn-net-apply").onclick = async () => {
     const msg = $("#net-msg"), lan = $("#net-lan").checked;
+    const panelLan = $("#panel-lan").checked;
     const host = lan ? "0.0.0.0" : "127.0.0.1";
+    const panelHost = panelLan ? "0.0.0.0" : "127.0.0.1";
     const apiKey = $("#net-apikey").value.trim();
     const port = Number($("#net-port").value);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -243,9 +250,10 @@ export async function loadSetup() {
       return;
     }
     msg.className = "msg work"; msg.textContent = "restarting router...";
-    const r = await api("/api/network", {host, port, api_key: lan?(apiKey||undefined):""});
+    const r = await api("/api/network", {host, port, panel_host: panelHost, api_key: lan?(apiKey||undefined):""});
     if (r.ok) {
-      msg.className = "msg ok"; msg.textContent = "applied";
+      msg.className = "msg ok";
+      msg.textContent = r.panel_restart_required ? "router applied; restart dashboard to apply dashboard LAN setting" : "applied";
       toast(`${lan?"LAN access enabled":"Local-only access enabled"} on :${port}`, "ok");
       setTimeout(loadSetup, 1500);
     } else { msg.className = "msg err"; msg.textContent = r.error || "failed"; }

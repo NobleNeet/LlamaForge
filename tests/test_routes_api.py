@@ -275,17 +275,21 @@ class NetworkConfigTest(unittest.TestCase):
         saved = {}
         with mock.patch.object(routes, "cfg", return_value={"router_host": "127.0.0.1",
                                                             "router_api_key": "",
-                                                            "router_port": 8080}), \
+                                                            "router_port": 8080,
+                                                            "panel_host": "127.0.0.1"}), \
              mock.patch.object(config, "update",
                                side_effect=lambda ch: (saved.update(ch), dict(saved))[1]), \
              mock.patch.object(routes, "_active_server_bin", return_value="/bin/llama-server"), \
              mock.patch.object(config, "ini_path", return_value="/tmp/models.ini"), \
              mock.patch.object(routes.router_ctl, "restart", return_value=(True, "")) as restart:
-            status, out = routes.post_network(Req(body={"host": "0.0.0.0", "port": 9090, "api_key": "secret"}))
+            status, out = routes.post_network(Req(body={"host": "0.0.0.0", "port": 9090,
+                                                        "panel_host": "0.0.0.0", "api_key": "secret"}))
         self.assertEqual(status, 200)
         self.assertEqual(saved["router_port"], 9090)
         self.assertEqual(saved["router_host"], "0.0.0.0")
+        self.assertEqual(saved["panel_host"], "0.0.0.0")
         self.assertEqual(out["port"], 9090)
+        self.assertTrue(out["panel_restart_required"])
         restart.assert_called_once_with("/bin/llama-server", "/tmp/models.ini",
                                         9090, "0.0.0.0", "secret", routes.LOGDIR)
 
@@ -293,7 +297,8 @@ class NetworkConfigTest(unittest.TestCase):
         saved = {}
         with mock.patch.object(routes, "cfg", return_value={"router_host": "127.0.0.1",
                                                             "router_api_key": "keepme",
-                                                            "router_port": 8080}), \
+                                                            "router_port": 8080,
+                                                            "panel_host": "127.0.0.1"}), \
              mock.patch.object(config, "update",
                                side_effect=lambda ch: (saved.update(ch), dict(saved))[1]), \
              mock.patch.object(routes, "_active_server_bin", return_value="/bin/llama-server"), \
@@ -303,10 +308,17 @@ class NetworkConfigTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(saved["router_api_key"], "keepme")
         self.assertEqual(saved["router_port"], 8181)
+        self.assertEqual(saved["panel_host"], "127.0.0.1")
+        self.assertFalse(out["panel_restart_required"])
 
     def test_network_rejects_invalid_port(self):
         with self.assertRaises(ApiError) as cm:
             routes.post_network(Req(body={"host": "127.0.0.1", "port": 70000}))
+        self.assertEqual(cm.exception.status, 400)
+
+    def test_network_rejects_invalid_panel_host(self):
+        with self.assertRaises(ApiError) as cm:
+            routes.post_network(Req(body={"host": "127.0.0.1", "panel_host": "192.168.1.5"}))
         self.assertEqual(cm.exception.status, 400)
 
 

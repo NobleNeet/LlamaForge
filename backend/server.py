@@ -36,13 +36,25 @@ from routes import ApiError, Req
 # Content-Type matters because a <form> can only send three types, none of them
 # application/json - requiring JSON on state-changing routes means an attacker's
 # page cannot forge one without a preflight it will fail.
-ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 
 
-def _host_ok(host_header, port):
-    """True when the Host names this loopback service."""
+def _allowed_hosts(bind_host, lan_ip=""):
+    hosts = set(LOOPBACK_HOSTS)
+    bind = (bind_host or "").strip()
+    if bind and bind not in LOOPBACK_HOSTS and bind not in ("0.0.0.0", "::"):
+        hosts.add(bind)
+    if bind and bind not in LOOPBACK_HOSTS:
+        if lan_ip:
+            hosts.add(lan_ip)
+    return hosts
+
+
+def _host_ok(host_header, port, allowed_hosts=None):
+    """True when the Host names this dashboard service."""
     if not host_header:
         return False
+    allowed_hosts = allowed_hosts or LOOPBACK_HOSTS
     host = host_header.strip()
     if host.startswith("["):                       # [::1]:8090
         addr, _, tail = host.partition("]")
@@ -51,10 +63,10 @@ def _host_ok(host_header, port):
         addr, _, got_port = host.partition(":")
     if got_port and got_port != str(port):
         return False
-    return addr in ALLOWED_HOSTS
+    return addr in allowed_hosts
 
 
-def _origin_ok(origin, port):
+def _origin_ok(origin, port, allowed_hosts=None):
     """True when Origin is absent (a same-origin GET, curl, or an agent client)
     or names this same service."""
     if not origin:
@@ -67,7 +79,7 @@ def _origin_ok(origin, port):
         return False
     if u.scheme not in ("http", "https"):
         return False
-    return _host_ok(u.netloc, port)
+    return _host_ok(u.netloc, port, allowed_hosts)
 
 
 class H(BaseHTTPRequestHandler):
@@ -100,11 +112,14 @@ class H(BaseHTTPRequestHandler):
     def _guard(self, method):
         """Reject anything that isn't this dashboard's own page talking to it.
         Returns True when the request has been answered and must not proceed."""
-        port = routes.cfg()["panel_port"]
-        if not _host_ok(self.headers.get("Host", ""), port):
+        c = routes.cfg()
+        port = c["panel_port"]
+        allowed = _allowed_hosts(c.get("panel_host", "127.0.0.1"),
+                                 routes.router_ctl.lan_ip() or "")
+        if not _host_ok(self.headers.get("Host", ""), port, allowed):
             self._send(403, {"error": "bad Host header"})
             return True
-        if not _origin_ok(self.headers.get("Origin", ""), port):
+        if not _origin_ok(self.headers.get("Origin", ""), port, allowed):
             self._send(403, {"error": "cross-origin request refused"})
             return True
         if method == "POST":
@@ -320,7 +335,9 @@ def main():
     config.migrate()
     c = routes.cfg()
     port = c["panel_port"]
-    print(f"LlamaForge -> http://127.0.0.1:{port}")
+    bind_host = c.get("panel_host", "127.0.0.1")
+    shown_host = routes.router_ctl.lan_ip() if bind_host != "127.0.0.1" else "127.0.0.1"
+    print(f"LlamaForge -> http://{shown_host or bind_host}:{port}")
     if config.LOAD_ERROR:
         print(f"  WARNING: {config.LOAD_ERROR}")
         print(f"  previous contents saved to {config.CONFIG}.corrupt")
@@ -352,7 +369,7 @@ def main():
         import threading
         threading.Thread(target=_auto_load, args=(c["auto_load_model"],),
                          daemon=True, name="auto-load").start()
-    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+    ThreadingHTTPServer((bind_host, port), H).serve_forever()
 
 
 if __name__ == "__main__":

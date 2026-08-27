@@ -26,6 +26,7 @@ listening() { lsof -ti "tcp:$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
 router_port="$(getcfg router_port)"
 panel_port="$(getcfg panel_port)"
+panel_host="$(getcfg panel_host)"; [ -n "$panel_host" ] || panel_host=127.0.0.1
 server_bin="$(getcfg server_bin)"
 models_ini="$(getcfg models_ini)"
 router_host="$(getcfg router_host)"; [ -n "$router_host" ] || router_host=127.0.0.1
@@ -103,7 +104,7 @@ fi
 if ! listening "$panel_port"; then
   (cd "$here/backend" && nohup python3 server.py \
     >>"$logdir/panel.out.log" 2>>"$logdir/panel.err.log" </dev/null &)
-  echo "started LlamaForge dashboard on port $panel_port"
+  echo "started LlamaForge dashboard on $panel_host:$panel_port"
 fi
 
 # 3. open the dashboard

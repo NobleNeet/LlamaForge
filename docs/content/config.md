@@ -19,6 +19,7 @@ order: 1
 | `model_dirs` | list | `[]` | Directories the Setup scan targets for GGUF discovery, and the base location for Discover downloads. Empty means use the platform-default scan roots. |
 | `router_port` | int | `8080` | Port `llama-server` (the router) listens on. |
 | `panel_port` | int | `8090` | Port the LlamaForge dashboard (`backend/server.py`) listens on. |
+| `panel_host` | string | `"127.0.0.1"` | Dashboard bind address. `127.0.0.1` = local only; `0.0.0.0` = reachable on the LAN. |
 | `router_host` | string | `"127.0.0.1"` | Router bind address. `127.0.0.1` = local only; `0.0.0.0` = reachable on the LAN. |
 | `router_api_key` | string | `""` | API key required from clients when `router_host` is not `127.0.0.1`. |
 | `wsl_distro` | string | `""` | WSL distro that runs vLLM. Empty string auto-picks the default distro. |

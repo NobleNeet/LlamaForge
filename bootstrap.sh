@@ -49,6 +49,7 @@ cfg = {
     "model_dirs":  [],
     "router_port": 8080,
     "panel_port":  8090,
+    "panel_host": "127.0.0.1",
     "router_host": "127.0.0.1",
     "router_api_key": "",
     "cmake_flags": {},

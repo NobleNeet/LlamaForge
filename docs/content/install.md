@@ -65,7 +65,7 @@ To shut everything down:
 
 ## What the scripts do
 
-`run.ps1` / `run.sh` read `config.json`, start the llama.cpp router (`llama-server --models-preset <models.ini> --models-max 1 --offline --host <router_host> --port <router_port> --metrics`, plus `--api-key` if one is set) if it is not already listening, start the dashboard backend (`backend/server.py`) if it is not already listening, then open `http://127.0.0.1:<panel_port>/` in your browser. Both scripts are safe to run repeatedly — each checks whether its port is already in use before starting anything.
+`run.ps1` / `run.sh` read `config.json`, start the llama.cpp router (`llama-server --models-preset <models.ini> --models-max 1 --offline --host <router_host> --port <router_port> --metrics`, plus `--api-key` if one is set) if it is not already listening, start the dashboard backend (`backend/server.py`, bound to `panel_host:panel_port`) if it is not already listening, then open `http://127.0.0.1:<panel_port>/` in your browser. Both scripts are safe to run repeatedly — each checks whether its port is already in use before starting anything.
 
 `stop.ps1` / `stop.sh` kill the process listening on `panel_port`, the process listening on `router_port`, and sweep any remaining `llama-server` processes the router spawned to serve individual models. On Windows, `stop.ps1` additionally kills any `vllm serve` process running inside WSL.
 
