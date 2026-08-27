@@ -87,8 +87,10 @@ class BindMaterializeRouteTest(_ConfigTempCase):
         return fn(req)
 
     def test_bind_materializes_the_preset(self):
-        self._post(routes.post_presets_bind, model="qwopus", name="coding")
+        status, out = self._post(routes.post_presets_bind, model="qwopus", name="coding")
+        self.assertEqual(status, 200)
         self.assertEqual(config.get_bindings(), {"qwopus": "coding"})
+        self.assertEqual(out["settings"], {"temp": "0.2", "top-k": "20", "n-gpu-layers": "99"})
         self.assertEqual(len(self.applied), 1)
         mid, clean = self.applied[0]
         self.assertEqual(mid, "qwopus")
@@ -107,8 +109,10 @@ class BindMaterializeRouteTest(_ConfigTempCase):
     def test_unbind_leaves_knobs_in_place(self):
         self._post(routes.post_presets_bind, model="qwopus", name="coding")
         self.applied.clear()
-        self._post(routes.post_presets_bind, model="qwopus", name="")   # unbind
+        status, out = self._post(routes.post_presets_bind, model="qwopus", name="")   # unbind
+        self.assertEqual(status, 200)
         self.assertEqual(config.get_bindings(), {})
+        self.assertEqual(out["settings"], {})
         self.assertEqual(self.applied, [], "unbind must not rewrite the section")
 
     def test_saving_an_unbound_preset_materializes_nothing(self):

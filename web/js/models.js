@@ -471,8 +471,8 @@ function presetBar(m) {
   const bound = (cfgOf().preset_bindings || {})[m.id] || "";
   const chips = Object.keys(P).map(n => {
     const isBound = n === bound;
-    return `<span class="pchip${isBound ? " bound" : ""}" data-preset-apply="${esc(n)}" data-preset-model="${esc(m.id)}" title="apply preset to this model">`
-      + `<span class="pbind" data-preset-bind="${esc(n)}" data-preset-bind-model="${esc(m.id)}" title="${isBound ? "bound as default - click to unbind" : "bind as this model's default"}">${isBound ? "◉" : "○"}</span>`
+    return `<span class="pchip${isBound ? " bound" : ""}" data-preset-bind="${esc(n)}" data-preset-bind-model="${esc(m.id)}" title="${isBound ? "bound as default - click to clear" : "set as this model's default"}">`
+      + `<span class="pbind" aria-hidden="true">${isBound ? "◉" : "○"}</span>`
       + `${esc(n)}<span class="px" data-preset-del="${esc(n)}" title="delete preset">&times;</span></span>`;
   }).join("");
   return `<div class="presetbar">
@@ -481,18 +481,35 @@ function presetBar(m) {
     <button class="qbtn" data-preset-save="${esc(m.id)}" title="save this model's set knobs as a named preset">Save current +</button>
   </div>`;
 }
-async function applyPreset(model, name) {
-  const r = await api("/api/presets/apply", {model, name});
-  if (r.ok) { toast(`Applied "${name}"`, "ok"); delete diagCache[model]; invalidateKnobs(); await refresh(true); }
-  else toast(r.error || "apply failed", "err");
+function applyPresetSettingsToRow(row, settings) {
+  if (!row) return;
+  const nextSettings = settings || {};
+  let changed = 0;
+  $$("[data-k]", row).forEach(el => {
+    const next = knobPayloadValue(el, nextSettings);
+    const value = next == null ? "" : String(next);
+    if (el.value === value) {
+      syncKnobSetState(el);
+      return;
+    }
+    el.value = value;
+    syncKnobSetState(el);
+    changed += 1;
+  });
+  const msg = $("[data-msg]", row);
+  if (msg && changed) {
+    msg.className = "msg ok";
+    msg.textContent = "preset defaults loaded";
+  }
 }
 async function bindPreset(model, name) {
-  // toggle: clicking the dot of an already-bound preset unbinds it
   const cur = (cfgOf().preset_bindings || {})[model] || "";
   const next = (cur === name) ? "" : name;
   const r = await api("/api/presets/bind", {model, name: next});
   if (r.ok) {
-    toast(next ? `Bound "${name}" as default` : `Unbound "${name}"`, "ok");
+    const row = $(`.row[data-id="${CSS.escape(model)}"]`);
+    if (next) applyPresetSettingsToRow(row, r.settings || {});
+    toast(next ? `Default preset set to "${name}"` : "Default preset cleared", "ok");
     delete diagCache[model]; invalidateKnobs(); await refresh(true);
   } else toast(r.error || "bind failed", "err");
 }
@@ -742,14 +759,12 @@ export function initModels() {
     const quick = e.target.closest("#view-models [data-quick]");
     if (quick) { e.stopPropagation(); quickAction(quick.dataset.quick, quick.dataset.qid); return; }
     // presets
-    const pApply = e.target.closest("[data-preset-apply]");
-    if (pApply) {
+    const pBind = e.target.closest("[data-preset-bind]");
+    if (pBind) {
       e.stopPropagation();
-      const pbind = e.target.closest("[data-preset-bind]");
-      if (pbind) { await bindPreset(pbind.dataset.presetBindModel, pbind.dataset.presetBind); return; }
       const pdel = e.target.closest("[data-preset-del]");
-      if (pdel) { await api("/api/presets/delete", {model: pApply.dataset.presetModel, name: pdel.dataset.presetDel}); toast("Preset deleted","ok"); await refresh(true); return; }
-      await applyPreset(pApply.dataset.presetModel, pApply.dataset.presetApply); return;
+      if (pdel) { await api("/api/presets/delete", {model: pBind.dataset.presetBindModel, name: pdel.dataset.presetDel}); toast("Preset deleted","ok"); await refresh(true); return; }
+      await bindPreset(pBind.dataset.presetBindModel, pBind.dataset.presetBind); return;
     }
     const pSave = e.target.closest("[data-preset-save]");
     if (pSave) { e.stopPropagation(); await savePresetFrom(pSave.dataset.presetSave); return; }

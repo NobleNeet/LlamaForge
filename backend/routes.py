@@ -1130,12 +1130,14 @@ def post_presets_bind(req):
         binds = config.bind_preset(mid, name)
     except ValueError as e:
         raise ApiError(400, str(e))
+    settings = {}
     if name:
         preset = config.get_presets(mid).get(name, {})
         clean = _force_max_gpu_layers(_clean_settings(preset))
         _dbg("preset.bind", model=mid, preset=name, settings=_knob_snapshot(clean))
         _apply_knobs_and_reload(mid, clean)
-    return 200, {"ok": True, "bindings": binds}
+        settings = clean
+    return 200, {"ok": True, "bindings": binds, "settings": settings}
 
 
 def post_presets_apply(req):
