@@ -518,7 +518,6 @@ def main():
     except Exception:
         pass
     if c.get("auto_load_model"):
-        import threading
         threading.Thread(target=_auto_load, args=(c["auto_load_model"],),
                          daemon=True, name="auto-load").start()
     threading.Thread(target=_api_idle_loop,
