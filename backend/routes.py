@@ -157,6 +157,13 @@ def router_log_tail(n=400):
     return "".join(out) + ("\n--- stderr ---\n" if out and err else "") + "".join(err)
 
 
+def llama_output_log_tail(n=400):
+    out = _tail_file(os.path.join(LOGDIR, "router.out.log"), n)
+    if not out:
+        return "(no llama-server output log yet - load a model or send a request to start capturing router.out.log)"
+    return "".join(out)
+
+
 def vllm_log_tail(n=400):
     err = _tail_file(os.path.join(LOGDIR, "vllm.err.log"), n)
     out = _tail_file(os.path.join(LOGDIR, "vllm.out.log"), n)
@@ -820,6 +827,10 @@ def get_hub_progress(req):
 
 def get_router_log(req):
     return 200, {"log": router_log_tail(400)}
+
+
+def get_llama_output_log(req):
+    return 200, {"log": llama_output_log_tail(400)}
 
 
 def get_stats(req):
@@ -1682,6 +1693,7 @@ GET_ROUTES = {
     "/api/build/log":         get_build_log,
     "/api/hub/progress":      get_hub_progress,
     "/api/router/log":        get_router_log,
+    "/api/llama/log":         get_llama_output_log,
     "/api/stats":             get_stats,
     "/api/scan/missing":      get_scan_missing,
     "/api/network":           get_network,

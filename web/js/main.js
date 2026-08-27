@@ -91,6 +91,8 @@ setInterval(clock, 1000);
 setInterval(() => { if (ui.activeTab() === "models") models.refresh(true); }, 4000);
 setInterval(() => { if (ui.activeTab() === "stats") stats.loadStats(true); }, 4000);
 setInterval(() => { if (ui.activeTab() === "models") models.refreshRouterLog(); }, 3000);
+setInterval(() => { if (ui.activeTab() === "models") models.refreshLlamaLog(); }, 3000);
 setInterval(() => { if (ui.activeTab() === "models") models.refreshVllmLog(); }, 3000);
 models.refreshRouterLog();
+models.refreshLlamaLog();
 models.refreshVllmLog();

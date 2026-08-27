@@ -719,6 +719,13 @@ export async function refreshRouterLog() {
   el.textContent = s.log || "idle";
   if (wasBottom) el.scrollTop = el.scrollHeight;
 }
+export async function refreshLlamaLog() {
+  const el = $("#llama-log"); if (!el) return;
+  const s = await api("/api/llama/log");
+  const wasBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+  el.textContent = s.log || "idle";
+  if (wasBottom) el.scrollTop = el.scrollHeight;
+}
 export async function refreshVllmLog() {
   const el = $("#vllm-log"); if (!el) return;
   const s = await api("/api/vllm/log");

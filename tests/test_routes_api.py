@@ -216,6 +216,15 @@ class ScanPruneTest(unittest.TestCase):
         self.assertEqual(self.removed, ["drop"])
 
 
+class LogRouteTest(unittest.TestCase):
+    def test_llama_output_log_reads_stdout_only(self):
+        with mock.patch.object(routes, "llama_output_log_tail", return_value="prefill\ntoken\n") as tail:
+            status, out = routes.get_llama_output_log(Req())
+        self.assertEqual(status, 200)
+        self.assertEqual(out["log"], "prefill\ntoken\n")
+        tail.assert_called_once_with(400)
+
+
 class ScanRootsTest(unittest.TestCase):
     def test_scan_uses_explicit_roots_from_request(self):
         with mock.patch.object(routes.scanner, "scan", return_value=[{"id": "m"}]) as scan, \
