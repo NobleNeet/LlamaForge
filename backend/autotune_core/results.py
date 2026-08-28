@@ -8,11 +8,12 @@ from .models import ExecutionEnvironment
 @dataclass(frozen=True)
 class BenchmarkWorkload:
     """One llama-bench workload. Modes are prompt, generation, or combined."""
-    mode: str  # pp, tg, or pg
+    mode: str  # pp, tg, pg_native, or derived request
     prompt_tokens: int
     generation_tokens: int
     context_depth: int
     weight: float = 1.0
+    required: bool = True
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class BenchmarkMeasurement:
     finished_at: Optional[str] = None
     duration_seconds: Optional[float] = None
     error: Optional[str] = None
+    native_tokens_per_second: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -56,7 +58,7 @@ class TuneResult:
 def _workload_dict(workload):
     return {"mode": workload.mode, "prompt_tokens": workload.prompt_tokens,
             "generation_tokens": workload.generation_tokens, "context_depth": workload.context_depth,
-            "weight": workload.weight}
+            "weight": workload.weight, "required": workload.required}
 
 
 def _binary_dict(binary):
@@ -82,7 +84,7 @@ def validate_result(result):
         errors.append("hardware_fingerprint is required")
     for case in result.cases:
         workload = case.workload
-        if workload.mode not in ("pp", "tg", "pg"):
+        if workload.mode not in ("pp", "tg", "pg_native", "request"):
             errors.append("case %s has invalid workload mode" % case.case_id)
         if min(workload.prompt_tokens, workload.generation_tokens, workload.context_depth) < 0:
             errors.append("case %s has negative workload values" % case.case_id)
@@ -110,6 +112,7 @@ def serialize_result(result):
         "measurements": [{"case_id": measurement.case_id, "repetition": measurement.repetition,
                           "prompt_tokens_per_second": measurement.prompt_tokens_per_second,
                           "generation_tokens_per_second": measurement.generation_tokens_per_second,
+                          "native_tokens_per_second": measurement.native_tokens_per_second,
                           "command_argv": list(measurement.command_argv), "raw_stdout": measurement.raw_stdout,
                           "raw_structured_result": measurement.raw_structured_result, "stderr": measurement.stderr,
                           "exit_code": measurement.exit_code, "started_at": measurement.started_at,
@@ -136,7 +139,7 @@ def deserialize_result(data):
                                    dict(item.get("settings") or {}),
                                    BenchmarkWorkload(str(workload.get("mode") or ""), int(workload.get("prompt_tokens") or 0),
                                                      int(workload.get("generation_tokens") or 0), int(workload.get("context_depth") or 0),
-                                                     float(workload.get("weight") or 1.0)),
+                                                     float(workload.get("weight") or 1.0), bool(workload.get("required", True))),
                                    execution))
     return TuneResult(
         result_id=str(data.get("result_id") or ""), model_fingerprint=str(data.get("model_fingerprint") or ""),
@@ -146,5 +149,5 @@ def deserialize_result(data):
                                                 tuple(str(arg) for arg in item.get("command_argv") or []), item.get("raw_stdout"),
                                                 item.get("raw_structured_result"), item.get("stderr"), item.get("exit_code"),
                                                 item.get("started_at"), item.get("finished_at"), item.get("duration_seconds"),
-                                                item.get("error")) for item in data.get("measurements") or []),
+                                                item.get("error"), item.get("native_tokens_per_second")) for item in data.get("measurements") or []),
     )

@@ -19,10 +19,9 @@ class TestScoring(unittest.TestCase):
         self.assertEqual(aggregate_case_measurements(workload, measurements), 20.0)
 
     def test_pg_uses_token_mix_latency_not_raw_pp_tg_average(self):
-        workload = BenchmarkWorkload("pg", 1000, 10, 0)
+        workload = BenchmarkWorkload("pg_native", 1000, 10, 0)
         measurements = [BenchmarkMeasurement("case", 0, 1000.0, 10.0, exit_code=0)]
-        # 1000/1000 + 10/10 seconds = 2 seconds, hence 0.5 requests/sec.
-        self.assertEqual(aggregate_case_measurements(workload, measurements), 0.5)
+        self.assertIsNone(aggregate_case_measurements(workload, measurements))
 
     def test_mixed_auto_uses_relative_workload_normalization(self):
         environment = ExecutionEnvironment("hardware", "hip", {},

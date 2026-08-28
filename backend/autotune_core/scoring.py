@@ -11,6 +11,15 @@ class CandidateScore:
     case_scores: Tuple[float, ...]
 
 
+@dataclass(frozen=True)
+class DerivedRequestLatency:
+    request_workload_id: str
+    source_pp_case_id: str
+    source_tg_case_id: str
+    aggregate_method: str
+    latency_seconds: float
+
+
 def _measurement_score(workload, measurement):
     if measurement.error or measurement.exit_code not in (None, 0):
         return None
@@ -18,13 +27,9 @@ def _measurement_score(workload, measurement):
         return measurement.prompt_tokens_per_second
     if workload.mode == "tg":
         return measurement.generation_tokens_per_second
-    prompt_rate, generation_rate = measurement.prompt_tokens_per_second, measurement.generation_tokens_per_second
-    if prompt_rate is None or generation_rate is None or prompt_rate <= 0 or generation_rate <= 0:
-        return None
-    # pg is represented as requests/sec derived from its actual token mix,
-    # never as an average of incomparable pp/tg rates.
-    latency = workload.prompt_tokens / prompt_rate + workload.generation_tokens / generation_rate
-    return 1.0 / latency if latency > 0 else None
+    if workload.mode == "pg_native":
+        return measurement.native_tokens_per_second
+    return None
 
 
 def aggregate_case_measurements(workload, measurements, trim_fraction=0.0):
@@ -42,6 +47,17 @@ def aggregate_case_measurements(workload, measurements, trim_fraction=0.0):
 def _signature(case):
     workload = case.workload
     return workload.mode, workload.prompt_tokens, workload.generation_tokens, workload.context_depth
+
+
+def derive_request_latency(request_workload_id, request_workload, pp_case_id, pp_workload, pp_measurements,
+                           tg_case_id, tg_workload, tg_measurements, trim_fraction=0.0):
+    """Derive request latency from independently aggregated pp/tg processes."""
+    pp_rate = aggregate_case_measurements(pp_workload, pp_measurements, trim_fraction)
+    tg_rate = aggregate_case_measurements(tg_workload, tg_measurements, trim_fraction)
+    if not pp_rate or not tg_rate:
+        return None
+    latency = request_workload.prompt_tokens / pp_rate + request_workload.generation_tokens / tg_rate
+    return DerivedRequestLatency(request_workload_id, pp_case_id, tg_case_id, "median", latency)
 
 
 def _weighted_mean(values):
@@ -80,13 +96,16 @@ def rank_candidates(stage_plan, measurements, trim_fraction=0.0, scoring_intent=
     raw_by_candidate = {}
     for candidate in stage_plan.candidates:
         case_scores = []
+        missing_required = False
         for case in stage_plan.cases:
             if case.candidate_id != candidate.candidate_id:
                 continue
             score = aggregate_case_measurements(case.workload, by_case.get(case.case_id, ()), trim_fraction)
             if score is not None:
                 case_scores.append((case, score))
-        if case_scores:
+            elif case.workload.required:
+                missing_required = True
+        if case_scores and not missing_required:
             raw_by_candidate[candidate.candidate_id] = case_scores
     signatures = {_signature(case) for values in raw_by_candidate.values() for case, _ in values}
     if scoring_intent == "throughput" and len(signatures) > 1:

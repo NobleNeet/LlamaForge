@@ -9,7 +9,7 @@ class TestResults(unittest.TestCase):
     def test_result_round_trip_and_reference_validation(self):
         environment = ExecutionEnvironment("hardware", "hip", {"rocm": "6.3"},
                                            BenchBinaryIdentity("hip", "/bench", "b1", "hash", "v1", "artifact"), "now")
-        workload = BenchmarkWorkload("pg", 512, 128, 2048)
+        workload = BenchmarkWorkload("pg_native", 512, 128, 2048)
         case = BenchmarkCase("case", "stage-1", "candidate", "hip", {"threads": 8}, workload, environment)
         measurement = BenchmarkMeasurement("case", 1, 100.0, 50.0, ("/bench", "--json"), "stdout",
                                            {"samples": []}, "stderr", 0, "start", "finish", 4.0)

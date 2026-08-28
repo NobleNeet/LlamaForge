@@ -165,6 +165,8 @@ def _cases(definition, candidates):
     cases = []
     for candidate in candidates:
         for workload in definition.workloads:
+            if workload.mode == "request":
+                continue
             case_id = _identity("case", {"candidate": candidate.candidate_id, "stage": definition.stage_id,
                                            "workload": workload.__dict__})
             cases.append(BenchmarkCase(case_id, definition.stage_id, candidate.candidate_id, candidate.backend,

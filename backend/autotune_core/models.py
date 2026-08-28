@@ -93,3 +93,10 @@ class TuneProfile:
     environment_fingerprint: str
     settings: Mapping[str, object]
     result_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class BenchmarkTarget:
+    """The runner's complete model input; it never discovers a model implicitly."""
+    model_path: str
+    model_fingerprint: str
