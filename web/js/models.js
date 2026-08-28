@@ -45,6 +45,11 @@ function saveFavs() { localStorage.setItem("lf_favs", JSON.stringify([...favs]))
 function saveUnloadedCollapsed() {
   localStorage.setItem("lf_unloaded_collapsed", unloadedCollapsed ? "1" : "0");
 }
+function collapseUnloadedSection() {
+  if (unloadedCollapsed) return;
+  unloadedCollapsed = true;
+  saveUnloadedCollapsed();
+}
 
 function toggleFav(id) {
   favs.has(id) ? favs.delete(id) : favs.add(id);
@@ -439,6 +444,7 @@ async function processQ() {
 async function quickAction(act, id) {
   const be = beOf(id);
   if (act === "load") {
+    collapseUnloadedSection();
     let body = {model: id};
     if (be === "llamacpp") {
       const row = $(`.row[data-id="${CSS.escape(id)}"]`);
@@ -881,6 +887,7 @@ export function initModels() {
           invalidateKnobs();   // server now matches the inputs; refresh "set" marks
         } else { msg.className = "msg err"; msg.textContent = r.error || "failed"; }
       } else if (act === "load") {
+        collapseUnloadedSection();
         msg.className = "msg work"; msg.textContent = "loading (may take seconds)...";
         const r = await api("/api/load", {model: id, settings: rowSettings(row)});
         r.success ? toast("Loaded","ok") : (msg.className="msg err", msg.textContent=(r.error&&r.error.message)||"load failed");
