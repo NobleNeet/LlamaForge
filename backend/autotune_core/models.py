@@ -52,11 +52,36 @@ class PhysicalGPU:
 
 
 @dataclass(frozen=True)
-class EnvironmentSnapshot:
+class HardwareIdentity:
+    """Machine identity only; runtime and benchmark builds are separate."""
     platform: str
     cpu: Mapping[str, object]
     physical_gpus: Tuple[PhysicalGPU, ...]
     available_backends: Tuple[str, ...]
+    captured_at: str
+
+
+# Kept as a compatibility spelling for Phase 1 callers.
+EnvironmentSnapshot = HardwareIdentity
+
+
+@dataclass(frozen=True)
+class BenchBinaryIdentity:
+    backend: str
+    path: str
+    build_id: Optional[str]
+    file_fingerprint: Optional[str]
+    version_text: Optional[str]
+    provenance: str
+
+
+@dataclass(frozen=True)
+class ExecutionEnvironment:
+    """Backend/build-specific conditions under which one case can execute."""
+    hardware_fingerprint: str
+    backend: str
+    runtime: Mapping[str, object]
+    bench_binary: BenchBinaryIdentity
     captured_at: str
 
 

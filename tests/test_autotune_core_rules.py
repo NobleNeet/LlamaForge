@@ -49,3 +49,9 @@ class TestRules(unittest.TestCase):
     def test_loader_rejects_duplicate_ids(self):
         with self.assertRaises(ValueError):
             load_rule_set(self._rule_file([{"id": "x"}, {"id": "x"}]))
+
+    def test_loader_canonicalizes_known_backend_alias_and_rejects_typo(self):
+        rule_set = load_rule_set(self._rule_file([{"id": "hip", "when": {"backends": ["rocm"]}}]))
+        self.assertEqual(rule_set.rules[0].when["backends"], ("hip",))
+        with self.assertRaisesRegex(ValueError, "unknown backend selector"):
+            load_rule_set(self._rule_file([{"id": "bad", "when": {"backends": ["hipp"]}}]))

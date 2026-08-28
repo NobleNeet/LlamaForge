@@ -66,6 +66,18 @@ def _string_tuple(value):
     return tuple(value)
 
 
+def _backend_tuple(value):
+    backends = _string_tuple(value)
+    canonical = []
+    for backend in backends:
+        resolved = canonical_backend_id(backend)
+        if not resolved:
+            raise ValueError("unknown backend selector %s" % backend)
+        if resolved not in canonical:
+            canonical.append(resolved)
+    return tuple(canonical)
+
+
 def _mapping_list(value, name):
     if value is None:
         return ()
@@ -95,7 +107,8 @@ def load_rule_set(path):
             raise ValueError("unknown rule selector %s" % sorted(unknown)[0])
         rules.append(Rule(
             rule_id=raw["id"],
-            when={key: _string_tuple(value) for key, value in when.items()},
+            when={key: (_backend_tuple(value) if key == "backends" else _string_tuple(value))
+                  for key, value in when.items()},
             candidate_seeds=_mapping_list(raw.get("candidate_seeds"), "candidate_seeds"),
             preferences=_mapping_list(raw.get("preferences"), "preferences"),
             hard_constraints=_mapping_list(raw.get("hard_constraints"), "hard_constraints"),
@@ -109,7 +122,7 @@ def _matches(rule, model, environment):
     architectures = when.get("architectures", ())
     if architectures and model.architecture not in architectures:
         return False
-    backends = tuple(canonical_backend_id(value) for value in when.get("backends", ()))
+    backends = when.get("backends", ())
     if backends and not set(backends).intersection(environment.available_backends):
         return False
     vendors = {gpu.vendor.lower() for gpu in environment.physical_gpus}

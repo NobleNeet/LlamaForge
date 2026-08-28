@@ -1,9 +1,11 @@
 """References to llama-bench binaries without assuming they match server_bin."""
 from dataclasses import dataclass
 import os
+import hashlib
 from typing import Optional
 
 from .backends import canonical_backend_id
+from .models import BenchBinaryIdentity
 
 
 @dataclass(frozen=True)
@@ -50,3 +52,19 @@ def resolve_bench_binary(configured, backend=None, build_id=None, exists=os.path
     if fallback and exists(fallback):
         return BenchBinaryRef(backend, None, fallback, "sibling_fallback")
     return None
+
+
+def identify_bench_binary(ref, version_text=None, window_bytes=65536):
+    """Capture a bounded-cost binary identity without executing the binary."""
+    if ref is None or not os.path.isfile(ref.path):
+        return None
+    size = os.path.getsize(ref.path)
+    digest = hashlib.sha256()
+    digest.update(b"llamaforge-bench-binary-v1\\0" + str(size).encode("ascii"))
+    with open(ref.path, "rb") as handle:
+        for offset in sorted({0, max(0, size - window_bytes)}):
+            handle.seek(offset)
+            digest.update(hashlib.sha256(handle.read(window_bytes)).digest())
+    return BenchBinaryIdentity(ref.backend or "cpu", ref.path, ref.build_id,
+                               "sha256-sampled-v1:" + digest.hexdigest(), version_text,
+                               ref.provenance)
