@@ -701,12 +701,16 @@ def _preset_scope_keys(model_id):
     return keys
 
 
-def _materialize_preset_settings(model_id, settings):
+def _materialize_preset_settings(model_id, settings, extra_clear_keys=None):
     """Write one preset's exact knob set into models.ini without reloading a
     live model. Keys used by this model's other presets are cleared first so
     switching presets does not leave stale knobs behind."""
     clean = _force_max_gpu_layers(_clean_settings(settings or {}))
     updates = {key: None for key in _preset_scope_keys(model_id)}
+    for key in (extra_clear_keys or ()):
+        if key is None or str(key).strip() == "":
+            continue
+        updates[str(key)] = None
     updates.update(clean)
     config.set_keys(model_id, updates)
     return clean
@@ -1192,13 +1196,16 @@ def post_autotune_refine(req):
 def post_presets_save(req):
     mid = req.body.get("model", "")
     name = req.body.get("name", "")
+    previous = config.get_presets(mid).get(name, {})
+    previous_keys = set(previous) if isinstance(previous, dict) else set()
     try:
         presets = config.save_preset(mid, name, req.body.get("settings", {}))
     except ValueError as e:
         raise ApiError(400, str(e))
     clean = _force_max_gpu_layers(_clean_settings(presets.get(name, {})))
     if config.get_bindings().get(mid) == name:
-        clean = _materialize_preset_settings(mid, presets.get(name, {}))
+        clean = _materialize_preset_settings(mid, presets.get(name, {}),
+                                             extra_clear_keys=previous_keys)
     return 200, {"ok": True, "presets": presets}
 
 

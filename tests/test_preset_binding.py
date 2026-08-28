@@ -95,6 +95,15 @@ class BindMaterializeRouteTest(_ConfigTempCase):
         self.assertEqual(saved["temp"], "0.9")
         self.assertEqual(saved["n-gpu-layers"], "99")
 
+    def test_overwriting_a_bound_preset_clears_removed_keys_from_models_ini(self):
+        self._post(routes.post_presets_bind, model="qwopus", name="coding")
+        self._post(routes.post_presets_save, model="qwopus", name="coding", settings={"temp": "0.9"})
+        saved = config.read_sections(self.ini)["qwopus"]
+        self.assertEqual(saved["temp"], "0.9")
+        self.assertNotIn("top-k", saved)
+        self.assertEqual(config.get_presets("qwopus")["coding"],
+                         {"temp": "0.9", "n-gpu-layers": "99"})
+
     def test_unbind_leaves_knobs_in_place(self):
         self._post(routes.post_presets_bind, model="qwopus", name="coding")
         status, out = self._post(routes.post_presets_bind, model="qwopus", name="")   # unbind
