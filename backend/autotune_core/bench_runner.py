@@ -132,9 +132,4 @@ class BenchRunner:
         except Exception as exc:
             status, error = "failed", "persistence failure: %s" % exc
             artifact["status"], artifact["error"] = status, error
-        if status in ("failed", "cancelled"):
-            try:
-                self.store.release(run_id, status)
-            except Exception:
-                pass
         return status, measurements, artifact

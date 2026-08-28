@@ -2,6 +2,7 @@ import conftest_paths  # noqa: F401
 import json
 import os
 import tempfile
+import threading
 import unittest
 
 from autotune_core.run_store import RunOwnershipError, RunStore
@@ -62,3 +63,38 @@ class TestRunStore(unittest.TestCase):
             first.acquire("run")
         with self.assertRaises(RunOwnershipError):
             first.heartbeat("run")
+
+    def test_concurrent_acquire_allows_exactly_one_owner(self):
+        root = tempfile.mkdtemp()
+        first = RunStore(root, instance_id="one", pid=11, hostname="host")
+        second = RunStore(root, instance_id="two", pid=22, hostname="host")
+        first.create_run("run", {}, {})
+        barrier = threading.Barrier(2)
+        outcomes = {}
+
+        def acquire(store):
+            barrier.wait()
+            try:
+                store.acquire("run")
+                outcomes[store.instance_id] = "acquired"
+            except RunOwnershipError:
+                outcomes[store.instance_id] = "rejected"
+
+        threads = [threading.Thread(target=acquire, args=(store,)) for store in (first, second)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(outcomes.values()), ["acquired", "rejected"])
+        self.assertIn(first.load_manifest("run")["owner_instance_id"], {"one", "two"})
+
+    def test_foreign_record_is_rejected_before_artifact_write(self):
+        root = tempfile.mkdtemp()
+        owner = RunStore(root, instance_id="owner", pid=11, hostname="host")
+        foreign = RunStore(root, instance_id="foreign", pid=22, hostname="host")
+        owner.create_run("run", {}, {})
+        owner.acquire("run")
+        with self.assertRaises(RunOwnershipError):
+            foreign.record_invocation("run", "forbidden", {"ok": True})
+        artifact = os.path.join(root, "runs", "run", "invocations", "forbidden.json")
+        self.assertFalse(os.path.exists(artifact))

@@ -41,11 +41,13 @@ class TestBenchRunner(unittest.TestCase):
 
     def test_timeout_and_cancellation_terminate_only_owned_process_group(self):
         script = _script("import time\ntime.sleep(10)\n")
-        (status, _, _), _ = self._run(script, timeout=0.03)
+        (status, _, _), root = self._run(script, timeout=0.03)
         self.assertEqual(status, "failed")
+        self.assertEqual(RunStore(root).load_manifest("run")["status"], "running")
         token = CancellationToken(); token.cancel()
-        (status, _, _), _ = self._run(script, cancellation=token)
+        (status, _, _), root = self._run(script, cancellation=token)
         self.assertEqual(status, "cancelled")
+        self.assertEqual(RunStore(root).load_manifest("run")["status"], "running")
 
     def test_cancellation_signals_only_the_spawned_process_group(self):
         script = _script("import time\ntime.sleep(10)\n")
@@ -79,7 +81,7 @@ class TestBenchRunner(unittest.TestCase):
             self.assertEqual(status, "failed")
             self.assertTrue(artifact["error"])
             self.assertTrue(os.path.exists(os.path.join(root, "runs", "run", "invocations", artifact["invocation_id"] + ".json")))
-            self.assertEqual(RunStore(root).load_manifest("run")["status"], "failed")
+            self.assertEqual(RunStore(root).load_manifest("run")["status"], "running")
 
     def test_termination_race_is_safe(self):
         class Gone:
