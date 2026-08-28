@@ -41,6 +41,12 @@ class TestHardwareParsing(unittest.TestCase):
         self.assertEqual(row["gtt_total_mib"], 122880)
         self.assertTrue(row["is_uma"])
 
+    def test_gpu_row_keeps_cpu_utilization_field(self):
+        row = hardware._gpu_row(name="apu", vendor="AMD", util=13, cpu_util=41)
+        self.assertEqual(row["utilization"], 13)
+        self.assertEqual(row["cpu_utilization"], 41)
+        self.assertEqual(row["cpu_util"], 41)
+
     def test_merge_keeps_one_physical_gpu_for_hip_and_vulkan(self):
         base = [hardware._gpu_row(name="AMD Radeon 8060S Graphics", vendor="AMD",
                                   index=0, total=131072, integrated=True, uma=True)]
@@ -65,6 +71,28 @@ class TestHardwareParsing(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["name"], "Radeon 8060S Graphics (RADV GFX1151)")
         self.assertEqual(out[0]["backends"], ["hip", "vulkan"])
+
+    def test_detect_gpu_telemetry_attaches_cpu_utilization_to_each_row(self):
+        original_linux = hardware.osplat.IS_LINUX
+        original_mac = hardware.osplat.IS_MAC
+        original_nv = hardware._nvidia_telemetry
+        original_amd = hardware._detect_amd_linux
+        original_cpu = hardware._cpu_utilization
+        try:
+            hardware.osplat.IS_LINUX = True
+            hardware.osplat.IS_MAC = False
+            hardware._nvidia_telemetry = lambda: [hardware._gpu_row(name="RTX", vendor="NVIDIA", util=12)]
+            hardware._detect_amd_linux = lambda: [hardware._gpu_row(name="Radeon", vendor="AMD", util=7)]
+            hardware._cpu_utilization = lambda: 38
+            rows = hardware.detect_gpu_telemetry()
+        finally:
+            hardware.osplat.IS_LINUX = original_linux
+            hardware.osplat.IS_MAC = original_mac
+            hardware._nvidia_telemetry = original_nv
+            hardware._detect_amd_linux = original_amd
+            hardware._cpu_utilization = original_cpu
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row["cpu_utilization"] == 38 for row in rows))
 
 
 class TestRecommend(unittest.TestCase):

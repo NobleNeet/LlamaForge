@@ -124,6 +124,12 @@ body.app{display:grid;grid-template-columns:var(--nav-w) 1fr;min-height:100vh;ma
 .gpu .name{font-family:var(--disp);font-weight:600;color:var(--ink-strong);font-size:13px}
 .gpu .idx{color:var(--amber-text);font-size:11px;letter-spacing:.2em}
 .meter{height:22px;background:var(--inset);border:1px solid var(--hair);display:flex;gap:2px;padding:3px}
+.meter.compact{height:16px;padding:2px}
+.gpugraphs{display:grid;gap:8px}
+.gpugraph{display:grid;grid-template-columns:34px 1fr 44px;gap:8px;align-items:center}
+.gpugraph .glabel,.gpugraph .gval{font-size:10px;letter-spacing:.12em;text-transform:uppercase}
+.gpugraph .glabel{color:var(--dim)}
+.gpugraph .gval{color:var(--cyan-text);text-align:right}
 .seg{flex:1;background:var(--seg-bg)}.seg.on{background:var(--amber);box-shadow:0 0 6px var(--amber-dim)}.seg.hot{background:var(--red)}
 /* Four non-wrapping cells whose combined min-content width exceeded a phone
    viewport, which forced horizontal overflow on the whole page - that is what

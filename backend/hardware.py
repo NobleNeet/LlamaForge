@@ -14,6 +14,8 @@ import subprocess
 
 import osplat
 
+_CPU_SAMPLE = None
+
 
 def _run(cmd, timeout=10):
     try:
@@ -89,10 +91,51 @@ def _dedupe_backends(items):
     return out
 
 
+def _read_linux_cpu_jiffies():
+    line = _read("/proc/stat").splitlines()
+    if not line:
+        return None
+    parts = line[0].split()
+    if len(parts) < 5 or parts[0] != "cpu":
+        return None
+    try:
+        vals = [int(x) for x in parts[1:]]
+    except Exception:
+        return None
+    idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+    total = sum(vals)
+    return total, idle
+
+
+def _linux_cpu_utilization():
+    global _CPU_SAMPLE
+    sample = _read_linux_cpu_jiffies()
+    if sample is None:
+        return None
+    total, idle = sample
+    if _CPU_SAMPLE is None:
+        _CPU_SAMPLE = sample
+        return None
+    prev_total, prev_idle = _CPU_SAMPLE
+    _CPU_SAMPLE = sample
+    delta_total = total - prev_total
+    delta_idle = idle - prev_idle
+    if delta_total <= 0:
+        return None
+    busy = max(0, delta_total - delta_idle)
+    return max(0, min(100, int(round((busy * 100.0) / delta_total))))
+
+
+def _cpu_utilization():
+    if osplat.IS_LINUX:
+        return _linux_cpu_utilization()
+    return None
+
+
 def _gpu_row(name="", vendor="", backend=None, index=0, arch="", total=None,
              used=None, util=None, temp=None, integrated=False, uma=False,
              compute_cap="", local_total=None, local_used=None,
-             gtt_total=None, gtt_used=None):
+             gtt_total=None, gtt_used=None, cpu_util=None):
     free = None
     if total is not None and used is not None:
         free = max(0, total - used)
@@ -115,10 +158,12 @@ def _gpu_row(name="", vendor="", backend=None, index=0, arch="", total=None,
         "gtt_total_mib": gtt_total,
         "gtt_used_mib": gtt_used,
         "utilization": util,
+        "cpu_utilization": cpu_util,
         "temperature": temp,
         "used": used if used is not None else 0,
         "total": total if total is not None else 0,
         "util": util if util is not None else 0,
+        "cpu_util": cpu_util if cpu_util is not None else 0,
         "temp": temp if temp is not None else 0,
         "is_integrated": bool(integrated),
         "is_uma": bool(uma),
@@ -383,6 +428,11 @@ def detect_gpu_telemetry():
     rows = _nvidia_telemetry()
     if osplat.IS_LINUX:
         rows = _merge_gpu_lists(rows, _detect_amd_linux())
+    cpu_util = _cpu_utilization()
+    if rows:
+        rows = [dict(row, cpu_utilization=cpu_util,
+                     cpu_util=cpu_util if cpu_util is not None else row.get("cpu_util", 0))
+                for row in rows]
     return rows or [{"error": "GPU telemetry unavailable"}]
 
 

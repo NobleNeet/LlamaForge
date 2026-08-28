@@ -66,6 +66,10 @@ export function renderGpus(g) {
     setHTML($("#gpus"), `<div class="gpu"><div class="stats">GPU telemetry unavailable</div></div>`);
     return;
   }
+  const graphRow = (label, value, total = 100) => {
+    const shown = value != null ? `${esc(value)}%` : "n/a";
+    return `<div class="gpugraph"><span class="glabel">${label}</span><div class="meter compact">${meter(value || 0, Math.max(total || 1, 1))}</div><span class="gval">${shown}</span></div>`;
+  };
   setHTML($("#gpus"), g.map(x => {
     const backends = (x.backends || (x.backend ? [x.backend] : [])).map(b => esc(String(b).toUpperCase())).join(" / ");
     const mem = x.total ? `${esc((x.used/1024).toFixed(1))}/${esc((x.total/1024).toFixed(1))} GB`
@@ -75,12 +79,17 @@ export function renderGpus(g) {
       ? `<span>LOCAL <b>${esc(((x.local_memory_used_mib||0)/1024).toFixed(1))}/${esc((x.local_memory_total_mib/1024).toFixed(1))}</b> GB</span>`
       : "";
     const util = x.util != null ? `<span>UTIL <b>${esc(x.util)}%</b></span>` : "";
+    const cpu = x.cpu_utilization != null ? `<span>CPU <b>${esc(x.cpu_utilization)}%</b></span>` : "";
     const temp = x.temp != null ? `<span>TEMP <b>${esc(x.temp)}&deg;C</b></span>` : "";
     const arch = x.architecture ? `<span>ARCH <b>${esc(x.architecture)}</b></span>` : "";
     const uma = x.is_uma ? `<span>UMA <b>YES</b></span>` : "";
     return `<div class="gpu"><div class="top"><span class="name">${esc(x.name)}</span><span class="idx">${esc(x.vendor||"GPU")}${backends?` · ${backends}`:""}</span></div>
-      <div class="meter">${meter(x.used||0, Math.max(x.total||1,1))}</div>
-      <div class="stats"><span><b>${mem}</b></span>${free}${local}${util}${temp}${arch}${uma}</div></div>`;
+      <div class="gpugraphs">
+        ${graphRow("MEM", x.total != null ? Math.round(((x.used || 0) * 100) / Math.max(x.total || 1, 1)) : null)}
+        ${graphRow("GPU", x.util)}
+        ${graphRow("CPU", x.cpu_utilization)}
+      </div>
+      <div class="stats"><span><b>${mem}</b></span>${free}${local}${util}${cpu}${temp}${arch}${uma}</div></div>`;
   }).join(""));
 }
 
