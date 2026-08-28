@@ -12,7 +12,7 @@ from .bench_capabilities import CapabilityProbeError, probe_binary_capabilities,
 from .staleness import ProfileIdentity
 
 
-SCORING_SCHEMA_VERSION = "phase4-v1"
+SCORING_SCHEMA_VERSION = "phase4.1-v1"
 
 
 class FatalAutoTuneError(RuntimeError):

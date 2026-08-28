@@ -5,7 +5,7 @@ import tempfile
 import threading
 import unittest
 
-from autotune_core.run_store import RunOwnershipError, RunStore
+from autotune_core.run_store import ResultArtifactSchemaError, RunOwnershipError, RunStore
 
 
 class TestRunStore(unittest.TestCase):
@@ -112,3 +112,17 @@ class TestRunStore(unittest.TestCase):
         with open(lock, "w", encoding="utf-8") as handle:
             json.dump({"hostname": store.hostname, "pid": 99999999}, handle)
         self.assertEqual(store.acquire("run")["status"], "running")
+
+    def test_result_artifact_schema_is_versioned_and_strict(self):
+        root = tempfile.mkdtemp()
+        store = RunStore(root, instance_id="one", pid=10, hostname="host")
+        store.create_run("run", {}, {})
+        store.acquire("run")
+        from autotune_core.results import TuneResult
+        store.record_result("run", TuneResult("r", "m", "h"), ())
+        self.assertEqual(store.load_result("run")["schema_version"], 1)
+        path = os.path.join(root, "runs", "run", "result.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"schema_version": 999}, handle)
+        with self.assertRaises(ResultArtifactSchemaError):
+            store.load_result("run")

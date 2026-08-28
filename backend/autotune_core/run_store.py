@@ -10,6 +10,7 @@ import atomicio
 
 
 _TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
+RESULT_ARTIFACT_SCHEMA_VERSION = 1
 
 
 class RunOwnershipError(RuntimeError):
@@ -17,6 +18,10 @@ class RunOwnershipError(RuntimeError):
 
 
 class RunLockError(RunOwnershipError):
+    pass
+
+
+class ResultArtifactSchemaError(ValueError):
     pass
 
 
@@ -207,11 +212,20 @@ class RunStore:
             manifest = self.load_manifest(run_id)
             self._require_owner(manifest)
             path = os.path.join(self._run_dir(run_id), "result.json")
-            atomicio.write_json(path, {"result": serialize_result(result), "profiles": [asdict(profile) for profile in profiles]})
+            atomicio.write_json(path, {"schema_version": RESULT_ARTIFACT_SCHEMA_VERSION,
+                                       "result": serialize_result(result), "profiles": [asdict(profile) for profile in profiles]})
             manifest = self.load_manifest(run_id)
             self._require_owner(manifest)
             manifest["result_path"] = "result.json"
             self._save_manifest(manifest)
+
+    def load_result(self, run_id):
+        """Read only the known persistent result artifact schema."""
+        with open(os.path.join(self._run_dir(run_id), "result.json"), encoding="utf-8") as handle:
+            artifact = json.load(handle)
+        if artifact.get("schema_version") != RESULT_ARTIFACT_SCHEMA_VERSION:
+            raise ResultArtifactSchemaError("unsupported Auto Tune result artifact schema")
+        return artifact
 
     def finish(self, run_id, status):
         if status not in _TERMINAL:

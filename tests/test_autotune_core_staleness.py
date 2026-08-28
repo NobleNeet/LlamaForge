@@ -12,3 +12,5 @@ class TestStaleness(unittest.TestCase):
         self.assertEqual(stale_reasons(base, changed), ("runtime_changed",))
         other = ProfileIdentity("m", "h", {"vulkan": "2"}, {"build": "b"}, "x", "rules", "strategy", "v1", "vulkan")
         self.assertEqual(stale_reasons(base, other), ("runtime_changed",))
+        policy = ProfileIdentity("m", "h", {"rocm": "1"}, {"build": "a"}, "cap", "rules", "strategy", "phase4.1-v1", "hip")
+        self.assertEqual(stale_reasons(base, policy), ("tuning_policy_changed",))
