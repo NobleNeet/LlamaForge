@@ -21,7 +21,7 @@ tables: they write to the socket themselves and stay in server.py.
 import json, os, subprocess, sys, urllib.request, urllib.error, urllib.parse
 
 import config, argspec, hardware, osplat, prereqs, scanner, hub, router_ctl, stats
-import autotune, anthropic_shim, agentsetup, wiki, docs
+import autotune, anthropic_shim, agentsetup, wiki, docs, model_settings
 import autotune_service
 import vram_predict
 import wsl, vllm_ctl, vllm_registry, vllm_setup, vllm_job, vllm_hub, vllm_download
@@ -63,7 +63,7 @@ def autotune_service_instance():
     """Lazy so importing routes never probes hardware or starts reconciliation."""
     global _AUTOTUNE_SERVICE
     if _AUTOTUNE_SERVICE is None:
-        _AUTOTUNE_SERVICE = autotune_service.AutoTuneService(os.path.join(LOGDIR, "autotune"))
+        _AUTOTUNE_SERVICE = autotune_service.AutoTuneService(os.path.join(LOGDIR, "autotune"), schema_loader=schema)
     return _AUTOTUNE_SERVICE
 
 
@@ -740,41 +740,14 @@ def _prepare_model_for_load(mid):
 
 
 def _clean_settings(updates):
-    """Normalize a knob map from the UI: blank means 'unset this key'."""
-    alias_to_key = {}
-    key_to_aliases = {}
     try:
-        sch = schema()
-        for grp in sch.get("groups", []):
-            for knob in grp.get("knobs", []):
-                key = knob.get("key")
-                aliases = [a for a in (knob.get("aliases") or []) if a]
-                if not key:
-                    continue
-                fam = [key] + [a for a in aliases if a != key]
-                key_to_aliases[key] = fam
-                for alias in fam:
-                    alias_to_key[alias] = key
+        return model_settings.clean_settings(updates, schema())
     except Exception:
-        alias_to_key = {}
-        key_to_aliases = {}
-
-    clean = {}
-    for raw_key, v in (updates or {}).items():
-        k = alias_to_key.get(raw_key, raw_key)
-        v = ("" if v is None else str(v)).strip()
-        clean[k] = None if v == "" else v
-        for alias in key_to_aliases.get(k, []):
-            if alias != k and alias not in clean:
-                clean[alias] = None
-    return clean
+        return model_settings.clean_settings(updates)
 
 
 def _force_max_gpu_layers(clean):
-    out = dict(clean or {})
-    if out.get("n-gpu-layers") != "0":
-        out["n-gpu-layers"] = "99"
-    return out
+    return model_settings.force_max_gpu_layers(clean)
 
 
 def _register_ggufs_beside(paths):
@@ -1785,6 +1758,8 @@ def get_autotune_status(req): return 200, _autotune_call("status", req.q("run_id
 def get_autotune_result(req): return 200, _autotune_call("result", req.q("run_id"))
 def get_autotune_runs(req): return 200, _autotune_call("list_runs", req.q("limit", 20))
 def post_autotune_cancel(req): return 200, _autotune_call("cancel", req.body.get("run_id"))
+def post_autotune_preview(req):
+    return 200, _autotune_call("preview", req.body.get("run_id"), req.body.get("profile"), req.body.get("model"))
 
 
 # =================================================================== the tables
@@ -1837,6 +1812,7 @@ POST_ROUTES = {
     "/api/autotune/refine":     post_autotune_refine,
     "/api/autotune/start":      post_autotune_start,
     "/api/autotune/cancel":     post_autotune_cancel,
+    "/api/autotune/preview":    post_autotune_preview,
     "/api/presets/save":        post_presets_save,
     "/api/presets/bind":        post_presets_bind,
     "/api/presets/delete":      post_presets_delete,

@@ -11,6 +11,7 @@ import { $, $$, esc, setHTML, api, toast, meter } from "./core.js";
 import { S, models as modelRows, config as cfgOf } from "./state.js";
 import { on, emit } from "./bus.js";
 import { activeTab } from "./ui.js";
+import { initAutoTune, syncAutoTune } from "./autotune.js";
 
 const LITE_KNOBS = new Set(["n-gpu-layers","ctx-size","cache-type-k","cache-type-v",
   "flash-attn","batch-size","ubatch-size","threads","tensor-split","temp","top-p"]);
@@ -146,7 +147,7 @@ function knobGroups(m, schema) {
 function editorLive(m) {
   return m.backend === "vllm"
     ? `${diagBlock(m)}${modelMeta(m)}`
-    : `${diagBlock(m)}${metaBlock(m)}${modelMeta(m)}${presetBar(m)}${autoTuneBar(m)}`;
+    : `${diagBlock(m)}${metaBlock(m)}${modelMeta(m)}${presetBar(m)}`;
 }
 function editorButtons(m) {
   if (m.backend === "vllm") {
@@ -198,6 +199,7 @@ function editor(m) {
       <input class="search" data-knobfilter placeholder="${esc(placeholder)}">
       <span class="chip ${onlySet?"on":""}" data-onlyset>Only set</span>
     </div>
+    ${m.backend === "vllm" ? "" : `<div class="ed-autotune" data-autotune-panel="${esc(m.id)}"></div>`}
     <div class="ed-knobs">${knobGroups(m,schema)}</div>
     <div class="actions">
       <span class="ed-btns">${editorButtons(m)}</span>
@@ -423,6 +425,7 @@ function syncEditor(row, m) {
     const sig = build(m);
     if (row[key] !== sig) { setHTML(el, sig); row[key] = sig; }
   }
+  syncAutoTune(m);
 }
 
 /* ---------- quick-load + sequential queue ---------- */
@@ -789,6 +792,24 @@ function refreshTextLog(el, nextText) {
 
 /* ---------- event wiring ---------- */
 export function initModels() {
+  initAutoTune({
+    model: id => modelRows().find(model => model.id === id),
+    modal: showModal,
+    closeModal,
+    unsaved: id => {
+      const row = $(`.row[data-id="${CSS.escape(id)}"]`), model = modelRows().find(item => item.id === id);
+      return !!row && !!model && $$('[data-k]', row).some(el => String(el.value) !== String(knobPayloadValue(el, model.settings) ?? ""));
+    },
+    stage: (id, settings) => {
+      const row = $(`.row[data-id="${CSS.escape(id)}"]`); if (!row) return;
+      let count = 0;
+      $$('[data-k]', row).forEach(el => {
+        const value = knobPayloadValue(el, settings); if (value == null || el.value === String(value)) return;
+        el.value = String(value); syncKnobSetState(el); count += 1;
+      });
+      const msg = $('[data-msg]', row); if (msg) { msg.className = "msg work"; msg.textContent = `${count} Auto Tune knobs loaded into editor - review and use Save + Reload to apply.`; }
+    },
+  });
   // The Models toolbar lives in index.html with stable ids, so it is wired
   // directly rather than through the delegated handlers the dynamic rows use.
   const ms = $("#model-search"); if (ms) ms.oninput = () => filterModels(ms);

@@ -8,6 +8,7 @@ import uuid
 from statistics import median
 
 import config
+import model_settings
 
 from autotune_core.bench_artifacts import identify_bench_binary, resolve_bench_binary
 from autotune_core.bench_capabilities import probe_binary_capabilities, probe_runtime_capabilities
@@ -34,6 +35,13 @@ class DuplicateRunError(AutoTuneServiceError):
 class NotOwnedError(AutoTuneServiceError): status = 409
 
 
+class RunNotFoundError(AutoTuneServiceError): status = 404
+class RunNotCompletedError(AutoTuneServiceError): status = 409
+class ProfileNotFoundError(AutoTuneServiceError): status = 404
+class ProfileStaleError(AutoTuneServiceError): status = 409
+class IncompatibleBackendError(AutoTuneServiceError): status = 409
+
+
 @dataclass(frozen=True)
 class AutoTuneStartRequest:
     model_path: str
@@ -42,11 +50,13 @@ class AutoTuneStartRequest:
 class AutoTuneService:
     """All expensive preparation occurs in its worker, never in an HTTP thread."""
     def __init__(self, root_dir, config_loader=config.load, environment_capture=capture_environment,
-                 fingerprint=fast_fingerprint, normalizer=normalize_gguf, runner_factory=None):
+                 fingerprint=fast_fingerprint, normalizer=normalize_gguf, runner_factory=None,
+                 schema_loader=None, sections_loader=config.read_sections):
         self.store = RunStore(root_dir)
         self.config_loader, self.environment_capture = config_loader, environment_capture
         self.fingerprint, self.normalizer = fingerprint, normalizer
         self.runner_factory = runner_factory or (lambda: BenchRunner(self.store))
+        self.schema_loader, self.sections_loader = schema_loader or (lambda: {}), sections_loader
         self._registry, self._registry_lock = {}, threading.RLock()
         self._start_lock = threading.RLock()  # process-local fast path; RunStore manifests remain durable truth.
         self._reconciled = False
@@ -108,19 +118,22 @@ class AutoTuneService:
                 tuple(item.execution_environment for item in prepared), BenchmarkTarget(path, expected_model_fp),
                 3, 120, token, tuple(prepared))
         except Exception as exc:
+            error = self._safe_worker_error(exc)
+            # Diagnostics remain server-side; browser DTOs only receive this safe form.
+            print("Auto Tune worker failed [%s]: %r" % (run_id, exc), flush=True)
             try:
-                self.store.acquire(run_id); self.store.fail(run_id, exc.__class__.__name__, str(exc))
+                self.store.acquire(run_id); self.store.fail(run_id, error["code"], error["message"])
             except Exception:
                 pass
         finally:
             with self._registry_lock: self._registry.pop(run_id, None)
 
     def status(self, run_id):
-        manifest = self.store.load_manifest(self._run_id(run_id)); return self._summary(manifest)
+        return self._summary(self._load_manifest(run_id))
 
     def cancel(self, run_id):
         run_id = self._run_id(run_id)
-        manifest = self.store.load_manifest(run_id)
+        manifest = self._load_manifest(run_id)
         if manifest.get("status") in ("completed", "failed", "cancelled", "interrupted"):
             raise NotOwnedError("terminal_run")
         with self._registry_lock: job = self._registry.get(run_id)
@@ -131,8 +144,8 @@ class AutoTuneService:
         return [self._summary(item) for item in self.store.list_manifests(min(max(1, int(limit)), 100))]
 
     def result(self, run_id):
-        manifest = self.store.load_manifest(self._run_id(run_id))
-        if manifest.get("status") != "completed": raise AutoTuneServiceError("run is not completed")
+        manifest = self._load_manifest(run_id)
+        if manifest.get("status") != "completed": raise RunNotCompletedError("run is not completed")
         artifact = self.store.load_result(manifest["run_id"])
         result, profiles = artifact["result"], artifact.get("profiles", [])
         candidate_ids = {profile.get("candidate_id") for profile in profiles}
@@ -159,6 +172,44 @@ class AutoTuneService:
                 "derived_request_latencies": result.get("derived_request_latencies", []), "metrics": aggregates,
                 "staleness": {"state": "not_evaluated"}}
 
+    def preview(self, run_id, profile_name, model_id):
+        """Read-only translation of one measured profile into editor settings."""
+        manifest = self._load_manifest(run_id)
+        if manifest.get("status") != "completed": raise RunNotCompletedError("run is not completed")
+        artifact = self.store.load_result(manifest["run_id"])
+        profile = next((item for item in artifact.get("profiles", ()) if item.get("name") == profile_name), None)
+        if profile is None: raise ProfileNotFoundError("unknown Auto Tune profile")
+        sections = self.sections_loader() or {}
+        current = sections.get(model_id)
+        if not isinstance(current, dict) or not isinstance(current.get("model"), str):
+            raise ProfileNotFoundError("unknown model")
+        path = os.path.abspath(os.path.expanduser(current["model"]))
+        try:
+            matches_model = self.fingerprint(path).value == artifact["result"].get("model_fingerprint")
+        except OSError:
+            matches_model = False
+        if not matches_model:
+            raise ProfileStaleError("Auto Tune profile no longer matches this model.")
+        provenance = dict(profile.get("provenance") or {})
+        profile_backend = provenance.get("backend")
+        configured_backend = str((self.config_loader() or {}).get("llama_backend") or "auto").lower()
+        if configured_backend in ("cuda", "hip", "vulkan", "cpu", "metal") and profile_backend != configured_backend:
+            raise IncompatibleBackendError("Profile backend does not match the configured backend.")
+        try:
+            materialized = model_settings.materialize_autotune_settings(profile.get("settings"), self.schema_loader())
+        except Exception:
+            materialized = model_settings.materialize_autotune_settings(profile.get("settings"))
+            materialized["warnings"].append({"code": "schema_unavailable", "message": "Knob applicability could not be verified."})
+            materialized["applicable"] = False
+        explicit = model_settings.clean_settings(current, self._safe_schema())
+        changes = [{"key": key, "current": explicit.get(key), "recommended": value}
+                   for key, value in materialized["settings"].items()]
+        return {"run_id": manifest["run_id"], "profile": profile_name, "candidate_id": profile.get("candidate_id"),
+                "backend": profile_backend, "settings": materialized["settings"], "changes": changes,
+                "warnings": materialized["warnings"], "applicable": materialized["applicable"],
+                "provenance": self._safe_provenance(provenance),
+                "staleness": {"state": "not_evaluated" if configured_backend == "auto" else "compatible"}}
+
     def reconcile_startup(self):
         return self._reconcile_once()
 
@@ -170,6 +221,32 @@ class AutoTuneService:
 
     @staticmethod
     def _summary(manifest):
+        error = manifest.get("error")
+        if isinstance(error, dict) and error.get("code") in ("model_changed", "artifact_unavailable"):
+            error = {"code": error["code"], "message": str(error.get("message") or "Auto Tune failed.")[:120]}
+        elif error:
+            error = {"code": "internal_error", "message": "Auto Tune failed."}
         return {"run_id": manifest.get("run_id"), "status": manifest.get("status"), "progress": manifest.get("progress"),
-                "model": manifest.get("target", {}).get("model_name"), "created_at": manifest.get("created_at"), "error": manifest.get("error"),
+                "model": manifest.get("target", {}).get("model_name"), "created_at": manifest.get("created_at"), "error": error,
                 "finished_at": manifest.get("finished_at")}
+
+    def _load_manifest(self, run_id):
+        try: return self.store.load_manifest(self._run_id(run_id))
+        except (OSError, ValueError): raise RunNotFoundError("unknown Auto Tune run")
+
+    def _safe_schema(self):
+        try: return self.schema_loader() or {}
+        except Exception: return {}
+
+    @staticmethod
+    def _safe_provenance(provenance):
+        return {key: provenance.get(key) for key in ("backend", "model_fingerprint", "hardware_fingerprint",
+                "scoring_schema_version", "capabilities_fingerprint") if provenance.get(key) is not None}
+
+    @staticmethod
+    def _safe_worker_error(exc):
+        if str(exc) == "model_changed_after_start":
+            return {"code": "model_changed", "message": "The model changed before Auto Tune could start."}
+        if isinstance(exc, FileNotFoundError):
+            return {"code": "artifact_unavailable", "message": "A required Auto Tune artifact is unavailable."}
+        return {"code": "internal_error", "message": "Auto Tune failed."}
