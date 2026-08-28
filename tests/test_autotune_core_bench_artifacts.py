@@ -2,7 +2,7 @@ import conftest_paths  # noqa: F401
 import unittest
 
 from autotune_core.backends import backend_display_name, canonical_backend_id
-from autotune_core.bench_artifacts import resolve_bench_binary
+from autotune_core.bench_artifacts import BenchArtifactAmbiguityError, resolve_bench_binary
 
 
 class TestBenchArtifacts(unittest.TestCase):
@@ -23,3 +23,15 @@ class TestBenchArtifacts(unittest.TestCase):
         config = {"server_bin": "/build/llama-server"}
         ref = resolve_bench_binary(config, "vulkan", exists=lambda path: path == "/build/llama-bench")
         self.assertEqual(ref.provenance, "sibling_fallback")
+
+    def test_one_configured_build_is_selected_without_requested_build_id(self):
+        config = {"server_bin": "/build/llama-server", "autotune_bench_binaries": [
+            {"backend": "cuda", "build_id": "cuda-build", "path": "/configured/bench"}]}
+        ref = resolve_bench_binary(config, "cuda", exists=lambda path: path in ("/configured/bench", "/build/llama-bench"))
+        self.assertEqual((ref.path, ref.build_id, ref.provenance), ("/configured/bench", "cuda-build", "configured"))
+
+    def test_multiple_explicit_builds_without_requested_build_are_ambiguous(self):
+        config = {"autotune_bench_binaries": [{"backend": "cuda", "build_id": "a", "path": "/a"},
+                                                {"backend": "cuda", "build_id": "b", "path": "/b"}]}
+        with self.assertRaises(BenchArtifactAmbiguityError):
+            resolve_bench_binary(config, "cuda", exists=lambda path: True)

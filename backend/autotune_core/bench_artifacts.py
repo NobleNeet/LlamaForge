@@ -16,6 +16,10 @@ class BenchBinaryRef:
     provenance: str  # configured, artifact, or sibling_fallback
 
 
+class BenchArtifactAmbiguityError(ValueError):
+    pass
+
+
 def _refs_from_config(configured):
     for item in configured.get("autotune_bench_binaries", []) if isinstance(configured, dict) else []:
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
@@ -41,13 +45,17 @@ def _sibling_fallback(server_bin):
 def resolve_bench_binary(configured, backend=None, build_id=None, exists=os.path.isfile):
     """Resolve exact backend/build artifacts first; sibling inference is last."""
     backend = canonical_backend_id(backend)
-    refs = list(_refs_from_config(configured))
-    for ref in refs:
-        if ref.backend == backend and ref.build_id == build_id and exists(ref.path):
-            return ref
-    for ref in refs:
-        if ref.backend == backend and ref.build_id is None and exists(ref.path):
-            return ref
+    refs = [ref for ref in _refs_from_config(configured) if ref.backend == backend and exists(ref.path)]
+    if build_id is not None:
+        exact = [ref for ref in refs if ref.build_id == build_id]
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            raise BenchArtifactAmbiguityError("multiple explicit llama-bench artifacts match backend/build")
+    elif len(refs) == 1:
+        return refs[0]
+    elif len(refs) > 1:
+        raise BenchArtifactAmbiguityError("multiple explicit llama-bench artifacts match backend without build_id")
     selected = canonical_backend_id((configured or {}).get("llama_backend"))
     fallback = _sibling_fallback((configured or {}).get("server_bin"))
     if fallback and exists(fallback) and (selected is None or selected == backend):
