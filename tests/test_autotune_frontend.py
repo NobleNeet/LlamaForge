@@ -26,3 +26,11 @@ class TestAutoTuneFrontendBoundary(unittest.TestCase):
         self.assertIn("Waiting for benchmark resource...", autotune)
         self.assertIn("stageHistory(progress)", autotune)
         self.assertNotIn("overall percentage", autotune)
+
+    def test_stage_counts_use_an_aligned_left_side_grid(self):
+        with open(os.path.join(ROOT, "web", "index.html"), encoding="utf-8") as handle: html = handle.read()
+        stage_css = html[html.index(".at-stage{"):html.index("/* modal", html.index(".at-stage{"))]
+        self.assertIn("display:grid", stage_css)
+        self.assertIn("grid-template-columns:10px minmax(100px,130px)", stage_css)
+        self.assertIn("margin-left:0", stage_css)
+        self.assertNotIn("margin-left:auto", stage_css)
