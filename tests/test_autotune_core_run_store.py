@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from autotune_core.run_store import RunStore
+from autotune_core.run_store import RunOwnershipError, RunStore
 
 
 class TestRunStore(unittest.TestCase):
@@ -14,7 +14,7 @@ class TestRunStore(unittest.TestCase):
         store.create_run("run", {"x": 1}, {"model": "m"})
         store.write_invocation("run", "i1", {"ok": True})
         self.assertEqual(store.load_manifest("run")["invocation_ids"], [])
-        store.reconcile_interrupted_runs(pid_alive=lambda path: False)
+        store.acquire("run")
         store.record_invocation("run", "i1", {"ok": True})
         self.assertEqual(store.load_manifest("run")["invocation_ids"], ["i1"])
         with open(os.path.join(root, "runs", "run", "invocations", "i1.json"), encoding="utf-8") as handle:
@@ -46,3 +46,19 @@ class TestRunStore(unittest.TestCase):
         store._save_manifest(manifest)
         self.assertEqual(store.reconcile_interrupted_runs(pid_alive=lambda path: False), ["run"])
         self.assertEqual(store.load_manifest("run")["invocation_ids"], ["crash-window"])
+
+    def test_foreign_live_lease_rejected_same_owner_renews_and_terminal_mutations_rejected(self):
+        root = tempfile.mkdtemp()
+        first = RunStore(root, instance_id="one", pid=11, hostname="host", clock=lambda: 10, lease_seconds=100)
+        first.create_run("run", {}, {})
+        first.acquire("run")
+        second = RunStore(root, instance_id="two", pid=22, hostname="host", clock=lambda: 20, lease_seconds=100)
+        with self.assertRaises(RunOwnershipError):
+            second.acquire("run", pid_alive=lambda path: True)
+        renewed = first.acquire("run")
+        self.assertEqual(renewed["owner_instance_id"], "one")
+        first.finish("run", "completed")
+        with self.assertRaises(RunOwnershipError):
+            first.acquire("run")
+        with self.assertRaises(RunOwnershipError):
+            first.heartbeat("run")

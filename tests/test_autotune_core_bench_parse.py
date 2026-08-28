@@ -20,3 +20,13 @@ class TestBenchParse(unittest.TestCase):
         with self.assertRaises(BenchParseError):
             expand_record({"n_prompt": 1, "n_gen": 0, "n_depth": 0, "samples_ts": [1], "samples_ns": [1]},
                           _case(), (), 0, "s", "f", 1)
+
+    def test_json_scalars_and_arrays_with_non_objects_are_rejected(self):
+        for text in ("null", "1", '"x"', "[{}, null]", "[1]"):
+            with self.assertRaises(BenchParseError, msg=text):
+                parse_structured_output(text)
+
+    def test_requested_repetition_count_must_match_samples(self):
+        record = {"n_prompt": 32, "n_gen": 0, "n_depth": 0, "samples_ts": [1.0], "samples_ns": [1]}
+        with self.assertRaisesRegex(BenchParseError, "requested repetitions"):
+            expand_record(record, _case(), (), 0, "s", "f", 1, requested_repetitions=2)

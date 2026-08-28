@@ -76,8 +76,11 @@ def _latency_score(case_values):
             latency += workload.weight * workload.prompt_tokens / value
         elif workload.mode == "tg":
             latency += workload.weight * workload.generation_tokens / value
+        elif workload.mode == "pg_native":
+            # Native combined throughput is neither pp/tg throughput nor requests/sec.
+            return None
         else:
-            latency += workload.weight / value  # pg value is already requests/sec
+            return None
     return 1.0 / latency if latency > 0 else None
 
 

@@ -11,7 +11,10 @@ class BenchParseError(ValueError):
 def parse_structured_output(text):
     try:
         value = json.loads(text)
-        return value if isinstance(value, list) else [value]
+        records = value if isinstance(value, list) else [value]
+        if not records or not all(isinstance(record, dict) for record in records):
+            raise BenchParseError("JSON output must contain only object records")
+        return records
     except json.JSONDecodeError:
         records = []
         for line in text.splitlines():
@@ -37,12 +40,14 @@ def _matches(record, workload):
     return record.get("n_prompt") == expected_prompt and record.get("n_gen") == expected_generation and record.get("n_depth") == workload.context_depth
 
 
-def expand_record(record, case, argv, exit_code, started_at, finished_at, duration_seconds):
+def expand_record(record, case, argv, exit_code, started_at, finished_at, duration_seconds, requested_repetitions=None):
     if not _matches(record, case.workload):
         raise BenchParseError("output workload does not match benchmark case")
     rates, durations = record.get("samples_ts"), record.get("samples_ns")
     if not isinstance(rates, list) or not isinstance(durations, list) or not rates or len(rates) != len(durations):
         raise BenchParseError("samples_ts and samples_ns must be non-empty equal-length arrays")
+    if requested_repetitions is not None and len(rates) != requested_repetitions:
+        raise BenchParseError("sample count does not match requested repetitions")
     out = []
     for repetition, (rate, sample_ns) in enumerate(zip(rates, durations)):
         if not isinstance(rate, (int, float)) or not isinstance(sample_ns, (int, float)):

@@ -70,3 +70,27 @@ class TestBenchRunner(unittest.TestCase):
         self.assertEqual(status, "failed")
         self.assertLess(time.monotonic() - started, 2)
         self.assertGreater(os.path.getsize(os.path.join(root, 'runs', 'run', 'invocations', artifact['stderr_path'])), 1000000)
+
+    def test_missing_or_non_executable_binary_becomes_failed_artifact(self):
+        for binary in ("/no/such/llama-bench", _script("print('x')")):
+            if binary != "/no/such/llama-bench":
+                os.chmod(binary, stat.S_IRUSR | stat.S_IWUSR)
+            (status, _, artifact), root = self._run(binary)
+            self.assertEqual(status, "failed")
+            self.assertTrue(artifact["error"])
+            self.assertTrue(os.path.exists(os.path.join(root, "runs", "run", "invocations", artifact["invocation_id"] + ".json")))
+            self.assertEqual(RunStore(root).load_manifest("run")["status"], "failed")
+
+    def test_termination_race_is_safe(self):
+        class Gone:
+            pid = 999999
+            def poll(self): return None
+            def kill(self): raise ProcessLookupError()
+            def terminate(self): raise ProcessLookupError()
+        runner = BenchRunner(RunStore(tempfile.mkdtemp()), clock=time.monotonic)
+        original = os.killpg
+        try:
+            os.killpg = lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError())
+            runner._terminate_owned_group(Gone())
+        finally:
+            os.killpg = original

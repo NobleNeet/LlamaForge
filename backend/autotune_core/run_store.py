@@ -11,6 +11,10 @@ import atomicio
 _TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
 
 
+class RunOwnershipError(RuntimeError):
+    pass
+
+
 class RunStore:
     def __init__(self, root_dir, instance_id=None, pid=None, hostname=None, clock=time.time, lease_seconds=60):
         self.root_dir = os.path.abspath(root_dir)
@@ -46,8 +50,25 @@ class RunStore:
     def _save_manifest(self, manifest):
         atomicio.write_json(self._manifest_path(manifest["run_id"]), manifest)
 
-    def mark_running(self, run_id):
+    def _is_owner(self, manifest):
+        return (manifest.get("owner_instance_id") == self.instance_id and manifest.get("owner_pid") == self.pid
+                and manifest.get("hostname") == self.hostname)
+
+    def _lease_active(self, manifest, pid_alive):
+        if manifest.get("hostname") != self.hostname:
+            return True
+        owner_pid = manifest.get("owner_pid")
+        alive = isinstance(owner_pid, int) and bool(pid_alive("/proc/%s" % owner_pid)) if os.name != "nt" else False
+        return alive or self.clock() <= float(manifest.get("lease_expires_at") or 0)
+
+    def acquire(self, run_id, pid_alive=os.path.exists):
         manifest = self.load_manifest(run_id)
+        if manifest.get("status") in _TERMINAL:
+            raise RunOwnershipError("terminal run cannot be acquired")
+        if manifest.get("status") == "running" and not self._is_owner(manifest):
+            if self._lease_active(manifest, pid_alive):
+                raise RunOwnershipError("run is owned by a live foreign lease")
+            raise RunOwnershipError("expired orphan must be reconciled before acquisition")
         now = self.clock()
         manifest.update({"status": "running", "owner_instance_id": self.instance_id, "owner_pid": self.pid,
                          "hostname": self.hostname, "started_at": manifest.get("started_at") or now,
@@ -55,10 +76,17 @@ class RunStore:
         self._save_manifest(manifest)
         return manifest
 
+    mark_running = acquire
+
+    def _require_owner(self, manifest):
+        if not self._is_owner(manifest):
+            raise RunOwnershipError("run mutation requires the owning instance")
+        if manifest.get("status") != "running":
+            raise RunOwnershipError("run is not active")
+
     def heartbeat(self, run_id):
         manifest = self.load_manifest(run_id)
-        if manifest.get("owner_instance_id") != self.instance_id:
-            return manifest
+        self._require_owner(manifest)
         now = self.clock()
         manifest.update({"heartbeat_at": now, "lease_expires_at": now + self.lease_seconds})
         self._save_manifest(manifest)
@@ -80,6 +108,7 @@ class RunStore:
     def record_invocation(self, run_id, invocation_id, artifact):
         self.write_invocation(run_id, invocation_id, artifact)
         manifest = self.load_manifest(run_id)
+        self._require_owner(manifest)
         ids = set(manifest.get("invocation_ids") or ())
         ids.add(invocation_id)
         manifest["invocation_ids"] = sorted(ids)
@@ -89,10 +118,15 @@ class RunStore:
         if status not in _TERMINAL:
             raise ValueError("invalid terminal run status")
         manifest = self.load_manifest(run_id)
+        self._require_owner(manifest)
         manifest["status"] = status
         manifest["finished_at"] = self.clock()
         self._save_manifest(manifest)
         return manifest
+
+    def release(self, run_id, status):
+        """Release the active lease by committing an explicit terminal status."""
+        return self.finish(run_id, status)
 
     def _artifact_ids(self, run_id):
         directory = self._artifact_dir(run_id)

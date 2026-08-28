@@ -47,3 +47,15 @@ class TestScoring(unittest.TestCase):
         self.assertEqual(ranked[0].candidate_id, "b")
         with self.assertRaisesRegex(ValueError, "cannot combine"):
             rank_candidates(plan, measurements, scoring_intent="throughput")
+
+    def test_pg_native_is_not_scored_as_request_rate_for_latency(self):
+        environment = ExecutionEnvironment("hardware", "hip", {},
+            BenchBinaryIdentity("hip", "/bench", "b", "h", "v", "artifact"), "now")
+        workload = BenchmarkWorkload("pg_native", 1000, 10, 0)
+        definition = StageDefinition("native", (), (workload,), 1, 1, scoring_intent="latency")
+        candidate = Candidate("native", "hip", {}, environment)
+        case = BenchmarkCase("native", "native", "native", "hip", {}, workload, environment)
+        scores = rank_candidates(StagePlan(definition, (candidate,), (case,)),
+                                 (BenchmarkMeasurement("native", 0, None, None, exit_code=0, native_tokens_per_second=200),),
+                                 scoring_intent="latency")
+        self.assertEqual(scores, ())
