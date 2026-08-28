@@ -102,9 +102,10 @@ class AutoTuneOrchestrator:
             plan = initial_stage_plan(strategy, rules, usable_environments)
             final_plan = plan
             stage_index = 0
+            stage_count = len(strategy.stages)
             while plan is not None:
                 counts = {"succeeded": 0, "failed": 0, "skipped": 0}
-                self.store.update_progress(run_id, {"stage_index": stage_index, "stage_id": plan.definition.stage_id,
+                self.store.update_progress(run_id, {"stage_index": stage_index, "stage_count": stage_count, "stage_id": plan.definition.stage_id,
                                                     "candidates": len(plan.candidates), "cases": len(plan.cases),
                                                     "counts": counts})
                 for case in plan.cases:
@@ -121,7 +122,7 @@ class AutoTuneOrchestrator:
                             if cancellation is not None and cancellation.cancelled():
                                 self.store.finish(run_id, "cancelled")
                                 return None
-                            self.store.update_progress(run_id, {"stage_index": stage_index, "stage_id": plan.definition.stage_id,
+                            self.store.update_progress(run_id, {"stage_index": stage_index, "stage_count": stage_count, "stage_id": plan.definition.stage_id,
                                                                 "status": "waiting_for_resource", "candidates": len(plan.candidates),
                                                                 "cases": len(plan.cases), "counts": counts})
                     try:
@@ -140,7 +141,7 @@ class AutoTuneOrchestrator:
                         counts["succeeded"] += 1; all_measurements.extend(measurements)
                     else:
                         counts["failed"] += 1
-                    self.store.update_progress(run_id, {"stage_index": stage_index, "stage_id": plan.definition.stage_id,
+                    self.store.update_progress(run_id, {"stage_index": stage_index, "stage_count": stage_count, "stage_id": plan.definition.stage_id,
                                                         "candidates": len(plan.candidates), "cases": len(plan.cases), "counts": counts})
                 all_cases.extend(plan.cases)
                 if cancellation is not None and cancellation.cancelled():
@@ -149,7 +150,7 @@ class AutoTuneOrchestrator:
                 outcome = stage_outcome(plan, all_measurements)
                 valid = bool(outcome.candidate_scores)
                 stage_status = "completed" if valid and not (counts["failed"] or counts["skipped"]) else "partial" if valid else "failed"
-                self.store.update_progress(run_id, {"stage_index": stage_index, "stage_id": plan.definition.stage_id,
+                self.store.update_progress(run_id, {"stage_index": stage_index, "stage_count": stage_count, "stage_id": plan.definition.stage_id,
                                                     "status": stage_status, "candidates": len(plan.candidates),
                                                     "cases": len(plan.cases), "counts": counts})
                 if not valid:

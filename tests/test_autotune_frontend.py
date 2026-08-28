@@ -18,3 +18,11 @@ class TestAutoTuneFrontendBoundary(unittest.TestCase):
         with open(os.path.join(ROOT, "web", "js", "models.js"), encoding="utf-8") as handle: models = handle.read()
         self.assertLess(models.index('class="ed-autotune"'), models.index('class="ed-knobs"'))
         self.assertIn("syncAutoTune(m)", models)
+
+    def test_stage_local_progress_has_no_overall_percentage(self):
+        with open(os.path.join(ROOT, "web", "js", "autotune.js"), encoding="utf-8") as handle: autotune = handle.read()
+        self.assertIn("Stage ${stageNumber} / ${esc(stageCount)}", autotune)
+        self.assertIn("cases in this stage", autotune)
+        self.assertIn("Waiting for benchmark resource...", autotune)
+        self.assertIn("stageHistory(progress)", autotune)
+        self.assertNotIn("overall percentage", autotune)

@@ -19,15 +19,37 @@ function profileCard(profile, result) {
     binary.build_id && `build ${binary.build_id}`, provenance.scoring_schema_version].filter(Boolean).join(" · ");
   return `<section class="at-profile"><h4>${esc(profile.name.replace("_", " "))}</h4><div class="at-meta">${esc(provenance.backend || "unknown")} · ${esc(profile.evidence || "measured")}</div><div class="at-settings">${settings}</div>${latency ? `<div class="at-latency">${latency}</div>` : ""}${identity ? `<div class="at-meta">${esc(identity)}</div>` : ""}<button class="qbtn" data-autotune-preview="${esc(profile.name)}">Preview</button></section>`;
 }
+function stageProgress(item) {
+  const counts = item.counts || {};
+  const done = Number(counts.succeeded || 0) + Number(counts.failed || 0) + Number(counts.skipped || 0);
+  const extras = [counts.failed && `${counts.failed} failed`, counts.skipped && `${counts.skipped} skipped`].filter(Boolean);
+  return `${done} / ${item.cases || 0} cases${extras.length ? ` · ${extras.join(" · ")}` : ""}`;
+}
+function stageHistory(progress) {
+  return (progress.stages || []).map(item => {
+    const current = item.stage_index === progress.stage_index;
+    const marker = current ? "›" : item.status === "completed" ? "✓" : item.status === "partial" ? "!" : "·";
+    return `<div class="at-stage${current ? " current" : ""}"><b>${marker}</b><span>${esc(stageLabel[item.stage_id] || item.stage_id)}</span><small>${esc(stageProgress(item))}</small></div>`;
+  }).join("");
+}
 function render(modelId) {
   const el = panel(modelId); if (!el) return;
   const s = stateFor(modelId);
   if (!s.runId) { setHTML(el, `<div class="autotune"><span class="tunebar-label">Auto Tune</span><button class="qbtn" data-autotune-start ${s.starting ? "disabled" : ""}>${s.starting ? "Starting..." : "Run Auto Tune"}</button></div>`); return; }
   const status = s.status || "planned", progress = s.progress || {}, counts = progress.counts || {};
   let body = `<div class="autotune"><span class="tunebar-label">Auto Tune</span><b>${esc(status)}</b>`;
-  if (!terminal.has(status)) body += `<div class="at-progress">${esc(stageLabel[progress.stage_id] || progress.stage_id || "Preparing")}: ${Number(counts.succeeded||0) + Number(counts.failed||0) + Number(counts.skipped||0)} / ${esc(progress.cases || "?")} cases</div><button class="qbtn stop" data-autotune-cancel ${s.cancelling ? "disabled" : ""}>${s.cancelling ? "Cancelling..." : "Cancel"}</button>`;
+  if (!terminal.has(status)) {
+    if (progress.stage_id) {
+      const stageNumber = Number(progress.stage_index || 0) + 1, stageCount = progress.stage_count || "?";
+      const waiting = progress.status === "waiting_for_resource" ? "Waiting for benchmark resource..." : "";
+      body += `<div class="at-stage-title">Stage ${stageNumber} / ${esc(stageCount)} · ${esc(stageLabel[progress.stage_id] || progress.stage_id)}</div><div class="at-progress">${waiting || `${Number(counts.succeeded||0) + Number(counts.failed||0) + Number(counts.skipped||0)} / ${esc(progress.cases || "?")} cases in this stage`}</div>${waiting ? `<div class="at-progress">${Number(counts.succeeded||0) + Number(counts.failed||0) + Number(counts.skipped||0)} / ${esc(progress.cases || "?")} cases in this stage</div>` : ""}<div class="at-stages">${stageHistory(progress)}</div>`;
+    } else body += `<div class="at-progress">Preparing benchmark...</div>`;
+    body += `<button class="qbtn stop" data-autotune-cancel ${s.cancelling ? "disabled" : ""}>${s.cancelling ? "Cancelling..." : "Cancel"}</button>`;
+  }
   if (status === "failed" && s.error) body += `<div class="msg err">${esc(s.error.message || "Auto Tune failed.")}</div>`;
-  if (status === "completed" && s.result) body += `<div class="at-profiles">${(s.result.profiles || []).map(profile => profileCard(profile, s.result)).join("")}</div>`;
+  setHTML(el, body + "</div>");
+  if (status === "completed" && s.result) body += `<div class="at-progress">Completed · ${esc(progress.stage_count || (progress.stages || []).length)} stages</div><div class="at-stages">${stageHistory(progress)}</div><div class="at-profiles">${(s.result.profiles || []).map(profile => profileCard(profile, s.result)).join("")}</div>`;
+  setHTML(el, body + "</div>");
   setHTML(el, body + "</div>");
 }
 async function poll(modelId) {

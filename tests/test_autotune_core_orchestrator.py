@@ -100,3 +100,17 @@ class TestOrchestrator(unittest.TestCase):
         progress = store.load_manifest("run")["progress"]
         self.assertEqual(progress["counts"]["skipped"], 0)
         self.assertEqual(progress["counts"]["succeeded"], 1)
+
+    def test_stage_history_is_durable_across_three_stage_run(self):
+        root = tempfile.mkdtemp(); store = RunStore(root, instance_id="owner"); store.create_run("run", {}, {})
+        env = ExecutionEnvironment("hw", "cpu", {}, BenchBinaryIdentity("cpu", "/bench", "b", "f", "v", "x"), "")
+        workload = (BenchmarkWorkload("tg", 0, 8, 0),)
+        strategy = BenchmarkStrategy(tuple(StageDefinition(stage, (), workload, 1, 1) for stage in ("coarse", "refine", "validate")))
+        caps = BinaryCapabilities(frozenset({"--repetitions", "--n-depth"}), frozenset({"json"}), True, True, "cap")
+        AutoTuneOrchestrator(store, _Runner(), capability_probe=lambda _: caps).run(
+            "run", strategy, ResolvedRules((), (), (), ()), (env,), BenchmarkTarget("/m", "f"), 1, 1)
+        progress = store.load_manifest("run")["progress"]
+        self.assertEqual(3, progress["stage_count"])
+        self.assertEqual(["coarse", "refine", "validate"], [item["stage_id"] for item in progress["stages"]])
+        self.assertEqual(["completed", "completed", "completed"], [item["status"] for item in progress["stages"]])
+        self.assertEqual([1, 1, 1], [item["counts"]["succeeded"] for item in progress["stages"]])

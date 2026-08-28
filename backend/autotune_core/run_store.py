@@ -241,7 +241,20 @@ class RunStore:
         with self._locked(run_id):
             manifest = self.load_manifest(run_id)
             self._require_owner(manifest)
-            manifest["progress"] = dict(progress)
+            current = dict(progress)
+            previous = manifest.get("progress") or {}
+            stages = {item.get("stage_index"): dict(item) for item in previous.get("stages", ())
+                      if isinstance(item, dict) and isinstance(item.get("stage_index"), int)}
+            index, stage_id = current.get("stage_index"), current.get("stage_id")
+            if isinstance(index, int) and stage_id:
+                stages[index] = {"stage_index": index, "stage_id": stage_id,
+                                 "status": current.get("status", "running"),
+                                 "candidates": current.get("candidates", 0), "cases": current.get("cases", 0),
+                                 "counts": dict(current.get("counts") or {})}
+                current["stages"] = [stages[key] for key in sorted(stages)]
+            elif stages:
+                current["stages"] = [stages[key] for key in sorted(stages)]
+            manifest["progress"] = current
             self._save_manifest(manifest)
             return manifest
 
