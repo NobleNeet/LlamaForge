@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from .bench_argv import build_bench_argv
 from .bench_parse import BenchParseError, expand_record, parse_structured_output
+from .bench_artifacts import BenchBinaryRef, identify_bench_binary
 
 
 class CancellationToken:
@@ -69,7 +70,8 @@ class BenchRunner:
             raise BenchParseError("stdout exceeds structured parse limit")
         return data.decode("utf-8", "replace")
 
-    def run_case(self, run_id, target, case, repetitions, timeout_seconds, cancellation=None, binary_capabilities=None):
+    def run_case(self, run_id, target, case, repetitions, timeout_seconds, cancellation=None, binary_capabilities=None,
+                 expected_binary_identity=None):
         invocation_id = str(uuid.uuid4())
         started_wall = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         started = self.clock()
@@ -77,6 +79,11 @@ class BenchRunner:
         status, error, measurements, exit_code = "failed", None, (), None
         self.store.acquire(run_id)
         try:
+            if expected_binary_identity is not None:
+                binary = case.execution_environment.bench_binary
+                current = identify_bench_binary(BenchBinaryRef(binary.backend, binary.build_id, binary.path, binary.provenance))
+                if current is None or current.file_fingerprint != expected_binary_identity.file_fingerprint:
+                    raise RuntimeError("llama-bench binary changed after preflight")
             argv = build_bench_argv(target, case, repetitions, binary_capabilities)
             out_tmp, err_tmp, out_path, err_path = self.store.raw_paths(run_id, invocation_id)
             paths = out_tmp, err_tmp, out_path, err_path

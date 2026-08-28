@@ -49,6 +49,25 @@ class RunStore:
     def _lock_path(self, run_id):
         return os.path.join(self._run_dir(run_id), ".lease.lock")
 
+    @contextmanager
+    def duplicate_lock(self, duplicate_key, wait_seconds=5):
+        """Cross-instance lock for atomic active-scan and run creation."""
+        directory = os.path.join(self.root_dir, "duplicate-locks")
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, duplicate_key + ".lock")
+        deadline, descriptor = time.monotonic() + wait_seconds, None
+        while descriptor is None:
+            try: descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                if time.monotonic() >= deadline: raise RunLockError("timed out waiting for duplicate start lock")
+                time.sleep(0.01); continue
+            os.write(descriptor, json.dumps({"pid": self.pid, "hostname": self.hostname}).encode())
+        try: yield
+        finally:
+            os.close(descriptor)
+            try: os.unlink(path)
+            except FileNotFoundError: pass
+
     @staticmethod
     def _pid_alive(pid):
         if not isinstance(pid, int) or pid <= 0:
@@ -121,6 +140,21 @@ class RunStore:
     def load_manifest(self, run_id):
         with open(self._manifest_path(run_id), encoding="utf-8") as handle:
             return json.load(handle)
+
+    def list_manifests(self, limit=100):
+        """Best-effort public listing; corrupt run directories are isolated."""
+        runs_dir = os.path.join(self.root_dir, "runs")
+        if not os.path.isdir(runs_dir):
+            return []
+        manifests = []
+        for run_id in sorted(os.listdir(runs_dir), reverse=True):
+            try:
+                manifests.append(self.load_manifest(run_id))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if len(manifests) >= max(0, min(int(limit), 100)):
+                break
+        return manifests
 
     def _save_manifest(self, manifest):
         atomicio.write_json(self._manifest_path(manifest["run_id"]), manifest)
@@ -259,7 +293,7 @@ class RunStore:
             try:
                 with self._locked(run_id):
                     manifest = self.load_manifest(run_id)
-                    if manifest.get("status") != "running":
+                    if manifest.get("status") not in ("planned", "running"):
                         continue
                     foreign_host = manifest.get("hostname") != self.hostname
                     owner_pid = manifest.get("owner_pid")

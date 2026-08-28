@@ -22,6 +22,7 @@ import json, os, subprocess, sys, urllib.request, urllib.error, urllib.parse
 
 import config, argspec, hardware, osplat, prereqs, scanner, hub, router_ctl, stats
 import autotune, anthropic_shim, agentsetup, wiki, docs
+import autotune_service
 import vram_predict
 import wsl, vllm_ctl, vllm_registry, vllm_setup, vllm_job, vllm_hub, vllm_download
 import gguf, diag, backends
@@ -55,6 +56,15 @@ PANEL_RESTART = None
 MODEL_LOAD_HOOK = None
 MODEL_UNLOAD_HOOK = None
 PRESET_SYNC_HOOK = None
+_AUTOTUNE_SERVICE = None
+
+
+def autotune_service_instance():
+    """Lazy so importing routes never probes hardware or starts reconciliation."""
+    global _AUTOTUNE_SERVICE
+    if _AUTOTUNE_SERVICE is None:
+        _AUTOTUNE_SERVICE = autotune_service.AutoTuneService(os.path.join(LOGDIR, "autotune"))
+    return _AUTOTUNE_SERVICE
 
 
 def _dbg(event, **fields):
@@ -1750,9 +1760,34 @@ def post_wiki_export(req):
     return (400 if out.get("error") else 200), out
 
 
+def _autotune_call(method, *args):
+    try:
+        return getattr(autotune_service_instance(), method)(*args)
+    except autotune_service.AutoTuneServiceError as exc:
+        raise ApiError(exc.status, str(exc))
+    except (OSError, ValueError) as exc:
+        raise ApiError(404 if method in ("status", "result") else 400, str(exc))
+
+
+def post_autotune_start(req):
+    path = req.body.get("model_path")
+    if not isinstance(path, str):
+        raise ApiError(400, "model_path is required")
+    return 202, _autotune_call("start", autotune_service.AutoTuneStartRequest(path))
+
+
+def get_autotune_status(req): return 200, _autotune_call("status", req.q("run_id"))
+def get_autotune_result(req): return 200, _autotune_call("result", req.q("run_id"))
+def get_autotune_runs(req): return 200, _autotune_call("list_runs", req.q("limit", 20))
+def post_autotune_cancel(req): return 200, _autotune_call("cancel", req.body.get("run_id"))
+
+
 # =================================================================== the tables
 
 GET_ROUTES = {
+    "/api/autotune/status":    get_autotune_status,
+    "/api/autotune/result":    get_autotune_result,
+    "/api/autotune/runs":      get_autotune_runs,
     "/api/state":             get_state,
     "/api/schema":            get_schema,
     "/api/gpus":              get_gpus,
@@ -1795,6 +1830,8 @@ POST_ROUTES = {
     "/api/unload_all":          post_unload_all,
     "/api/autotune/recommend":  post_autotune_recommend,
     "/api/autotune/refine":     post_autotune_refine,
+    "/api/autotune/start":      post_autotune_start,
+    "/api/autotune/cancel":     post_autotune_cancel,
     "/api/presets/save":        post_presets_save,
     "/api/presets/bind":        post_presets_bind,
     "/api/presets/delete":      post_presets_delete,

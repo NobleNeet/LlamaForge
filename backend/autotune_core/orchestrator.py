@@ -74,20 +74,26 @@ class AutoTuneOrchestrator:
         self.resource_wait_seconds = resource_wait_seconds
         self.resource_lease_factory = resource_lease_factory
 
-    def run(self, run_id, strategy, rules, environments, target, repetitions, timeout_seconds, cancellation=None):
+    def run(self, run_id, strategy, rules, environments, target, repetitions, timeout_seconds, cancellation=None,
+            prepared_environments=None):
         self.store.acquire(run_id)
         try:
             capabilities = {}
             usable_environments = []
+            supplied = {execution_fingerprint(item.execution_environment): item for item in prepared_environments or ()}
             for environment in environments:
                 try:
-                    capabilities[execution_fingerprint(environment)] = self.capability_probe(environment.bench_binary.path)
+                    prepared = supplied.get(execution_fingerprint(environment))
+                    capabilities[execution_fingerprint(environment)] = prepared.binary_capabilities if prepared else self.capability_probe(environment.bench_binary.path)
                     usable_environments.append(environment)
-                    try:
-                        self.runtime_capabilities[execution_fingerprint(environment)] = self.runtime_capability_probe(
-                            environment.bench_binary.path, environment.backend)
-                    except CapabilityProbeError:
-                        pass  # Hardware/runtime detection remains the availability source.
+                    if prepared:
+                        self.runtime_capabilities[execution_fingerprint(environment)] = prepared.runtime_capabilities
+                    else:
+                        try:
+                            self.runtime_capabilities[execution_fingerprint(environment)] = self.runtime_capability_probe(
+                                environment.bench_binary.path, environment.backend)
+                        except CapabilityProbeError:
+                            pass
                 except CapabilityProbeError:
                     continue
             if not usable_environments:
@@ -119,9 +125,12 @@ class AutoTuneOrchestrator:
                                                                 "status": "waiting_for_resource", "candidates": len(plan.candidates),
                                                                 "cases": len(plan.cases), "counts": counts})
                     try:
-                        status, measurements, _ = self.runner.run_case(
-                            run_id, target, case, repetitions, timeout_seconds, cancellation,
-                            capabilities[execution_fingerprint(case.execution_environment)])
+                        arguments = (run_id, target, case, repetitions, timeout_seconds, cancellation,
+                                     capabilities[execution_fingerprint(case.execution_environment)])
+                        prepared = supplied.get(execution_fingerprint(case.execution_environment))
+                        if prepared is not None:
+                            arguments += (prepared.execution_environment.bench_binary,)
+                        status, measurements, _ = self.runner.run_case(*arguments)
                     finally:
                         lease.release()
                     if cancellation is not None and cancellation.cancelled():

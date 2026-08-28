@@ -86,6 +86,14 @@ class ExecutionEnvironment:
 
 
 @dataclass(frozen=True)
+class PreparedEnvironment:
+    execution_environment: ExecutionEnvironment
+    binary_capabilities: object
+    runtime_capabilities: object
+    binary_identity_fingerprint: str
+
+
+@dataclass(frozen=True)
 class TuneProfile:
     """A result reference, never an implicit replacement for models.ini knobs."""
     profile_id: str
