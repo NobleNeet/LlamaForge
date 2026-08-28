@@ -72,3 +72,21 @@ class TestPlanner(unittest.TestCase):
                                                      tg if case.workload.mode == "tg" else None, exit_code=0))
         next_plan = next_stage_plan(strategy, stage_outcome(plan, tuple(measurements)), rules)
         self.assertEqual({candidate.settings["threads"] for candidate in next_plan.candidates}, set(candidates))
+
+    def test_required_decode_failure_excludes_prefill_and_pareto_retention(self):
+        strategy = BenchmarkStrategy((
+            StageDefinition("coarse", (ParameterSpace("threads", (1, 2)),),
+                            (BenchmarkWorkload("pp", 100, 0, 0), BenchmarkWorkload("tg", 0, 100, 0)), 1, 8),
+            StageDefinition("next", (), (BenchmarkWorkload("tg", 0, 10, 0),), 1, 8),
+        ))
+        rules = ResolvedRules((), (), (), ())
+        plan = initial_stage_plan(strategy, rules, (_environment("hip", "b"),))
+        measurements = []
+        for case in plan.cases:
+            if case.settings["threads"] == 1 and case.workload.mode == "tg":
+                continue
+            measurements.append(BenchmarkMeasurement(case.case_id, 0, 1000.0 if case.workload.mode == "pp" and case.settings["threads"] == 1 else 10.0 if case.workload.mode == "pp" else None,
+                                                     100.0 if case.workload.mode == "tg" and case.settings["threads"] == 2 else 10.0 if case.workload.mode == "tg" else None, exit_code=0))
+        outcome = stage_outcome(plan, tuple(measurements))
+        retained = next_stage_plan(strategy, outcome, rules)
+        self.assertEqual({candidate.settings["threads"] for candidate in retained.candidates}, {2})

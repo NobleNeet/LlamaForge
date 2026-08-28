@@ -5,6 +5,7 @@ from autotune_core.models import BenchBinaryIdentity, ExecutionEnvironment
 from autotune_core.planner import Candidate, StageDefinition, StagePlan
 from autotune_core.results import BenchmarkCase, BenchmarkMeasurement, BenchmarkWorkload
 from autotune_core.scoring import derive_request_latency, rank_candidates
+from autotune_core.orchestrator import generate_profiles
 
 
 class TestRequiredWorkloads(unittest.TestCase):
@@ -19,3 +20,4 @@ class TestRequiredWorkloads(unittest.TestCase):
         self.assertEqual(rank_candidates(plan, measurements), ())
         request = BenchmarkWorkload("request", 10, 10, 0)
         self.assertIsNone(derive_request_latency("request", request, "pp", pp, measurements, "tg", tg, ()))
+        self.assertEqual(generate_profiles(plan, measurements, lambda candidate: None), ())

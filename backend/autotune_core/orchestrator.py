@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 
-from .planner import initial_stage_plan, next_stage_plan, stage_outcome
+from .planner import eligible_candidates, initial_stage_plan, next_stage_plan, stage_outcome
 from .resource_lease import BenchmarkResourceLease, ResourceBusyError
 from .results import TuneResult
 from .scoring import rank_candidates
@@ -41,7 +41,7 @@ def _fingerprint(value):
 
 def generate_profiles(final_plan, measurements, identity_for_candidate):
     """Generate measured speed profiles; memory remains explicit heuristic evidence."""
-    profiles = []
+    profiles, eligible = [], eligible_candidates(final_plan, measurements)
     for name, intent in (("balanced", "auto"), ("fast_prefill", "throughput"), ("fast_decode", "throughput")):
         if name == "fast_prefill":
             cases = tuple(case for case in final_plan.cases if case.workload.mode == "pp")
@@ -49,29 +49,30 @@ def generate_profiles(final_plan, measurements, identity_for_candidate):
             cases = tuple(case for case in final_plan.cases if case.workload.mode == "tg")
         else:
             cases = final_plan.cases
-        scores = rank_candidates(type("Plan", (), {"candidates": final_plan.candidates, "cases": cases})(), measurements,
+        scores = rank_candidates(type("Plan", (), {"candidates": eligible, "cases": cases})(), measurements,
                                   scoring_intent=intent)
         if scores:
-            candidate = next(candidate for candidate in final_plan.candidates if candidate.candidate_id == scores[0].candidate_id)
+            candidate = next(candidate for candidate in eligible if candidate.candidate_id == scores[0].candidate_id)
             profiles.append(GeneratedProfile(name, candidate.candidate_id, dict(candidate.settings), "measured", "benchmark",
                                              identity_for_candidate(candidate)))
-    # No peak memory telemetry exists yet.  Keep this separate from measured profiles.
-    if final_plan.candidates:
-        candidate = min(final_plan.candidates, key=lambda item: (str(item.settings.get("n-gpu-layers", "")), item.candidate_id))
-        profiles.append(GeneratedProfile("low_memory", candidate.candidate_id, dict(candidate.settings),
-                                         "heuristic", "settings-only; no RAM/VRAM telemetry", identity_for_candidate(candidate)))
+    # No peak memory telemetry exists yet, so no low-memory recommendation is emitted.
     return tuple(profiles)
 
 
 class AutoTuneOrchestrator:
     def __init__(self, store, runner, resource_root=None, resource_id_for_case=None, capability_probe=probe_binary_capabilities,
-                 runtime_capability_probe=probe_runtime_capabilities):
+                 runtime_capability_probe=probe_runtime_capabilities, resource_wait_seconds=0.25,
+                 resource_lease_factory=BenchmarkResourceLease):
         self.store, self.runner = store, runner
         self.resource_root = resource_root or store.root_dir
-        self.resource_id_for_case = resource_id_for_case or (lambda case: "%s-%s" % (case.backend, case.execution_environment.hardware_fingerprint))
+        # One physical GPU can expose HIP and Vulkan.  Until per-device mapping is
+        # available, serialize conservatively across all GPU work on this hardware.
+        self.resource_id_for_case = resource_id_for_case or (lambda case: "hardware-" + case.execution_environment.hardware_fingerprint)
         self.capability_probe = capability_probe
         self.runtime_capability_probe = runtime_capability_probe
         self.runtime_capabilities = {}
+        self.resource_wait_seconds = resource_wait_seconds
+        self.resource_lease_factory = resource_lease_factory
 
     def run(self, run_id, strategy, rules, environments, target, repetitions, timeout_seconds, cancellation=None):
         self.store.acquire(run_id)
@@ -106,14 +107,28 @@ class AutoTuneOrchestrator:
                     if cancellation is not None and cancellation.cancelled():
                         self.store.finish(run_id, "cancelled")
                         return None
+                    lease = self.resource_lease_factory(self.resource_root, self.resource_id_for_case(case),
+                                                        instance_id=self.store.instance_id, pid=self.store.pid, hostname=self.store.hostname)
+                    while True:
+                        try:
+                            lease.acquire(self.resource_wait_seconds, cancellation)
+                            break
+                        except ResourceBusyError:
+                            if cancellation is not None and cancellation.cancelled():
+                                self.store.finish(run_id, "cancelled")
+                                return None
+                            self.store.update_progress(run_id, {"stage_index": stage_index, "stage_id": plan.definition.stage_id,
+                                                                "status": "waiting_for_resource", "candidates": len(plan.candidates),
+                                                                "cases": len(plan.cases), "counts": counts})
                     try:
-                        with BenchmarkResourceLease(self.resource_root, self.resource_id_for_case(case)):
-                            status, measurements, _ = self.runner.run_case(
-                                run_id, target, case, repetitions, timeout_seconds, cancellation,
-                                capabilities[execution_fingerprint(case.execution_environment)])
-                    except ResourceBusyError:
-                        counts["skipped"] += 1
-                        continue
+                        status, measurements, _ = self.runner.run_case(
+                            run_id, target, case, repetitions, timeout_seconds, cancellation,
+                            capabilities[execution_fingerprint(case.execution_environment)])
+                    finally:
+                        lease.release()
+                    if cancellation is not None and cancellation.cancelled():
+                        self.store.finish(run_id, "cancelled")
+                        return None
                     if status == "completed":
                         counts["succeeded"] += 1; all_measurements.extend(measurements)
                     else:
@@ -121,6 +136,9 @@ class AutoTuneOrchestrator:
                     self.store.update_progress(run_id, {"stage_index": stage_index, "stage_id": plan.definition.stage_id,
                                                         "candidates": len(plan.candidates), "cases": len(plan.cases), "counts": counts})
                 all_cases.extend(plan.cases)
+                if cancellation is not None and cancellation.cancelled():
+                    self.store.finish(run_id, "cancelled")
+                    return None
                 outcome = stage_outcome(plan, all_measurements)
                 valid = bool(outcome.candidate_scores)
                 stage_status = "completed" if valid and not (counts["failed"] or counts["skipped"]) else "partial" if valid else "failed"
@@ -135,6 +153,9 @@ class AutoTuneOrchestrator:
                 stage_index += 1
             result = TuneResult(run_id, target.model_fingerprint, environments[0].hardware_fingerprint,
                                 tuple(all_cases), tuple(all_measurements))
+            if cancellation is not None and cancellation.cancelled():
+                self.store.finish(run_id, "cancelled")
+                return None
             self.store.finish(run_id, "completed")
             def identity_for(candidate):
                 environment = candidate.execution_environment
@@ -145,8 +166,13 @@ class AutoTuneOrchestrator:
                                        capabilities[execution_fingerprint(environment)].fingerprint, _fingerprint(rules),
                                        _fingerprint(strategy), SCORING_SCHEMA_VERSION, candidate.backend)
             return AutoTuneOutcome(result, generate_profiles(final_plan, all_measurements, identity_for) if all_measurements else ())
-        except FatalAutoTuneError:
-            self.store.finish(run_id, "failed")
+        except Exception:
+            # A runner candidate failure is returned as data. Anything escaping
+            # orchestration is run-fatal, provided this instance still owns it.
+            try:
+                self.store.finish(run_id, "failed")
+            except Exception:
+                pass
             raise
 
     @staticmethod

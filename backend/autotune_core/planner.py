@@ -206,7 +206,9 @@ def stage_outcome(plan, measurements, trim_fraction=0.0):
         values = {case.workload.mode: aggregate_case_measurements(case.workload, by_case.get(case.case_id, ()), trim_fraction)
                   for case in plan.cases if case.candidate_id == candidate.candidate_id}
         by_candidate[candidate.candidate_id] = values
-    objectives = {"balanced": balanced}
+    eligible = {score.candidate_id for score in balanced}
+    by_candidate = {candidate_id: values for candidate_id, values in by_candidate.items() if candidate_id in eligible}
+    objectives = {"balanced": tuple(score for score in balanced if score.candidate_id in eligible)}
     for name, mode in (("prefill", "pp"), ("decode", "tg")):
         scores = [CandidateScore(candidate_id, values[mode], (values[mode],)) for candidate_id, values in by_candidate.items()
                   if values.get(mode) is not None]
@@ -226,6 +228,13 @@ def stage_outcome(plan, measurements, trim_fraction=0.0):
                 frontier.append(CandidateScore(candidate_id, (pp or 0) + (tg or 0), tuple(value for value in (pp, tg) if value is not None)))
         objectives["pareto"] = tuple(sorted(frontier, key=lambda score: score.candidate_id))
     return StageOutcome(plan, balanced, objectives)
+
+
+def eligible_candidates(plan, measurements, trim_fraction=0.0):
+    """The single eligibility rule for every objective and generated speed profile."""
+    eligible_ids = {score.candidate_id for score in rank_candidates(plan, measurements, trim_fraction,
+                                                                      plan.definition.scoring_intent)}
+    return tuple(candidate for candidate in plan.candidates if candidate.candidate_id in eligible_ids)
 
 
 def next_stage_plan(strategy, outcome, resolved_rules):
