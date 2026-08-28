@@ -54,6 +54,7 @@ REGISTRY = None
 PANEL_RESTART = None
 MODEL_LOAD_HOOK = None
 MODEL_UNLOAD_HOOK = None
+PRESET_SYNC_HOOK = None
 
 
 def _dbg(event, **fields):
@@ -1206,7 +1207,13 @@ def post_presets_save(req):
     if config.get_bindings().get(mid) == name:
         clean = _materialize_preset_settings(mid, presets.get(name, {}),
                                              extra_clear_keys=previous_keys)
-        router("/models?reload=1")
+        if callable(PRESET_SYNC_HOOK):
+            try:
+                PRESET_SYNC_HOOK(mid, source="save")
+            except Exception:
+                router("/models?reload=1")
+        else:
+            router("/models?reload=1")
     return 200, {"ok": True, "presets": presets}
 
 
@@ -1233,7 +1240,13 @@ def post_presets_bind(req):
     if name:
         preset = config.get_presets(mid).get(name, {})
         clean = _materialize_preset_settings(mid, preset)
-        router("/models?reload=1")
+        if callable(PRESET_SYNC_HOOK):
+            try:
+                PRESET_SYNC_HOOK(mid, source="bind")
+            except Exception:
+                router("/models?reload=1")
+        else:
+            router("/models?reload=1")
         _dbg("preset.bind", model=mid, preset=name, settings=_knob_snapshot(clean))
         settings = clean
     return 200, {"ok": True, "bindings": binds, "settings": settings}

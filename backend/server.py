@@ -12,7 +12,7 @@ Pure Python stdlib.
 import json, os, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import config, wiki, anthropic_shim, argspec
+import config, wiki, anthropic_shim, argspec, stats
 import routes
 from routes import ApiError, Req
 import osplat
@@ -44,6 +44,8 @@ _PANEL_RESTARTING = False
 _API_IDLE_LOCK = threading.Lock()
 _API_IDLE_LAST = {}
 _API_IDLE_INFLIGHT = {}
+_PRESET_SYNC_LOCK = threading.Lock()
+_PRESET_SYNC_PENDING = set()
 
 
 def _api_idle_timeout_secs(c=None):
@@ -133,6 +135,67 @@ def _api_idle_loop(poll_secs=15):
             _reap_api_idle_models()
         except Exception as e:
             routes._dbg("api.idle.error", error=str(e))
+
+
+def _preset_sync_busy(model):
+    with _API_IDLE_LOCK:
+        inflight = _API_IDLE_INFLIGHT.get(model, 0)
+    live = getattr(getattr(stats, "TRACKER", None), "live", {}) or {}
+    reqs = int(live.get("requests_processing", 0) or 0)
+    gen = float(live.get("gen_per_sec", 0.0) or 0.0)
+    return inflight > 0 or (live.get("loaded_model") == model and (reqs > 0 or gen > 0))
+
+
+def _reload_model_for_preset(model, source=""):
+    st, data = routes.router("/models", timeout=3)
+    if st != 200:
+        return False
+    rows = {m.get("id"): m for m in data.get("data", []) if m.get("id")}
+    status = (rows.get(model, {}).get("status", {}) or {}).get("value", "offline")
+    if status not in ("loaded", "loading"):
+        routes.router("/models?reload=1")
+        routes._dbg("preset.sync.cached", model=model, source=source)
+        return True
+    if _preset_sync_busy(model):
+        routes._dbg("preset.sync.defer", model=model, source=source)
+        return False
+    routes._dbg("preset.sync.reload", model=model, source=source)
+    code, _ = routes.router("/models/unload", "POST", {"model": model})
+    if code == 200 and callable(routes.MODEL_UNLOAD_HOOK):
+        try:
+            routes.MODEL_UNLOAD_HOOK(model, source=f"preset-sync:{source}", backend="llamacpp")
+        except Exception:
+            pass
+    routes.router("/models?reload=1")
+    code, _ = routes.router("/models/load", "POST", {"model": model})
+    if code == 200 and callable(routes.MODEL_LOAD_HOOK):
+        try:
+            routes.MODEL_LOAD_HOOK(model, source=f"preset-sync:{source}", backend="llamacpp")
+        except Exception:
+            pass
+    return code == 200
+
+
+def _schedule_preset_sync(model, source=""):
+    if not model:
+        return
+    if _reload_model_for_preset(model, source=source):
+        with _PRESET_SYNC_LOCK:
+            _PRESET_SYNC_PENDING.discard(model)
+        return
+    with _PRESET_SYNC_LOCK:
+        _PRESET_SYNC_PENDING.add(model)
+
+
+def _preset_sync_loop(poll_secs=3):
+    while True:
+        time.sleep(poll_secs)
+        with _PRESET_SYNC_LOCK:
+            pending = list(_PRESET_SYNC_PENDING)
+        for model in pending:
+            if _reload_model_for_preset(model, source="deferred"):
+                with _PRESET_SYNC_LOCK:
+                    _PRESET_SYNC_PENDING.discard(model)
 
 
 def _allowed_hosts(bind_host, lan_ip=""):
@@ -485,6 +548,7 @@ def main():
     routes.PANEL_RESTART = request_panel_restart
     routes.MODEL_LOAD_HOOK = lambda mid, source="", backend="": _forget_api_model(mid, source or "load")
     routes.MODEL_UNLOAD_HOOK = lambda mid, source="", backend="": _forget_api_model(mid, source or "unload")
+    routes.PRESET_SYNC_HOOK = _schedule_preset_sync
     c = routes.cfg()
     port = c["panel_port"]
     bind_host = c.get("panel_host", "127.0.0.1")
@@ -522,6 +586,8 @@ def main():
                          daemon=True, name="auto-load").start()
     threading.Thread(target=_api_idle_loop,
                      daemon=True, name="api-idle-reaper").start()
+    threading.Thread(target=_preset_sync_loop,
+                     daemon=True, name="preset-sync").start()
     _HTTPD = ThreadingHTTPServer((bind_host, port), H)
     _HTTPD.serve_forever()
 

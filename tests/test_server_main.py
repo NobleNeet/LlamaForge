@@ -45,6 +45,7 @@ class MainStartupTest(unittest.TestCase):
         names = [name for name, _target, _args, _daemon in started]
         self.assertIn("auto-load", names)
         self.assertIn("api-idle-reaper", names)
+        self.assertIn("preset-sync", names)
 
 
 if __name__ == "__main__":
