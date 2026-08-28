@@ -74,7 +74,8 @@ class AutoTuneService:
             if manifest: raise DuplicateRunError(manifest["run_id"])
             run_id = str(uuid.uuid4())
             self.store.create_run(run_id, {"duplicate_key": duplicate_key}, {"model_name": os.path.basename(path), "model_fingerprint": model_fp})
-            token, worker = CancellationToken(), threading.Thread(target=self._worker, args=(run_id, path, snapshot, hardware_fp, model_fp, token), daemon=True)
+            token = CancellationToken()
+            worker = threading.Thread(target=self._worker, args=(run_id, path, snapshot, hardware_fp, model_fp, token), daemon=True)
             with self._registry_lock: self._registry[run_id] = (token, worker)
             try: worker.start()
             except Exception:
