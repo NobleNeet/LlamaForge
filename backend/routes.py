@@ -1129,9 +1129,19 @@ def post_save(req):
 
 def post_load(req):
     mid = req.body.get("model")
-    sect = config.read_sections().get(mid, {})
-    _dbg("model.load", model=mid, settings=_knob_snapshot(sect))
-    _prepare_model_for_load(mid)
+    incoming = req.body.get("settings")
+    if incoming is not None:
+        clean = _clean_settings(incoming)
+        config.set_keys(mid, clean)
+        router("/models?reload=1")
+        sect = config.read_sections().get(mid, {})
+        _dbg("model.load", model=mid, source="ui", settings=_knob_snapshot(sect))
+    else:
+        sect = config.read_sections().get(mid, {})
+        _dbg("model.load", model=mid, source="default", settings=_knob_snapshot(sect))
+        _prepare_model_for_load(mid)
+        sect = config.read_sections().get(mid, {})
+    _dbg("model.load.effective", model=mid, settings=_knob_snapshot(sect))
     code, res = router("/models/load", "POST", {"model": mid})
     if code == 200 and callable(MODEL_LOAD_HOOK):
         try:

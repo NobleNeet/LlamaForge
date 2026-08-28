@@ -176,6 +176,29 @@ class ModelLifecycleHookTest(unittest.TestCase):
         self.assertEqual(seen, [("load", "m", "/api/load", "llamacpp"),
                                 ("unload", "m", "/api/unload", "llamacpp")])
 
+    def test_load_with_explicit_settings_uses_them_instead_of_rebinding_default_preset(self):
+        calls = []
+
+        def fake_router(path, method="GET", body=None, timeout=30):
+            calls.append((path, method, body))
+            return 200, {"ok": True}
+
+        with mock.patch.object(routes, "router", side_effect=fake_router), \
+             mock.patch.object(config, "set_keys") as set_keys, \
+             mock.patch.object(config, "read_sections",
+                               side_effect=[{"m": {"ctx-size": "0", "batch-size": "4096"}},
+                                            {"m": {"ctx-size": "0", "batch-size": "4096"}}]), \
+             mock.patch.object(routes, "_prepare_model_for_load") as prepare:
+            status, _ = routes.post_load(Req(body={"model": "m",
+                                                   "settings": {"ctx-size": "0",
+                                                                "batch-size": "4096"}},
+                                            path="/api/load"))
+        self.assertEqual(status, 200)
+        set_keys.assert_called_once_with("m", {"ctx-size": "0", "batch-size": "4096"})
+        prepare.assert_not_called()
+        self.assertEqual(calls, [("/models?reload=1", "GET", None),
+                                 ("/models/load", "POST", {"model": "m"})])
+
 
 class ScanPruneTest(unittest.TestCase):
     """/api/scan/prune deletes models.ini sections - it must never remove one

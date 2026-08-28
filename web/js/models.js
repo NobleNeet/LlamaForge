@@ -420,10 +420,10 @@ function beOf(id) {
   const m = modelRows().find(x => x.id === id);
   return m ? (m.backend || "llamacpp") : "llamacpp";
 }
-function enqueueLoad(id) {
+function enqueueLoad(id, body=null) {
   if (loadQ.some(j => j.id === id) || (loadBusy && loadQ[0] && loadQ[0].id === id)) return;
   delete diagCache[id];               // a retry should re-diagnose, not show stale error
-  loadQ.push({id});
+  loadQ.push({id, body: body || {model: id}});
   toast(loadBusy ? `Queued #${loadQ.length}` : "Loading...", "ok");
   renderModels(); processQ();
 }
@@ -431,7 +431,7 @@ async function processQ() {
   if (loadBusy || !loadQ.length) return;
   loadBusy = true;
   const job = loadQ[0];
-  try { await api(beOf(job.id) === "vllm" ? "/api/vllm/load" : "/api/load", {model: job.id}); } catch (e) {}
+  try { await api(beOf(job.id) === "vllm" ? "/api/vllm/load" : "/api/load", job.body || {model: job.id}); } catch (e) {}
   loadQ.shift(); loadBusy = false;
   await refresh(true);
   processQ();
@@ -439,11 +439,12 @@ async function processQ() {
 async function quickAction(act, id) {
   const be = beOf(id);
   if (act === "load") {
+    let body = {model: id};
     if (be === "llamacpp") {
-      try { await persistOpenRowBeforeLoad(id); }
-      catch (e) { toast("Save failed: " + e, "err"); return; }
+      const row = $(`.row[data-id="${CSS.escape(id)}"]`);
+      if (row && row.classList.contains("open")) body.settings = rowSettings(row);
     }
-    enqueueLoad(id); return;
+    enqueueLoad(id, body); return;
   }
   if (act === "unload") {
     await api(be === "vllm" ? "/api/vllm/unload" : "/api/unload", {model: id});
@@ -880,10 +881,8 @@ export function initModels() {
           invalidateKnobs();   // server now matches the inputs; refresh "set" marks
         } else { msg.className = "msg err"; msg.textContent = r.error || "failed"; }
       } else if (act === "load") {
-        msg.className = "msg work"; msg.textContent = "saving knobs...";
-        await saveRowSettings(id, row);
         msg.className = "msg work"; msg.textContent = "loading (may take seconds)...";
-        const r = await api("/api/load", {model: id});
+        const r = await api("/api/load", {model: id, settings: rowSettings(row)});
         r.success ? toast("Loaded","ok") : (msg.className="msg err", msg.textContent=(r.error&&r.error.message)||"load failed");
       } else if (act === "unload") {
         msg.className = "msg work"; msg.textContent = "unloading...";
