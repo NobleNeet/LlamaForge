@@ -528,9 +528,13 @@ function presetBar(m) {
       + `<span class="pbind" aria-hidden="true">${isBound ? "◉" : "○"}</span>`
       + `${esc(n)}<span class="px" data-preset-del="${esc(n)}" title="delete preset">&times;</span></span>`;
   }).join("");
+  const overwrite = bound
+    ? `<button class="qbtn" data-preset-overwrite="${esc(m.id)}" data-preset-overwrite-name="${esc(bound)}" title="overwrite the currently bound preset with this model's current knob values">Overwrite bound</button>`
+    : "";
   return `<div class="presetbar">
     <span style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)">Presets</span>
     ${chips||'<span class="note" style="margin:0">none saved yet</span>'}
+    ${overwrite}
     <button class="qbtn" data-preset-save="${esc(m.id)}" title="save this model's set knobs as a named preset">Save current +</button>
   </div>`;
 }
@@ -576,6 +580,16 @@ async function savePresetFrom(model) {
   const r = await api("/api/presets/save", {model, name: name.trim(), settings});
   if (r.ok) { toast(`Saved preset "${name.trim()}"`, "ok"); await refresh(true); }
   else toast(r.error || "save failed", "err");
+}
+async function overwritePresetFrom(model, name) {
+  const row = $(`.row[data-id="${CSS.escape(model)}"]`); if (!row) return;
+  const settings = {};
+  $$("[data-k]", row).forEach(el => { const v = el.value.trim(); if (v !== "") settings[el.dataset.k] = v; });
+  if (!Object.keys(settings).length) { toast("No knobs set to save", "err"); return; }
+  if (!confirm(`Overwrite preset "${name}" with the current knob values?`)) return;
+  const r = await api("/api/presets/save", {model, name, settings});
+  if (r.ok) { toast(`Overwrote preset "${name}"`, "ok"); await refresh(true); }
+  else toast(r.error || "overwrite failed", "err");
 }
 
 /* ---------- GGUF metadata card ---------- */
@@ -833,6 +847,13 @@ export function initModels() {
       const pdel = e.target.closest("[data-preset-del]");
       if (pdel) { await api("/api/presets/delete", {model: pBind.dataset.presetBindModel, name: pdel.dataset.presetDel}); toast("Preset deleted","ok"); await refresh(true); return; }
       await bindPreset(pBind.dataset.presetBindModel, pBind.dataset.presetBind); return;
+    }
+    const pOverwrite = e.target.closest("[data-preset-overwrite]");
+    if (pOverwrite) {
+      e.stopPropagation();
+      await overwritePresetFrom(pOverwrite.dataset.presetOverwrite,
+                                pOverwrite.dataset.presetOverwriteName);
+      return;
     }
     const pSave = e.target.closest("[data-preset-save]");
     if (pSave) { e.stopPropagation(); await savePresetFrom(pSave.dataset.presetSave); return; }
