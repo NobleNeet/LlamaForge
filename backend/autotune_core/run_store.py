@@ -199,6 +199,20 @@ class RunStore:
             manifest["invocation_ids"] = sorted(ids)
             self._save_manifest(manifest)
 
+    def record_result(self, run_id, result, profiles):
+        """Durably save final analysis before the caller transitions to completed."""
+        from dataclasses import asdict
+        from .results import serialize_result
+        with self._locked(run_id):
+            manifest = self.load_manifest(run_id)
+            self._require_owner(manifest)
+            path = os.path.join(self._run_dir(run_id), "result.json")
+            atomicio.write_json(path, {"result": serialize_result(result), "profiles": [asdict(profile) for profile in profiles]})
+            manifest = self.load_manifest(run_id)
+            self._require_owner(manifest)
+            manifest["result_path"] = "result.json"
+            self._save_manifest(manifest)
+
     def finish(self, run_id, status):
         if status not in _TERMINAL:
             raise ValueError("invalid terminal run status")

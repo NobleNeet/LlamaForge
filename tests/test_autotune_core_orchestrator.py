@@ -1,6 +1,7 @@
 import conftest_paths  # noqa: F401
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from autotune_core.bench_capabilities import BinaryCapabilities
 from autotune_core.models import BenchBinaryIdentity, BenchmarkTarget, ExecutionEnvironment
@@ -61,6 +62,22 @@ class TestOrchestrator(unittest.TestCase):
             AutoTuneOrchestrator(store, BrokenRunner(), capability_probe=lambda _: caps).run(
                 "run", strategy, ResolvedRules((), (), (), ()), (env,), BenchmarkTarget("/m", "f"), 1, 1)
         self.assertEqual(store.load_manifest("run")["status"], "failed")
+
+    def test_initial_plan_and_profile_generation_failures_cannot_complete_run(self):
+        root = tempfile.mkdtemp(); store = RunStore(root, instance_id="owner"); store.create_run("initial", {}, {})
+        env = ExecutionEnvironment("hw", "cpu", {}, BenchBinaryIdentity("cpu", "/bench", "b", "f", "v", "x"), "")
+        caps = BinaryCapabilities(frozenset({"--repetitions", "--n-depth"}), frozenset({"json"}), True, True, "cap")
+        with self.assertRaises(ValueError):
+            AutoTuneOrchestrator(store, _Runner(), capability_probe=lambda _: caps).run(
+                "initial", BenchmarkStrategy(()), ResolvedRules((), (), (), ()), (env,), BenchmarkTarget("/m", "f"), 1, 1)
+        self.assertEqual(store.load_manifest("initial")["status"], "failed")
+        store.create_run("profiles", {}, {})
+        strategy = BenchmarkStrategy((StageDefinition("s", (), (BenchmarkWorkload("tg", 0, 8, 0),), 1, 1),))
+        with patch("autotune_core.orchestrator.generate_profiles", side_effect=RuntimeError("profiles")):
+            with self.assertRaisesRegex(RuntimeError, "profiles"):
+                AutoTuneOrchestrator(store, _Runner(), capability_probe=lambda _: caps).run(
+                    "profiles", strategy, ResolvedRules((), (), (), ()), (env,), BenchmarkTarget("/m", "f"), 1, 1)
+        self.assertEqual(store.load_manifest("profiles")["status"], "failed")
 
     def test_resource_busy_waits_without_skipping_the_candidate(self):
         class WaitingLease:

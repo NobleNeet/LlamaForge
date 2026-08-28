@@ -202,30 +202,24 @@ def stage_outcome(plan, measurements, trim_fraction=0.0):
     for measurement in measurements:
         by_case.setdefault(measurement.case_id, []).append(measurement)
     from .scoring import aggregate_case_measurements
-    for candidate in plan.candidates:
-        values = {case.workload.mode: aggregate_case_measurements(case.workload, by_case.get(case.case_id, ()), trim_fraction)
-                  for case in plan.cases if case.candidate_id == candidate.candidate_id}
-        by_candidate[candidate.candidate_id] = values
     eligible = {score.candidate_id for score in balanced}
-    by_candidate = {candidate_id: values for candidate_id, values in by_candidate.items() if candidate_id in eligible}
     objectives = {"balanced": tuple(score for score in balanced if score.candidate_id in eligible)}
     for name, mode in (("prefill", "pp"), ("decode", "tg")):
-        scores = [CandidateScore(candidate_id, values[mode], (values[mode],)) for candidate_id, values in by_candidate.items()
-                  if values.get(mode) is not None]
-        objectives[name] = tuple(sorted(scores, key=lambda score: (-score.score, score.candidate_id)))
-    if plan.definition.pareto_retention and any(values.get("pp") is not None and values.get("tg") is not None
-                                               for values in by_candidate.values()):
+        cases = tuple(case for case in plan.cases if case.workload.mode == mode)
+        objectives[name] = rank_candidates(type("Plan", (), {"candidates": tuple(candidate for candidate in plan.candidates
+                                                                          if candidate.candidate_id in eligible), "cases": cases})(),
+                                          measurements, trim_fraction, "relative")
+    prefill = {score.candidate_id: score.score for score in objectives["prefill"]}
+    decode = {score.candidate_id: score.score for score in objectives["decode"]}
+    if plan.definition.pareto_retention and prefill and decode:
         frontier = []
-        for candidate_id, values in by_candidate.items():
-            pp, tg = values.get("pp"), values.get("tg")
-            if pp is None and tg is None:
-                continue
-            dominated = any(other_id != candidate_id and (other.get("pp") or 0) >= (pp or 0)
-                            and (other.get("tg") or 0) >= (tg or 0)
-                            and ((other.get("pp") or 0) > (pp or 0) or (other.get("tg") or 0) > (tg or 0))
-                            for other_id, other in by_candidate.items())
+        for candidate_id in sorted(set(prefill).intersection(decode)):
+            pp, tg = prefill[candidate_id], decode[candidate_id]
+            dominated = any(other_id != candidate_id and other_pp >= pp and other_tg >= tg
+                            and (other_pp > pp or other_tg > tg)
+                            for other_id, other_pp in prefill.items() for other_tg in [decode.get(other_id)] if other_tg is not None)
             if not dominated:
-                frontier.append(CandidateScore(candidate_id, (pp or 0) + (tg or 0), tuple(value for value in (pp, tg) if value is not None)))
+                frontier.append(CandidateScore(candidate_id, pp + tg, (pp, tg)))
         objectives["pareto"] = tuple(sorted(frontier, key=lambda score: score.candidate_id))
     return StageOutcome(plan, balanced, objectives)
 

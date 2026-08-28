@@ -19,5 +19,5 @@ class TestRequiredWorkloads(unittest.TestCase):
         measurements = (BenchmarkMeasurement("pp", 0, 100.0, None, exit_code=0),)
         self.assertEqual(rank_candidates(plan, measurements), ())
         request = BenchmarkWorkload("request", 10, 10, 0)
-        self.assertIsNone(derive_request_latency("request", request, "pp", pp, measurements, "tg", tg, ()))
+        self.assertIsNone(derive_request_latency("candidate", "request", request, "pp", pp, measurements, "tg", tg, ()))
         self.assertEqual(generate_profiles(plan, measurements, lambda candidate: None), ())

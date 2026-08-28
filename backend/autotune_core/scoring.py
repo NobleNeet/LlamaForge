@@ -13,6 +13,7 @@ class CandidateScore:
 
 @dataclass(frozen=True)
 class DerivedRequestLatency:
+    candidate_id: str
     request_workload_id: str
     source_pp_case_id: str
     source_tg_case_id: str
@@ -49,7 +50,7 @@ def _signature(case):
     return workload.mode, workload.prompt_tokens, workload.generation_tokens, workload.context_depth
 
 
-def derive_request_latency(request_workload_id, request_workload, pp_case_id, pp_workload, pp_measurements,
+def derive_request_latency(candidate_id, request_workload_id, request_workload, pp_case_id, pp_workload, pp_measurements,
                            tg_case_id, tg_workload, tg_measurements, trim_fraction=0.0):
     """Derive request latency from independently aggregated pp/tg processes."""
     pp_rate = aggregate_case_measurements(pp_workload, pp_measurements, trim_fraction)
@@ -57,7 +58,32 @@ def derive_request_latency(request_workload_id, request_workload, pp_case_id, pp
     if not pp_rate or not tg_rate:
         return None
     latency = request_workload.prompt_tokens / pp_rate + request_workload.generation_tokens / tg_rate
-    return DerivedRequestLatency(request_workload_id, pp_case_id, tg_case_id, "median", latency)
+    return DerivedRequestLatency(candidate_id, request_workload_id, pp_case_id, tg_case_id, "median", latency)
+
+
+def derive_request_latencies(stage_plan, measurements, trim_fraction=0.0):
+    """Derive request latency only from independent pp/tg aggregates of one candidate."""
+    by_case = {}
+    for measurement in measurements:
+        by_case.setdefault(measurement.case_id, []).append(measurement)
+    requests = [workload for workload in stage_plan.definition.workloads if workload.mode == "request"]
+    derived = []
+    for candidate in stage_plan.candidates:
+        cases = [case for case in stage_plan.cases if case.candidate_id == candidate.candidate_id]
+        for request in requests:
+            pp = next((case for case in cases if case.workload.mode == "pp" and case.workload.prompt_tokens == request.prompt_tokens
+                       and case.workload.context_depth == request.context_depth), None)
+            tg = next((case for case in cases if case.workload.mode == "tg" and case.workload.generation_tokens == request.generation_tokens
+                       and case.workload.context_depth == request.context_depth), None)
+            if pp is None or tg is None:
+                continue
+            workload_id = "request:%s:%s:%s" % (request.prompt_tokens, request.generation_tokens, request.context_depth)
+            value = derive_request_latency(candidate.candidate_id, workload_id, request, pp.case_id, pp.workload,
+                                           by_case.get(pp.case_id, ()), tg.case_id, tg.workload,
+                                           by_case.get(tg.case_id, ()), trim_fraction)
+            if value is not None:
+                derived.append(value)
+    return tuple(derived)
 
 
 def _weighted_mean(values):

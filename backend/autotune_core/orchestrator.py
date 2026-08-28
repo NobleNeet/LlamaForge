@@ -6,7 +6,7 @@ import json
 from .planner import eligible_candidates, initial_stage_plan, next_stage_plan, stage_outcome
 from .resource_lease import BenchmarkResourceLease, ResourceBusyError
 from .results import TuneResult
-from .scoring import rank_candidates
+from .scoring import derive_request_latencies, rank_candidates
 from .environment import execution_fingerprint
 from .bench_capabilities import CapabilityProbeError, probe_binary_capabilities, probe_runtime_capabilities
 from .staleness import ProfileIdentity
@@ -42,7 +42,7 @@ def _fingerprint(value):
 def generate_profiles(final_plan, measurements, identity_for_candidate):
     """Generate measured speed profiles; memory remains explicit heuristic evidence."""
     profiles, eligible = [], eligible_candidates(final_plan, measurements)
-    for name, intent in (("balanced", "auto"), ("fast_prefill", "throughput"), ("fast_decode", "throughput")):
+    for name, intent in (("balanced", "auto"), ("fast_prefill", "relative"), ("fast_decode", "relative")):
         if name == "fast_prefill":
             cases = tuple(case for case in final_plan.cases if case.workload.mode == "pp")
         elif name == "fast_decode":
@@ -76,28 +76,26 @@ class AutoTuneOrchestrator:
 
     def run(self, run_id, strategy, rules, environments, target, repetitions, timeout_seconds, cancellation=None):
         self.store.acquire(run_id)
-        capabilities = {}
-        usable_environments = []
-        for environment in environments:
-            try:
-                capabilities[execution_fingerprint(environment)] = self.capability_probe(environment.bench_binary.path)
-                usable_environments.append(environment)
-                try:
-                    self.runtime_capabilities[execution_fingerprint(environment)] = self.runtime_capability_probe(
-                        environment.bench_binary.path, environment.backend)
-                except CapabilityProbeError:
-                    # Environment construction already came from the hardware/runtime detector.
-                    # Device enumeration is diagnostic capability evidence, not a help-text substitute.
-                    pass
-            except CapabilityProbeError:
-                continue
-        if not usable_environments:
-            self.store.finish(run_id, "failed")
-            raise FatalAutoTuneError("no usable llama-bench binary capabilities")
-        all_cases, all_measurements, plan = [], [], initial_stage_plan(strategy, rules, usable_environments)
-        final_plan = plan
-        stage_index = 0
         try:
+            capabilities = {}
+            usable_environments = []
+            for environment in environments:
+                try:
+                    capabilities[execution_fingerprint(environment)] = self.capability_probe(environment.bench_binary.path)
+                    usable_environments.append(environment)
+                    try:
+                        self.runtime_capabilities[execution_fingerprint(environment)] = self.runtime_capability_probe(
+                            environment.bench_binary.path, environment.backend)
+                    except CapabilityProbeError:
+                        pass  # Hardware/runtime detection remains the availability source.
+                except CapabilityProbeError:
+                    continue
+            if not usable_environments:
+                raise FatalAutoTuneError("no usable llama-bench binary capabilities")
+            all_cases, all_measurements = [], []
+            plan = initial_stage_plan(strategy, rules, usable_environments)
+            final_plan = plan
+            stage_index = 0
             while plan is not None:
                 counts = {"succeeded": 0, "failed": 0, "skipped": 0}
                 self.store.update_progress(run_id, {"stage_index": stage_index, "stage_id": plan.definition.stage_id,
@@ -151,12 +149,9 @@ class AutoTuneOrchestrator:
                 final_plan = plan
                 plan = next_stage_plan(strategy, outcome, rules)
                 stage_index += 1
+            derived = derive_request_latencies(final_plan, all_measurements)
             result = TuneResult(run_id, target.model_fingerprint, environments[0].hardware_fingerprint,
-                                tuple(all_cases), tuple(all_measurements))
-            if cancellation is not None and cancellation.cancelled():
-                self.store.finish(run_id, "cancelled")
-                return None
-            self.store.finish(run_id, "completed")
+                                tuple(all_cases), tuple(all_measurements), derived)
             def identity_for(candidate):
                 environment = candidate.execution_environment
                 binary = environment.bench_binary
@@ -165,7 +160,16 @@ class AutoTuneOrchestrator:
                                         "file_fingerprint": binary.file_fingerprint, "version_text": binary.version_text},
                                        capabilities[execution_fingerprint(environment)].fingerprint, _fingerprint(rules),
                                        _fingerprint(strategy), SCORING_SCHEMA_VERSION, candidate.backend)
-            return AutoTuneOutcome(result, generate_profiles(final_plan, all_measurements, identity_for) if all_measurements else ())
+            profiles = generate_profiles(final_plan, all_measurements, identity_for) if all_measurements else ()
+            if cancellation is not None and cancellation.cancelled():
+                self.store.finish(run_id, "cancelled")
+                return None
+            self.store.record_result(run_id, result, profiles)
+            if cancellation is not None and cancellation.cancelled():
+                self.store.finish(run_id, "cancelled")
+                return None
+            self.store.finish(run_id, "completed")
+            return AutoTuneOutcome(result, profiles)
         except Exception:
             # A runner candidate failure is returned as data. Anything escaping
             # orchestration is run-fatal, provided this instance still owns it.

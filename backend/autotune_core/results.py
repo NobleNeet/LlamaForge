@@ -53,6 +53,7 @@ class TuneResult:
     hardware_fingerprint: str
     cases: Tuple[BenchmarkCase, ...] = field(default_factory=tuple)
     measurements: Tuple[BenchmarkMeasurement, ...] = field(default_factory=tuple)
+    derived_request_latencies: Tuple[object, ...] = field(default_factory=tuple)
 
 
 def _workload_dict(workload):
@@ -97,6 +98,11 @@ def validate_result(result):
             errors.append("measurement references unknown case %s" % measurement.case_id)
         if measurement.repetition < 0:
             errors.append("measurement repetition must be non-negative")
+    for derived in result.derived_request_latencies:
+        if derived.source_pp_case_id not in case_ids or derived.source_tg_case_id not in case_ids:
+            errors.append("derived request latency references unknown source case")
+        if derived.aggregate_method not in ("median", "trimmed_mean"):
+            errors.append("derived request latency has unknown aggregation method")
     return errors
 
 
@@ -105,6 +111,10 @@ def serialize_result(result):
         "result_id": result.result_id,
         "model_fingerprint": result.model_fingerprint,
         "hardware_fingerprint": result.hardware_fingerprint,
+        "derived_request_latencies": [{"candidate_id": item.candidate_id, "request_workload_id": item.request_workload_id,
+                                        "source_pp_case_id": item.source_pp_case_id, "source_tg_case_id": item.source_tg_case_id,
+                                        "aggregate_method": item.aggregate_method, "latency_seconds": item.latency_seconds}
+                                       for item in result.derived_request_latencies],
         "cases": [{"case_id": case.case_id, "stage_id": case.stage_id,
                    "candidate_id": case.candidate_id, "backend": case.backend,
                    "settings": dict(case.settings), "workload": _workload_dict(case.workload),
@@ -123,6 +133,7 @@ def serialize_result(result):
 
 def deserialize_result(data):
     from .models import BenchBinaryIdentity
+    from .scoring import DerivedRequestLatency
     cases = []
     for item in data.get("cases") or []:
         environment = item.get("execution_environment") or {}
@@ -150,4 +161,8 @@ def deserialize_result(data):
                                                 item.get("raw_structured_result"), item.get("stderr"), item.get("exit_code"),
                                                 item.get("started_at"), item.get("finished_at"), item.get("duration_seconds"),
                                                 item.get("error"), item.get("native_tokens_per_second")) for item in data.get("measurements") or []),
+        derived_request_latencies=tuple(DerivedRequestLatency(str(item.get("candidate_id") or ""), str(item.get("request_workload_id") or ""),
+                                                               str(item.get("source_pp_case_id") or ""), str(item.get("source_tg_case_id") or ""),
+                                                               str(item.get("aggregate_method") or ""), float(item.get("latency_seconds") or 0))
+                                        for item in data.get("derived_request_latencies") or []),
     )
