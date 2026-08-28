@@ -34,3 +34,11 @@ class TestAutoTuneFrontendBoundary(unittest.TestCase):
         self.assertIn("grid-template-columns:10px minmax(100px,130px)", stage_css)
         self.assertIn("margin-left:0", stage_css)
         self.assertNotIn("margin-left:auto", stage_css)
+
+    def test_completed_run_reference_is_restored_until_rerun(self):
+        with open(os.path.join(ROOT, "web", "js", "autotune.js"), encoding="utf-8") as handle: autotune = handle.read()
+        self.assertIn('RUN_STORAGE_KEY = "lf_autotune_runs_v1"', autotune)
+        self.assertIn("saveRun(modelId, s.runId)", autotune)
+        self.assertIn("if (s.runId && !s.restored)", autotune)
+        self.assertIn("data-autotune-rerun", autotune)
+        self.assertIn('"Run again"', autotune)

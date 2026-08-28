@@ -5,8 +5,21 @@ const sessions = new Map();
 let bridge = null;
 const terminal = new Set(["completed", "failed", "cancelled", "interrupted"]);
 const stageLabel = {coarse: "Initial search", refine: "Fine tuning", validate: "Validation"};
+const RUN_STORAGE_KEY = "lf_autotune_runs_v1";
 
-function stateFor(modelId) { if (!sessions.has(modelId)) sessions.set(modelId, {}); return sessions.get(modelId); }
+function savedRuns() {
+  try { return JSON.parse(localStorage.getItem(RUN_STORAGE_KEY) || "{}"); }
+  catch (_) { return {}; }
+}
+function saveRun(modelId, runId) {
+  const runs = savedRuns();
+  if (runId) runs[modelId] = runId; else delete runs[modelId];
+  try { localStorage.setItem(RUN_STORAGE_KEY, JSON.stringify(runs)); } catch (_) { /* browser storage is optional */ }
+}
+function stateFor(modelId) {
+  if (!sessions.has(modelId)) sessions.set(modelId, {runId: savedRuns()[modelId] || null, restored: false});
+  return sessions.get(modelId);
+}
 function panel(modelId) { return document.querySelector(`[data-autotune-panel="${CSS.escape(modelId)}"]`); }
 function profileCard(profile, result) {
   const settings = Object.entries(profile.settings || {}).map(([k,v]) => `<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join("");
@@ -48,25 +61,37 @@ function render(modelId) {
   }
   if (status === "failed" && s.error) body += `<div class="msg err">${esc(s.error.message || "Auto Tune failed.")}</div>`;
   setHTML(el, body + "</div>");
-  if (status === "completed" && s.result) body += `<div class="at-progress">Completed · ${esc(progress.stage_count || (progress.stages || []).length)} stages</div><div class="at-stages">${stageHistory(progress)}</div><div class="at-profiles">${(s.result.profiles || []).map(profile => profileCard(profile, s.result)).join("")}</div>`;
-  setHTML(el, body + "</div>");
+  if (status === "completed") {
+    body += `<button class="qbtn" data-autotune-rerun ${s.starting ? "disabled" : ""}>${s.starting ? "Starting..." : "Run again"}</button>`;
+    if (s.result) body += `<div class="at-progress">Completed · ${esc(progress.stage_count || (progress.stages || []).length)} stages</div><div class="at-stages">${stageHistory(progress)}</div><div class="at-profiles">${(s.result.profiles || []).map(profile => profileCard(profile, s.result)).join("")}</div>`;
+  }
   setHTML(el, body + "</div>");
 }
 async function poll(modelId) {
-  const s = stateFor(modelId); if (!s.runId) return;
-  const response = await api(`/api/autotune/status?run_id=${encodeURIComponent(s.runId)}`);
-  if (response.error && !response.status) { s.status = "failed"; s.error = {message: "Auto Tune status is unavailable."}; render(modelId); return; }
-  Object.assign(s, response); render(modelId);
-  if (terminal.has(s.status)) { if (s.status === "completed") s.result = await api(`/api/autotune/result?run_id=${encodeURIComponent(s.runId)}`); render(modelId); return; }
-  s.timer = setTimeout(() => poll(modelId), 1500);
+  const s = stateFor(modelId); if (!s.runId || s.polling) return;
+  s.polling = true;
+  try {
+    const response = await api(`/api/autotune/status?run_id=${encodeURIComponent(s.runId)}`);
+    if (response.error && !response.status) {
+      if (String(response.error).includes("unknown")) { saveRun(modelId); sessions.set(modelId, {restored: true}); }
+      else { s.status = "failed"; s.error = {message: "Auto Tune status is unavailable."}; }
+      render(modelId); return;
+    }
+    Object.assign(s, response); render(modelId);
+    if (terminal.has(s.status)) {
+      if (s.status === "completed") s.result = await api(`/api/autotune/result?run_id=${encodeURIComponent(s.runId)}`);
+      render(modelId); return;
+    }
+    s.timer = setTimeout(() => poll(modelId), 1500);
+  } finally { s.polling = false; }
 }
-async function start(modelId) {
+async function start(modelId, rerun = false) {
   const model = bridge.model(modelId), path = model?.settings?.model, s = stateFor(modelId);
   if (!path) { toast("This model has no GGUF path", "err"); return; }
-  if (s.starting || s.runId) return;
+  if (s.starting || (s.runId && !rerun)) return;
   s.starting = true; render(modelId);
   const response = await api("/api/autotune/start", {model_path: path}); s.starting = false;
-  if (response.run_id) { s.runId = response.run_id; s.status = response.status || "planned"; poll(modelId); return; }
+  if (response.run_id) { s.runId = response.run_id; s.status = response.status || "planned"; s.result = null; saveRun(modelId, s.runId); poll(modelId); return; }
   toast(response.error || "Auto Tune could not start", "err"); render(modelId);
 }
 async function preview(modelId, name) {
@@ -84,12 +109,17 @@ function requestLoad(modelId) {
 }
 function confirmLoad(modelId) { const s = stateFor(modelId); bridge.stage(modelId, s.preview.settings); bridge.closeModal(); }
 
-export function syncAutoTune(model) { render(model.id); }
+export function syncAutoTune(model) {
+  const s = stateFor(model.id); render(model.id);
+  if (s.runId && !s.restored) { s.restored = true; poll(model.id); }
+}
 export function initAutoTune(interface_) {
   bridge = interface_;
   document.addEventListener("click", async event => {
     const startButton = event.target.closest("[data-autotune-start]");
     if (startButton) { event.preventDefault(); start(startButton.closest("[data-autotune-panel]").dataset.autotunePanel); return; }
+    const rerunButton = event.target.closest("[data-autotune-rerun]");
+    if (rerunButton) { event.preventDefault(); start(rerunButton.closest("[data-autotune-panel]").dataset.autotunePanel, true); return; }
     const cancelButton = event.target.closest("[data-autotune-cancel]");
     if (cancelButton) { const modelId = cancelButton.closest("[data-autotune-panel]").dataset.autotunePanel, s = stateFor(modelId); s.cancelling = true; render(modelId); await api("/api/autotune/cancel", {run_id: s.runId}); poll(modelId); return; }
     const previewButton = event.target.closest("[data-autotune-preview]");
