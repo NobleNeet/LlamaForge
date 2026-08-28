@@ -93,10 +93,12 @@ class AutoTuneService:
                 ref = resolve_bench_binary(cfg, backend)
                 identity = identify_bench_binary(ref)
                 if identity is None: continue
-                env = execution_environment(hardware_fp, backend, {}, identity)
                 binary_capabilities = probe_binary_capabilities(identity.path)
                 try: runtime_capabilities = probe_runtime_capabilities(identity.path, backend)
                 except Exception: runtime_capabilities = None
+                runtime = {"backend": backend, "devices": list(getattr(runtime_capabilities, "devices", ())),
+                           "source": getattr(runtime_capabilities, "source", "detector")}
+                env = execution_environment(hardware_fp, backend, runtime, identity)
                 prepared.append(PreparedEnvironment(env, binary_capabilities, runtime_capabilities, identity.file_fingerprint))
             if not prepared: raise RuntimeError("no usable llama-bench artifact")
             rules = resolve_rules((RuleSet(1, ()),), gguf, snapshot)
@@ -106,9 +108,7 @@ class AutoTuneService:
                 3, 120, token, tuple(prepared))
         except Exception as exc:
             try:
-                self.store.acquire(run_id)
-                manifest = self.store.load_manifest(run_id); manifest["error"] = {"code": exc.__class__.__name__, "message": str(exc)[:200]}; self.store._save_manifest(manifest)
-                self.store.finish(run_id, "failed")
+                self.store.acquire(run_id); self.store.fail(run_id, exc.__class__.__name__, str(exc))
             except Exception:
                 pass
         finally:
@@ -165,7 +165,7 @@ class AutoTuneService:
         with self._registry_lock:
             if self._reconciled: return []
             self._reconciled = True
-        return self.store.reconcile_interrupted_runs() + BenchmarkResourceLease.reconcile_orphans(self.store.root_dir)
+        return self.store.reconcile_interrupted_runs() + BenchmarkResourceLease.reconcile_orphans(self.store.root_dir) + self.store.reconcile_duplicate_locks()
 
     @staticmethod
     def _summary(manifest):

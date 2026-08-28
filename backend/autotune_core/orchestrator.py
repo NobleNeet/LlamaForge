@@ -129,7 +129,7 @@ class AutoTuneOrchestrator:
                                      capabilities[execution_fingerprint(case.execution_environment)])
                         prepared = supplied.get(execution_fingerprint(case.execution_environment))
                         if prepared is not None:
-                            arguments += (prepared.execution_environment.bench_binary,)
+                            arguments += (prepared.execution_environment.bench_binary, target.model_fingerprint)
                         status, measurements, _ = self.runner.run_case(*arguments)
                     finally:
                         lease.release()

@@ -59,9 +59,15 @@ class RunStore:
         while descriptor is None:
             try: descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError:
+                try:
+                    with open(path, encoding="utf-8") as handle: owner = json.load(handle)
+                    reclaim = owner.get("hostname") == self.hostname and not self._pid_alive(owner.get("pid")) and self.clock() > float(owner.get("lease_expires_at") or 0)
+                    if reclaim: os.unlink(path); continue
+                except (OSError, ValueError, json.JSONDecodeError): pass
                 if time.monotonic() >= deadline: raise RunLockError("timed out waiting for duplicate start lock")
                 time.sleep(0.01); continue
-            os.write(descriptor, json.dumps({"pid": self.pid, "hostname": self.hostname}).encode())
+            os.write(descriptor, json.dumps({"instance_id": self.instance_id, "pid": self.pid, "hostname": self.hostname,
+                                             "acquired_at": self.clock(), "lease_expires_at": self.clock() + self.lease_seconds}).encode())
         try: yield
         finally:
             os.close(descriptor)
@@ -152,15 +158,36 @@ class RunStore:
                 manifests.append(self.load_manifest(run_id))
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
-            if len(manifests) >= max(0, min(int(limit), 100)):
-                break
-        return sorted(manifests, key=lambda item: item.get("created_at") or 0, reverse=True)
+        ordered = sorted(manifests, key=lambda item: item.get("created_at") or 0, reverse=True)
+        return ordered if limit is None else ordered[:max(0, min(int(limit), 100))]
 
     def find_active_by_duplicate_key(self, duplicate_key):
-        for manifest in self.list_manifests(1000000):
+        for manifest in self.list_manifests(None):
             if manifest.get("plan", {}).get("duplicate_key") == duplicate_key and manifest.get("status") in ("planned", "running"):
                 return manifest
         return None
+
+    def reconcile_duplicate_locks(self):
+        directory = os.path.join(self.root_dir, "duplicate-locks")
+        reclaimed = []
+        if not os.path.isdir(directory): return reclaimed
+        for name in os.listdir(directory):
+            path = os.path.join(directory, name)
+            try:
+                with open(path, encoding="utf-8") as handle: owner = json.load(handle)
+                if owner.get("hostname") == self.hostname and not self._pid_alive(owner.get("pid")) and self.clock() > float(owner.get("lease_expires_at") or 0):
+                    os.unlink(path); reclaimed.append(name)
+            except (OSError, ValueError, json.JSONDecodeError): pass
+        return reclaimed
+
+    def fail(self, run_id, error_code, safe_message):
+        with self._locked(run_id):
+            manifest = self.load_manifest(run_id)
+            self._require_owner(manifest)
+            manifest["error"] = {"code": str(error_code), "message": str(safe_message)[:200]}
+            manifest["status"], manifest["finished_at"] = "failed", self.clock()
+            self._save_manifest(manifest)
+            return manifest
 
     def _save_manifest(self, manifest):
         atomicio.write_json(self._manifest_path(manifest["run_id"]), manifest)

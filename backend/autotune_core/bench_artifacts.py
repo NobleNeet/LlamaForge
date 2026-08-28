@@ -48,8 +48,9 @@ def resolve_bench_binary(configured, backend=None, build_id=None, exists=os.path
     for ref in refs:
         if ref.backend == backend and ref.build_id is None and exists(ref.path):
             return ref
+    selected = canonical_backend_id((configured or {}).get("llama_backend"))
     fallback = _sibling_fallback((configured or {}).get("server_bin"))
-    if fallback and exists(fallback):
+    if fallback and exists(fallback) and (selected is None or selected == backend):
         return BenchBinaryRef(backend, None, fallback, "sibling_fallback")
     return None
 
