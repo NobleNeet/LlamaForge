@@ -1206,6 +1206,7 @@ def post_presets_save(req):
     if config.get_bindings().get(mid) == name:
         clean = _materialize_preset_settings(mid, presets.get(name, {}),
                                              extra_clear_keys=previous_keys)
+        router("/models?reload=1")
     return 200, {"ok": True, "presets": presets}
 
 
@@ -1232,6 +1233,7 @@ def post_presets_bind(req):
     if name:
         preset = config.get_presets(mid).get(name, {})
         clean = _materialize_preset_settings(mid, preset)
+        router("/models?reload=1")
         _dbg("preset.bind", model=mid, preset=name, settings=_knob_snapshot(clean))
         settings = clean
     return 200, {"ok": True, "bindings": binds, "settings": settings}

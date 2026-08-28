@@ -89,20 +89,24 @@ class BindMaterializeRouteTest(_ConfigTempCase):
         self.assertEqual(saved["n-gpu-layers"], "99")
 
     def test_editing_a_bound_preset_resyncs_models_ini_without_reload(self):
-        self._post(routes.post_presets_bind, model="qwopus", name="coding")
-        self._post(routes.post_presets_save, model="qwopus", name="coding", settings={"temp": "0.9"})
+        with mock.patch.object(routes, "router", return_value=(200, {})) as router:
+            self._post(routes.post_presets_bind, model="qwopus", name="coding")
+            self._post(routes.post_presets_save, model="qwopus", name="coding", settings={"temp": "0.9"})
         saved = config.read_sections(self.ini)["qwopus"]
         self.assertEqual(saved["temp"], "0.9")
         self.assertEqual(saved["n-gpu-layers"], "99")
+        self.assertIn(mock.call("/models?reload=1"), router.mock_calls)
 
     def test_overwriting_a_bound_preset_clears_removed_keys_from_models_ini(self):
-        self._post(routes.post_presets_bind, model="qwopus", name="coding")
-        self._post(routes.post_presets_save, model="qwopus", name="coding", settings={"temp": "0.9"})
+        with mock.patch.object(routes, "router", return_value=(200, {})) as router:
+            self._post(routes.post_presets_bind, model="qwopus", name="coding")
+            self._post(routes.post_presets_save, model="qwopus", name="coding", settings={"temp": "0.9"})
         saved = config.read_sections(self.ini)["qwopus"]
         self.assertEqual(saved["temp"], "0.9")
         self.assertNotIn("top-k", saved)
         self.assertEqual(config.get_presets("qwopus")["coding"],
                          {"temp": "0.9", "n-gpu-layers": "99"})
+        self.assertIn(mock.call("/models?reload=1"), router.mock_calls)
 
     def test_unbind_leaves_knobs_in_place(self):
         self._post(routes.post_presets_bind, model="qwopus", name="coding")
@@ -121,12 +125,14 @@ class BindMaterializeRouteTest(_ConfigTempCase):
 
     def test_binding_new_preset_clears_stale_keys_from_prior_preset(self):
         config.save_preset("qwopus", "speed", {"ctx-size": "16384"})
-        self._post(routes.post_presets_bind, model="qwopus", name="coding")
-        self._post(routes.post_presets_bind, model="qwopus", name="speed")
+        with mock.patch.object(routes, "router", return_value=(200, {})) as router:
+            self._post(routes.post_presets_bind, model="qwopus", name="coding")
+            self._post(routes.post_presets_bind, model="qwopus", name="speed")
         saved = config.read_sections(self.ini)["qwopus"]
         self.assertEqual(saved["ctx-size"], "16384")
         self.assertNotIn("temp", saved)
         self.assertNotIn("top-k", saved)
+        self.assertEqual(router.mock_calls.count(mock.call("/models?reload=1")), 2)
 
 
 if __name__ == "__main__":
