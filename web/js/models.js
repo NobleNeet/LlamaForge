@@ -66,14 +66,17 @@ export function renderGpus(g) {
     setHTML($("#gpus"), `<div class="gpu"><div class="stats">GPU telemetry unavailable</div></div>`);
     return;
   }
-  const graphRow = (label, value, total = 100) => {
-    const shown = value != null ? `${esc(value)}%` : "n/a";
-    return `<div class="gpugraph"><span class="glabel">${label}</span><div class="meter compact">${meter(value || 0, Math.max(total || 1, 1))}</div><span class="gval">${shown}</span></div>`;
+  const graphRow = (label, value, total = 100, shown = null) => {
+    const display = shown != null ? shown : (value != null ? `${esc(value)}%` : "n/a");
+    return `<div class="gpugraph"><span class="glabel">${label}</span><div class="meter compact">${meter(value || 0, Math.max(total || 1, 1))}</div><span class="gval">${display}</span></div>`;
   };
   setHTML($("#gpus"), g.map(x => {
     const backends = (x.backends || (x.backend ? [x.backend] : [])).map(b => esc(String(b).toUpperCase())).join(" / ");
     const mem = x.total ? `${esc((x.used/1024).toFixed(1))}/${esc((x.total/1024).toFixed(1))} GB`
                         : `memory ${esc(x.is_uma ? "unified" : "unknown")}`;
+    const memGraph = x.total != null
+      ? `${esc(((x.used || 0)/1024).toFixed(1))}/${esc((x.total/1024).toFixed(1))}GB`
+      : "n/a";
     const free = (x.total != null && x.used != null) ? `<span>FREE <b>${esc(((x.total-x.used)/1024).toFixed(1))}</b> GB</span>` : "";
     const local = (x.is_uma && x.local_memory_total_mib != null)
       ? `<span>LOCAL <b>${esc(((x.local_memory_used_mib||0)/1024).toFixed(1))}/${esc((x.local_memory_total_mib/1024).toFixed(1))}</b> GB</span>`
@@ -85,7 +88,7 @@ export function renderGpus(g) {
     const uma = x.is_uma ? `<span>UMA <b>YES</b></span>` : "";
     return `<div class="gpu"><div class="top"><span class="name">${esc(x.name)}</span><span class="idx">${esc(x.vendor||"GPU")}${backends?` · ${backends}`:""}</span></div>
       <div class="gpugraphs">
-        ${graphRow("MEM", x.total != null ? Math.round(((x.used || 0) * 100) / Math.max(x.total || 1, 1)) : null)}
+        ${graphRow("MEM", x.total != null ? Math.round(((x.used || 0) * 100) / Math.max(x.total || 1, 1)) : null, 100, memGraph)}
         ${graphRow("GPU", x.util)}
         ${graphRow("CPU", x.cpu_utilization)}
       </div>
