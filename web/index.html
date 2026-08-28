@@ -222,6 +222,9 @@ button:disabled{opacity:.4;cursor:not-allowed}
 .kv:last-child{border:none}.kv .k{color:var(--dim)}.kv .v{color:var(--ink);text-align:right}
 .kv .v.ok{color:var(--green)}.kv .v.bad{color:var(--red)}
 .log{background:var(--code-bg);border:1px solid var(--hair);padding:12px;font-size:11px;line-height:1.5;color:var(--code-ink);white-space:pre-wrap;max-height:360px;overflow:auto;margin-top:12px}
+.loghead{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--panel2)}
+.loghead .spacer{margin-left:auto}
+.logcopy{padding:4px 9px;font-size:9px}
 .flags{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
 .flagpill{font-size:11px;color:var(--cyan-text);border:1px solid var(--cyan-border);padding:4px 9px}
 #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(30px);opacity:0;background:var(--panel2);border:1px solid var(--amber);color:var(--ink-strong);padding:11px 20px;font-size:12px;transition:.3s;z-index:100;box-shadow:0 6px 24px var(--shadow)}
@@ -426,14 +429,17 @@ body.mode-lite .advanced-only{display:none !important}
     <div class="list" id="list"><div class="skel">SCANNING REGISTRY...</div></div>
     <details class="kgroup" style="margin-top:16px" id="router-log-details">
       <summary>Router Log (llama.cpp stdout/stderr)</summary>
+      <div class="loghead"><span>live log</span><span class="spacer"></span><button class="qbtn logcopy" data-copylog="router-log">Copy all</button></div>
       <div class="log" id="router-log" style="margin:0;border-top:1px solid var(--hair)">idle</div>
     </details>
     <details class="kgroup" style="margin-top:10px" id="llama-log-details">
       <summary>llama-server Output Log</summary>
+      <div class="loghead"><span>live log</span><span class="spacer"></span><button class="qbtn logcopy" data-copylog="llama-log">Copy all</button></div>
       <div class="log" id="llama-log" style="margin:0;border-top:1px solid var(--hair)">idle</div>
     </details>
     <details class="kgroup" style="margin-top:10px" id="vllm-log-details">
       <summary>vLLM Log (WSL stdout/stderr)</summary>
+      <div class="loghead"><span>live log</span><span class="spacer"></span><button class="qbtn logcopy" data-copylog="vllm-log">Copy all</button></div>
       <div class="log" id="vllm-log" style="margin:0;border-top:1px solid var(--hair)">idle</div>
     </details>
   </div>

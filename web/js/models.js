@@ -736,22 +736,42 @@ on("refresh", silent => refresh(silent));
 export async function refreshRouterLog() {
   const el = $("#router-log"); if (!el) return;
   const s = await api("/api/router/log");
-  const wasBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
-  el.textContent = s.log || "idle";
-  if (wasBottom) el.scrollTop = el.scrollHeight;
+  refreshTextLog(el, s.log || "idle");
 }
 export async function refreshLlamaLog() {
   const el = $("#llama-log"); if (!el) return;
   const s = await api("/api/llama/log");
-  const wasBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
-  el.textContent = s.log || "idle";
-  if (wasBottom) el.scrollTop = el.scrollHeight;
+  refreshTextLog(el, s.log || "idle");
 }
 export async function refreshVllmLog() {
   const el = $("#vllm-log"); if (!el) return;
   const s = await api("/api/vllm/log");
+  refreshTextLog(el, s.log || "idle");
+}
+
+function selectionInside(el) {
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+  const anchor = sel.anchorNode, focus = sel.focusNode;
+  return (!!anchor && el.contains(anchor)) || (!!focus && el.contains(focus));
+}
+function refreshTextLog(el, nextText) {
+  const next = String(nextText ?? "idle");
+  if (selectionInside(el)) {
+    el.dataset.pendingLog = next;
+    el.dataset.pendingDirty = "1";
+    return;
+  }
+  const apply = el.dataset.pendingDirty === "1" ? (el.dataset.pendingLog || next) : next;
+  if (el.textContent === apply) {
+    delete el.dataset.pendingLog;
+    delete el.dataset.pendingDirty;
+    return;
+  }
   const wasBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
-  el.textContent = s.log || "idle";
+  el.textContent = apply;
+  delete el.dataset.pendingLog;
+  delete el.dataset.pendingDirty;
   if (wasBottom) el.scrollTop = el.scrollHeight;
 }
 
@@ -826,6 +846,14 @@ export function initModels() {
     if (e.target.closest("[data-mclose]") || (e.target.classList && e.target.classList.contains("modal-bg"))) { closeModal(); return; }
     const scopy = e.target.closest("[data-copytext]");
     if (scopy) { e.stopPropagation(); navigator.clipboard.writeText(scopy.dataset.copytext).then(() => toast("Copied to clipboard","ok")); return; }
+    const logCopy = e.target.closest("[data-copylog]");
+    if (logCopy) {
+      e.stopPropagation();
+      const el = document.getElementById(logCopy.dataset.copylog);
+      if (!el) return;
+      navigator.clipboard.writeText(el.textContent || "").then(() => toast("Log copied","ok"));
+      return;
+    }
     // compare-pick checkbox
     const cmpBox = e.target.closest("[data-cmp]");
     if (cmpBox) {
