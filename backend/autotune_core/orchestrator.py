@@ -1,0 +1,154 @@
+"""Run-level Auto Tune control flow; candidate failures are expected search evidence."""
+from dataclasses import dataclass
+import hashlib
+import json
+
+from .planner import initial_stage_plan, next_stage_plan, stage_outcome
+from .resource_lease import BenchmarkResourceLease, ResourceBusyError
+from .results import TuneResult
+from .scoring import rank_candidates
+from .environment import execution_fingerprint
+from .bench_capabilities import CapabilityProbeError, probe_binary_capabilities, probe_runtime_capabilities
+from .staleness import ProfileIdentity
+
+
+SCORING_SCHEMA_VERSION = "phase4-v1"
+
+
+class FatalAutoTuneError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class GeneratedProfile:
+    name: str
+    candidate_id: str
+    settings: dict
+    evidence: str  # measured or heuristic
+    source: str
+    provenance: ProfileIdentity
+
+
+@dataclass(frozen=True)
+class AutoTuneOutcome:
+    result: TuneResult
+    profiles: tuple
+
+
+def _fingerprint(value):
+    return "sha256-policy-v1:" + hashlib.sha256(json.dumps(value, default=str, sort_keys=True).encode()).hexdigest()
+
+
+def generate_profiles(final_plan, measurements, identity_for_candidate):
+    """Generate measured speed profiles; memory remains explicit heuristic evidence."""
+    profiles = []
+    for name, intent in (("balanced", "auto"), ("fast_prefill", "throughput"), ("fast_decode", "throughput")):
+        if name == "fast_prefill":
+            cases = tuple(case for case in final_plan.cases if case.workload.mode == "pp")
+        elif name == "fast_decode":
+            cases = tuple(case for case in final_plan.cases if case.workload.mode == "tg")
+        else:
+            cases = final_plan.cases
+        scores = rank_candidates(type("Plan", (), {"candidates": final_plan.candidates, "cases": cases})(), measurements,
+                                  scoring_intent=intent)
+        if scores:
+            candidate = next(candidate for candidate in final_plan.candidates if candidate.candidate_id == scores[0].candidate_id)
+            profiles.append(GeneratedProfile(name, candidate.candidate_id, dict(candidate.settings), "measured", "benchmark",
+                                             identity_for_candidate(candidate)))
+    # No peak memory telemetry exists yet.  Keep this separate from measured profiles.
+    if final_plan.candidates:
+        candidate = min(final_plan.candidates, key=lambda item: (str(item.settings.get("n-gpu-layers", "")), item.candidate_id))
+        profiles.append(GeneratedProfile("low_memory", candidate.candidate_id, dict(candidate.settings),
+                                         "heuristic", "settings-only; no RAM/VRAM telemetry", identity_for_candidate(candidate)))
+    return tuple(profiles)
+
+
+class AutoTuneOrchestrator:
+    def __init__(self, store, runner, resource_root=None, resource_id_for_case=None, capability_probe=probe_binary_capabilities,
+                 runtime_capability_probe=probe_runtime_capabilities):
+        self.store, self.runner = store, runner
+        self.resource_root = resource_root or store.root_dir
+        self.resource_id_for_case = resource_id_for_case or (lambda case: "%s-%s" % (case.backend, case.execution_environment.hardware_fingerprint))
+        self.capability_probe = capability_probe
+        self.runtime_capability_probe = runtime_capability_probe
+        self.runtime_capabilities = {}
+
+    def run(self, run_id, strategy, rules, environments, target, repetitions, timeout_seconds, cancellation=None):
+        self.store.acquire(run_id)
+        capabilities = {}
+        usable_environments = []
+        for environment in environments:
+            try:
+                capabilities[execution_fingerprint(environment)] = self.capability_probe(environment.bench_binary.path)
+                usable_environments.append(environment)
+                try:
+                    self.runtime_capabilities[execution_fingerprint(environment)] = self.runtime_capability_probe(
+                        environment.bench_binary.path, environment.backend)
+                except CapabilityProbeError:
+                    # Environment construction already came from the hardware/runtime detector.
+                    # Device enumeration is diagnostic capability evidence, not a help-text substitute.
+                    pass
+            except CapabilityProbeError:
+                continue
+        if not usable_environments:
+            self.store.finish(run_id, "failed")
+            raise FatalAutoTuneError("no usable llama-bench binary capabilities")
+        all_cases, all_measurements, plan = [], [], initial_stage_plan(strategy, rules, usable_environments)
+        final_plan = plan
+        stage_index = 0
+        try:
+            while plan is not None:
+                counts = {"succeeded": 0, "failed": 0, "skipped": 0}
+                self.store.update_progress(run_id, {"stage_index": stage_index, "stage_id": plan.definition.stage_id,
+                                                    "candidates": len(plan.candidates), "cases": len(plan.cases),
+                                                    "counts": counts})
+                for case in plan.cases:
+                    if cancellation is not None and cancellation.cancelled():
+                        self.store.finish(run_id, "cancelled")
+                        return None
+                    try:
+                        with BenchmarkResourceLease(self.resource_root, self.resource_id_for_case(case)):
+                            status, measurements, _ = self.runner.run_case(
+                                run_id, target, case, repetitions, timeout_seconds, cancellation,
+                                capabilities[execution_fingerprint(case.execution_environment)])
+                    except ResourceBusyError:
+                        counts["skipped"] += 1
+                        continue
+                    if status == "completed":
+                        counts["succeeded"] += 1; all_measurements.extend(measurements)
+                    else:
+                        counts["failed"] += 1
+                    self.store.update_progress(run_id, {"stage_index": stage_index, "stage_id": plan.definition.stage_id,
+                                                        "candidates": len(plan.candidates), "cases": len(plan.cases), "counts": counts})
+                all_cases.extend(plan.cases)
+                outcome = stage_outcome(plan, all_measurements)
+                valid = bool(outcome.candidate_scores)
+                stage_status = "completed" if valid and not (counts["failed"] or counts["skipped"]) else "partial" if valid else "failed"
+                self.store.update_progress(run_id, {"stage_index": stage_index, "stage_id": plan.definition.stage_id,
+                                                    "status": stage_status, "candidates": len(plan.candidates),
+                                                    "cases": len(plan.cases), "counts": counts})
+                if not valid:
+                    # Exhausted candidates are normal benchmark evidence, not a run-level failure.
+                    break
+                final_plan = plan
+                plan = next_stage_plan(strategy, outcome, rules)
+                stage_index += 1
+            result = TuneResult(run_id, target.model_fingerprint, environments[0].hardware_fingerprint,
+                                tuple(all_cases), tuple(all_measurements))
+            self.store.finish(run_id, "completed")
+            def identity_for(candidate):
+                environment = candidate.execution_environment
+                binary = environment.bench_binary
+                return ProfileIdentity(target.model_fingerprint, environment.hardware_fingerprint, dict(environment.runtime),
+                                       {"backend": binary.backend, "build_id": binary.build_id,
+                                        "file_fingerprint": binary.file_fingerprint, "version_text": binary.version_text},
+                                       capabilities[execution_fingerprint(environment)].fingerprint, _fingerprint(rules),
+                                       _fingerprint(strategy), SCORING_SCHEMA_VERSION, candidate.backend)
+            return AutoTuneOutcome(result, generate_profiles(final_plan, all_measurements, identity_for) if all_measurements else ())
+        except FatalAutoTuneError:
+            self.store.finish(run_id, "failed")
+            raise
+
+    @staticmethod
+    def strategy_fingerprint(strategy):
+        return _fingerprint(strategy)

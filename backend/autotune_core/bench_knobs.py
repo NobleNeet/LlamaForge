@@ -85,12 +85,14 @@ _SPECS = (
 _BY_SETTING = {spec.setting: spec for spec in _SPECS}
 
 
-def encode_bench_settings(settings):
+def encode_bench_settings(settings, binary_capabilities=None):
     argv = []
     for key in sorted((settings or {}).keys()):
         spec = _BY_SETTING.get(key)
         if spec is None:
             raise UnsupportedBenchKnobError("unsupported llama-bench setting: %s" % key)
+        if binary_capabilities is not None and not binary_capabilities.supports_flag(spec.flag):
+            raise UnsupportedBenchKnobError("llama-bench binary does not support %s" % spec.flag)
         flag, encoded = spec.encode(settings[key])
         if not encoded:
             raise ValueError("%s has no value" % key)

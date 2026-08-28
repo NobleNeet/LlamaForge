@@ -25,6 +25,8 @@ class StageDefinition:
     top_k: int
     max_candidates: int
     scoring_intent: str = "auto"  # auto, throughput, relative, or latency
+    retention_objectives: Tuple[str, ...] = ("balanced", "prefill", "decode")
+    pareto_retention: bool = True
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,7 @@ class StagePlan:
 class StageOutcome:
     plan: StagePlan
     candidate_scores: Tuple[CandidateScore, ...]
+    objective_scores: Mapping[str, Tuple[CandidateScore, ...]] = field(default_factory=dict)
 
 
 def _identity(prefix, payload):
@@ -193,7 +196,36 @@ def initial_stage_plan(strategy, resolved_rules, execution_environments):
 
 
 def stage_outcome(plan, measurements, trim_fraction=0.0):
-    return StageOutcome(plan, rank_candidates(plan, measurements, trim_fraction, plan.definition.scoring_intent))
+    balanced = rank_candidates(plan, measurements, trim_fraction, plan.definition.scoring_intent)
+    by_candidate = {}
+    by_case = {}
+    for measurement in measurements:
+        by_case.setdefault(measurement.case_id, []).append(measurement)
+    from .scoring import aggregate_case_measurements
+    for candidate in plan.candidates:
+        values = {case.workload.mode: aggregate_case_measurements(case.workload, by_case.get(case.case_id, ()), trim_fraction)
+                  for case in plan.cases if case.candidate_id == candidate.candidate_id}
+        by_candidate[candidate.candidate_id] = values
+    objectives = {"balanced": balanced}
+    for name, mode in (("prefill", "pp"), ("decode", "tg")):
+        scores = [CandidateScore(candidate_id, values[mode], (values[mode],)) for candidate_id, values in by_candidate.items()
+                  if values.get(mode) is not None]
+        objectives[name] = tuple(sorted(scores, key=lambda score: (-score.score, score.candidate_id)))
+    if plan.definition.pareto_retention and any(values.get("pp") is not None and values.get("tg") is not None
+                                               for values in by_candidate.values()):
+        frontier = []
+        for candidate_id, values in by_candidate.items():
+            pp, tg = values.get("pp"), values.get("tg")
+            if pp is None and tg is None:
+                continue
+            dominated = any(other_id != candidate_id and (other.get("pp") or 0) >= (pp or 0)
+                            and (other.get("tg") or 0) >= (tg or 0)
+                            and ((other.get("pp") or 0) > (pp or 0) or (other.get("tg") or 0) > (tg or 0))
+                            for other_id, other in by_candidate.items())
+            if not dominated:
+                frontier.append(CandidateScore(candidate_id, (pp or 0) + (tg or 0), tuple(value for value in (pp, tg) if value is not None)))
+        objectives["pareto"] = tuple(sorted(frontier, key=lambda score: score.candidate_id))
+    return StageOutcome(plan, balanced, objectives)
 
 
 def next_stage_plan(strategy, outcome, resolved_rules):
@@ -207,8 +239,16 @@ def next_stage_plan(strategy, outcome, resolved_rules):
         return None
     definition = strategy.stages[index + 1]
     candidates_by_id = {candidate.candidate_id: candidate for candidate in outcome.plan.candidates}
-    winners = [candidates_by_id[score.candidate_id] for score in outcome.candidate_scores[:definition.top_k]
-               if score.candidate_id in candidates_by_id]
+    winner_ids, seen = [], set()
+    for objective in outcome.plan.definition.retention_objectives:
+        for score in outcome.objective_scores.get(objective, ())[:definition.top_k]:
+            if score.candidate_id not in seen:
+                seen.add(score.candidate_id); winner_ids.append(score.candidate_id)
+    if outcome.plan.definition.pareto_retention:
+        for score in outcome.objective_scores.get("pareto", ()):
+            if score.candidate_id not in seen:
+                seen.add(score.candidate_id); winner_ids.append(score.candidate_id)
+    winners = [candidates_by_id[candidate_id] for candidate_id in winner_ids if candidate_id in candidates_by_id]
     if not winners:
         return StagePlan(definition, (), ())
     candidates = _expand(definition, winners, resolved_rules)

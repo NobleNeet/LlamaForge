@@ -93,6 +93,9 @@ class TuneProfile:
     environment_fingerprint: str
     settings: Mapping[str, object]
     result_id: Optional[str] = None
+    provenance: Optional[Mapping[str, object]] = None
+    evidence: str = "measured"
+    evidence_source: Optional[str] = None
 
 
 @dataclass(frozen=True)

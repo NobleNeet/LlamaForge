@@ -69,7 +69,7 @@ class BenchRunner:
             raise BenchParseError("stdout exceeds structured parse limit")
         return data.decode("utf-8", "replace")
 
-    def run_case(self, run_id, target, case, repetitions, timeout_seconds, cancellation=None):
+    def run_case(self, run_id, target, case, repetitions, timeout_seconds, cancellation=None, binary_capabilities=None):
         invocation_id = str(uuid.uuid4())
         started_wall = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         started = self.clock()
@@ -77,7 +77,7 @@ class BenchRunner:
         status, error, measurements, exit_code = "failed", None, (), None
         self.store.acquire(run_id)
         try:
-            argv = build_bench_argv(target, case, repetitions)
+            argv = build_bench_argv(target, case, repetitions, binary_capabilities)
             out_tmp, err_tmp, out_path, err_path = self.store.raw_paths(run_id, invocation_id)
             paths = out_tmp, err_tmp, out_path, err_path
             with open(out_tmp, "wb") as stdout, open(err_tmp, "wb") as stderr:

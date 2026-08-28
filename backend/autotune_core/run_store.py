@@ -44,6 +44,31 @@ class RunStore:
     def _lock_path(self, run_id):
         return os.path.join(self._run_dir(run_id), ".lease.lock")
 
+    @staticmethod
+    def _pid_alive(pid):
+        if not isinstance(pid, int) or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except (OSError, ProcessLookupError):
+            return False
+        return True
+
+    def _reclaimable_lock(self, path):
+        """Never remove a live local owner's lock merely because it is old."""
+        try:
+            with open(path, encoding="utf-8") as handle:
+                owner = json.load(handle)
+            if owner.get("hostname") != self.hostname or self._pid_alive(owner.get("pid")):
+                return False
+            return time.time() - os.path.getmtime(path) > self.lock_stale_seconds
+        except (OSError, ValueError, json.JSONDecodeError):
+            # A corrupt lock is reclaimable only after its conservative stale period.
+            try:
+                return time.time() - os.path.getmtime(path) > self.lock_stale_seconds
+            except FileNotFoundError:
+                return False
+
     @contextmanager
     def _locked(self, run_id):
         """Serialize manifest mutations without assuming platform-specific file locks."""
@@ -54,13 +79,12 @@ class RunStore:
             try:
                 descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 payload = {"instance_id": self.instance_id, "pid": self.pid, "hostname": self.hostname,
-                           "acquired_at": self.clock()}
+                           "acquired_at": self.clock(), "lease_expires_at": self.clock() + self.lock_stale_seconds}
                 os.write(descriptor, json.dumps(payload, sort_keys=True).encode("utf-8"))
                 os.fsync(descriptor)
             except FileExistsError:
                 try:
-                    age = time.time() - os.path.getmtime(path)
-                    if age > self.lock_stale_seconds:
+                    if self._reclaimable_lock(path):
                         os.unlink(path)
                         continue
                 except FileNotFoundError:
@@ -137,6 +161,15 @@ class RunStore:
             self._require_owner(manifest)
             now = self.clock()
             manifest.update({"heartbeat_at": now, "lease_expires_at": now + self.lease_seconds})
+            self._save_manifest(manifest)
+            return manifest
+
+    def update_progress(self, run_id, progress):
+        """Persist hierarchical progress; no speculative overall percentage exists."""
+        with self._locked(run_id):
+            manifest = self.load_manifest(run_id)
+            self._require_owner(manifest)
+            manifest["progress"] = dict(progress)
             self._save_manifest(manifest)
             return manifest
 
