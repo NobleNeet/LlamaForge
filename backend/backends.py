@@ -85,6 +85,7 @@ class LlamaCppBackend:
         return self._d.schema()
 
     def load(self, mid):
+        self._d._prepare_model_for_load(mid)
         code, res = self._d.router("/models/load", "POST", {"model": mid})
         if code == 200:
             return True, ""

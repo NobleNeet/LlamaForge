@@ -63,6 +63,13 @@ class TestPresets(unittest.TestCase):
         self.assertIn("legacy", config.get_presets("m"))
         self.assertIn("mine", config.get_presets("m"))
 
+    def test_model_bucket_deep_copies_legacy_presets(self):
+        config.save({**config.load(), "presets": {"legacy": {"temp": "0.4", "top-k": "20"}}})
+        config.save_preset("m", "mine", {"temp": "0.7"})
+        saved = config.load()
+        saved["model_presets"]["m"]["legacy"]["temp"] = "0.9"
+        self.assertEqual(saved["presets"]["legacy"]["temp"], "0.4")
+
 
 if __name__ == "__main__":
     unittest.main()

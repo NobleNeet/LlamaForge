@@ -155,8 +155,10 @@ class SaveAndPresetTest(unittest.TestCase):
 class ModelLifecycleHookTest(unittest.TestCase):
     def test_load_and_unload_routes_call_hooks_on_success(self):
         seen = []
+        calls = []
 
         def fake_router(path, method="GET", body=None, timeout=30):
+            calls.append(path)
             if path in ("/models/load", "/models/unload"):
                 return 200, {"ok": True}
             return 200, {}
@@ -170,6 +172,7 @@ class ModelLifecycleHookTest(unittest.TestCase):
             self.assertEqual(status, 200)
             status, _ = routes.post_unload(Req(body={"model": "m"}, path="/api/unload"))
             self.assertEqual(status, 200)
+        self.assertEqual(calls, ["/models?reload=1", "/models/load", "/models/unload"])
         self.assertEqual(seen, [("load", "m", "/api/load", "llamacpp"),
                                 ("unload", "m", "/api/unload", "llamacpp")])
 

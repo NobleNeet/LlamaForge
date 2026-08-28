@@ -689,6 +689,41 @@ def _apply_knobs_and_reload(mid, clean):
     return running
 
 
+def _preset_scope_keys(model_id):
+    keys = set()
+    for preset in config.get_presets(model_id).values():
+        if not isinstance(preset, dict):
+            continue
+        for key, value in preset.items():
+            if value is None or str(value).strip() == "":
+                continue
+            keys.add(key)
+    return keys
+
+
+def _materialize_preset_settings(model_id, settings):
+    """Write one preset's exact knob set into models.ini without reloading a
+    live model. Keys used by this model's other presets are cleared first so
+    switching presets does not leave stale knobs behind."""
+    clean = _force_max_gpu_layers(_clean_settings(settings or {}))
+    updates = {key: None for key in _preset_scope_keys(model_id)}
+    updates.update(clean)
+    config.set_keys(model_id, updates)
+    return clean
+
+
+def _prepare_model_for_load(mid):
+    """Bring the router's cached model config in line with any bound preset
+    just before a load. This avoids interrupting a live model when the user
+    saves or switches presets, while still making the next load exact."""
+    bound = config.get_bindings().get(mid, "")
+    if bound:
+        preset = config.get_presets(mid).get(bound, {})
+        clean = _materialize_preset_settings(mid, preset)
+        _dbg("preset.prepare_load", model=mid, preset=bound, settings=_knob_snapshot(clean))
+    router("/models?reload=1")
+
+
 def _clean_settings(updates):
     """Normalize a knob map from the UI: blank means 'unset this key'."""
     alias_to_key = {}
@@ -1096,6 +1131,7 @@ def post_load(req):
     mid = req.body.get("model")
     sect = config.read_sections().get(mid, {})
     _dbg("model.load", model=mid, settings=_knob_snapshot(sect))
+    _prepare_model_for_load(mid)
     code, res = router("/models/load", "POST", {"model": mid})
     if code == 200 and callable(MODEL_LOAD_HOOK):
         try:
@@ -1152,7 +1188,7 @@ def post_presets_save(req):
         raise ApiError(400, str(e))
     clean = _force_max_gpu_layers(_clean_settings(presets.get(name, {})))
     if config.get_bindings().get(mid) == name:
-        _apply_knobs_and_reload(mid, clean)
+        clean = _materialize_preset_settings(mid, presets.get(name, {}))
     return 200, {"ok": True, "presets": presets}
 
 
@@ -1166,8 +1202,9 @@ def post_presets_delete(req):
 
 def post_presets_bind(req):
     """Bind a preset as a model's default (name="" unbinds). Binding
-    materializes the preset's knobs into the model's section now; unbinding
-    leaves them in place - they're the user's once written."""
+    updates models.ini now, but does not interrupt a live model; the router
+    re-reads that exact preset on the next load. Unbinding leaves knobs in
+    place - they're the user's once written."""
     mid = req.body.get("model", "")
     name = req.body.get("name", "")
     try:
@@ -1177,9 +1214,8 @@ def post_presets_bind(req):
     settings = {}
     if name:
         preset = config.get_presets(mid).get(name, {})
-        clean = _force_max_gpu_layers(_clean_settings(preset))
+        clean = _materialize_preset_settings(mid, preset)
         _dbg("preset.bind", model=mid, preset=name, settings=_knob_snapshot(clean))
-        _apply_knobs_and_reload(mid, clean)
         settings = clean
     return 200, {"ok": True, "bindings": binds, "settings": settings}
 

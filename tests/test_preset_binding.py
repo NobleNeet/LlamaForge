@@ -64,8 +64,8 @@ class BindingStorageTest(_ConfigTempCase):
 
 
 class BindMaterializeRouteTest(_ConfigTempCase):
-    """Route-level: binding writes the preset's knobs; editing the preset
-    re-materializes into every bound model."""
+    """Route-level: binding writes the preset's knobs into models.ini without
+    bouncing a live model; the next load picks them up after a router reload."""
 
     def setUp(self):
         super().setUp()
@@ -73,14 +73,6 @@ class BindMaterializeRouteTest(_ConfigTempCase):
         cfg = config.load(); cfg["models_ini"] = self.ini; config.save(cfg)
         config.set_keys("qwopus", {"model": "/m/q.gguf"})
         config.save_preset("qwopus", "coding", {"temp": "0.2", "top-k": "20"})
-        self.applied = []
-        # capture materialization instead of touching a live router
-        self._orig = routes._apply_knobs_and_reload
-        routes._apply_knobs_and_reload = lambda mid, clean: self.applied.append((mid, clean)) or False
-
-    def tearDown(self):
-        routes._apply_knobs_and_reload = self._orig
-        super().tearDown()
 
     def _post(self, fn, **body):
         req = mock.Mock(); req.body = body
@@ -91,33 +83,41 @@ class BindMaterializeRouteTest(_ConfigTempCase):
         self.assertEqual(status, 200)
         self.assertEqual(config.get_bindings(), {"qwopus": "coding"})
         self.assertEqual(out["settings"], {"temp": "0.2", "top-k": "20", "n-gpu-layers": "99"})
-        self.assertEqual(len(self.applied), 1)
-        mid, clean = self.applied[0]
-        self.assertEqual(mid, "qwopus")
-        self.assertEqual(clean.get("temp"), "0.2")
-        self.assertEqual(clean.get("n-gpu-layers"), "99")
+        saved = config.read_sections(self.ini)["qwopus"]
+        self.assertEqual(saved["temp"], "0.2")
+        self.assertEqual(saved["top-k"], "20")
+        self.assertEqual(saved["n-gpu-layers"], "99")
 
-    def test_editing_a_bound_preset_resyncs_every_model(self):
+    def test_editing_a_bound_preset_resyncs_models_ini_without_reload(self):
         self._post(routes.post_presets_bind, model="qwopus", name="coding")
-        config.set_keys("ornith", {"model": "/m/o.gguf"})
-        config.save_preset("ornith", "coding", {"temp": "0.4", "top-k": "15"})
-        self._post(routes.post_presets_bind, model="ornith", name="coding")
-        self.applied.clear()
         self._post(routes.post_presets_save, model="qwopus", name="coding", settings={"temp": "0.9"})
-        self.assertEqual(self.applied, [("qwopus", {"temp": "0.9", "n-gpu-layers": "99"})])
+        saved = config.read_sections(self.ini)["qwopus"]
+        self.assertEqual(saved["temp"], "0.9")
+        self.assertEqual(saved["n-gpu-layers"], "99")
 
     def test_unbind_leaves_knobs_in_place(self):
         self._post(routes.post_presets_bind, model="qwopus", name="coding")
-        self.applied.clear()
         status, out = self._post(routes.post_presets_bind, model="qwopus", name="")   # unbind
         self.assertEqual(status, 200)
         self.assertEqual(config.get_bindings(), {})
         self.assertEqual(out["settings"], {})
-        self.assertEqual(self.applied, [], "unbind must not rewrite the section")
+        saved = config.read_sections(self.ini)["qwopus"]
+        self.assertEqual(saved["temp"], "0.2")
+        self.assertEqual(saved["top-k"], "20")
 
     def test_saving_an_unbound_preset_materializes_nothing(self):
         self._post(routes.post_presets_save, model="qwopus", name="coding", settings={"temp": "0.5"})
-        self.assertEqual(self.applied, [])
+        saved = config.read_sections(self.ini)["qwopus"]
+        self.assertNotIn("temp", saved)
+
+    def test_binding_new_preset_clears_stale_keys_from_prior_preset(self):
+        config.save_preset("qwopus", "speed", {"ctx-size": "16384"})
+        self._post(routes.post_presets_bind, model="qwopus", name="coding")
+        self._post(routes.post_presets_bind, model="qwopus", name="speed")
+        saved = config.read_sections(self.ini)["qwopus"]
+        self.assertEqual(saved["ctx-size"], "16384")
+        self.assertNotIn("temp", saved)
+        self.assertNotIn("top-k", saved)
 
 
 if __name__ == "__main__":

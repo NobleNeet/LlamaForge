@@ -54,6 +54,9 @@ class FakeDeps:
         self.router_calls.append(("apply", mid, knobs))
         return True
 
+    def _prepare_model_for_load(self, mid):
+        self.router_calls.append(("/models?reload=1", "GET", None))
+
 
 class LlamaCppBackendTest(unittest.TestCase):
     def setUp(self):
@@ -78,7 +81,7 @@ class LlamaCppBackendTest(unittest.TestCase):
         self.assertEqual(self.be.load("qwen"), (True, ""))
         self.assertEqual(self.be.unload("qwen"), (True, ""))
         paths = [c[0] for c in self.deps.router_calls]
-        self.assertEqual(paths, ["/models/load", "/models/unload"])
+        self.assertEqual(paths, ["/models?reload=1", "/models/load", "/models/unload"])
 
     def test_save_goes_through_the_shared_reload_sequence(self):
         out = self.be.save("qwen", {"ctx-size": "8192"})

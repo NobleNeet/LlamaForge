@@ -355,8 +355,8 @@ def get_presets(model_id=""):
     cfg = load()
     per = _all_model_presets(cfg).get(model_id)
     if isinstance(per, dict):
-        return per
-    return dict(_legacy_presets(cfg))
+        return copy.deepcopy(per)
+    return copy.deepcopy(_legacy_presets(cfg))
 
 def _normalize_preset_settings(settings):
     clean = {k: str(v).strip() for k, v in (settings or {}).items()
@@ -373,7 +373,7 @@ def _model_preset_bucket(cfg, model_id, create=False, migrate_legacy=False):
         return allp, bucket
     if not create:
         return allp, None
-    bucket = dict(_legacy_presets(cfg)) if migrate_legacy else {}
+    bucket = copy.deepcopy(_legacy_presets(cfg)) if migrate_legacy else {}
     allp[model_id] = bucket
     cfg["model_presets"] = allp
     return allp, bucket
