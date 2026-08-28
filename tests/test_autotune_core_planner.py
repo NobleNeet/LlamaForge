@@ -54,3 +54,21 @@ class TestPlanner(unittest.TestCase):
         outcome = stage_outcome(coarse, (BenchmarkMeasurement(coarse.cases[0].case_id, 0, None, 1.0, exit_code=0),))
         refined = next_stage_plan(strategy, outcome, rules)
         self.assertEqual(refined.candidates[0].settings["threads"], 8)
+
+    def test_next_stage_retains_prefill_and_decode_specialists(self):
+        strategy = BenchmarkStrategy((
+            StageDefinition("coarse", (ParameterSpace("threads", (1, 2)),),
+                            (BenchmarkWorkload("pp", 100, 0, 0), BenchmarkWorkload("tg", 0, 100, 0)), 1, 8),
+            StageDefinition("next", (), (BenchmarkWorkload("tg", 0, 10, 0),), 1, 8),
+        ))
+        rules = ResolvedRules((), (), (), ())
+        plan = initial_stage_plan(strategy, rules, (_environment("hip", "b"),))
+        candidates = {candidate.settings["threads"]: candidate for candidate in plan.candidates}
+        measurements = []
+        for case in plan.cases:
+            pp = 100 if case.workload.mode == "pp" and case.settings["threads"] == 1 else 10
+            tg = 100 if case.workload.mode == "tg" and case.settings["threads"] == 2 else 10
+            measurements.append(BenchmarkMeasurement(case.case_id, 0, pp if case.workload.mode == "pp" else None,
+                                                     tg if case.workload.mode == "tg" else None, exit_code=0))
+        next_plan = next_stage_plan(strategy, stage_outcome(plan, tuple(measurements)), rules)
+        self.assertEqual({candidate.settings["threads"] for candidate in next_plan.candidates}, set(candidates))

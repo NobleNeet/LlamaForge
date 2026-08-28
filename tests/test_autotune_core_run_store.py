@@ -98,3 +98,17 @@ class TestRunStore(unittest.TestCase):
             foreign.record_invocation("run", "forbidden", {"ok": True})
         artifact = os.path.join(root, "runs", "run", "invocations", "forbidden.json")
         self.assertFalse(os.path.exists(artifact))
+
+    def test_live_stale_lock_is_not_reclaimed_but_orphan_lock_is(self):
+        root = tempfile.mkdtemp()
+        store = RunStore(root, lock_wait_seconds=0, lock_stale_seconds=0)
+        store.create_run("run", {}, {})
+        lock = store._lock_path("run")
+        with open(lock, "w", encoding="utf-8") as handle:
+            json.dump({"hostname": store.hostname, "pid": os.getpid()}, handle)
+        with self.assertRaises(RunOwnershipError):
+            store.acquire("run")
+        os.unlink(lock)
+        with open(lock, "w", encoding="utf-8") as handle:
+            json.dump({"hostname": store.hostname, "pid": 99999999}, handle)
+        self.assertEqual(store.acquire("run")["status"], "running")
