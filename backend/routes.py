@@ -1773,7 +1773,12 @@ def post_autotune_start(req):
     path = req.body.get("model_path")
     if not isinstance(path, str):
         raise ApiError(400, "model_path is required")
-    return 202, _autotune_call("start", autotune_service.AutoTuneStartRequest(path))
+    try:
+        return 202, autotune_service_instance().start(autotune_service.AutoTuneStartRequest(path))
+    except autotune_service.DuplicateRunError as exc:
+        return 409, {"error": str(exc), "run_id": exc.run_id}
+    except autotune_service.AutoTuneServiceError as exc:
+        raise ApiError(exc.status, str(exc))
 
 
 def get_autotune_status(req): return 200, _autotune_call("status", req.q("run_id"))

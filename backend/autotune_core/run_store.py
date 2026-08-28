@@ -130,7 +130,7 @@ class RunStore:
     def create_run(self, run_id, plan, target):
         os.makedirs(self._artifact_dir(run_id), exist_ok=False)
         now = self.clock()
-        manifest = {"run_id": run_id, "status": "planned", "plan": plan, "target": target,
+        manifest = {"run_id": run_id, "status": "planned", "plan": plan, "target": target, "created_at": now,
                     "invocation_ids": [], "owner_instance_id": self.instance_id, "owner_pid": self.pid,
                     "hostname": self.hostname, "started_at": None, "heartbeat_at": now,
                     "lease_expires_at": now + self.lease_seconds}
@@ -147,14 +147,20 @@ class RunStore:
         if not os.path.isdir(runs_dir):
             return []
         manifests = []
-        for run_id in sorted(os.listdir(runs_dir), reverse=True):
+        for run_id in os.listdir(runs_dir):
             try:
                 manifests.append(self.load_manifest(run_id))
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
             if len(manifests) >= max(0, min(int(limit), 100)):
                 break
-        return manifests
+        return sorted(manifests, key=lambda item: item.get("created_at") or 0, reverse=True)
+
+    def find_active_by_duplicate_key(self, duplicate_key):
+        for manifest in self.list_manifests(1000000):
+            if manifest.get("plan", {}).get("duplicate_key") == duplicate_key and manifest.get("status") in ("planned", "running"):
+                return manifest
+        return None
 
     def _save_manifest(self, manifest):
         atomicio.write_json(self._manifest_path(manifest["run_id"]), manifest)

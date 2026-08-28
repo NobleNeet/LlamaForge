@@ -15,7 +15,8 @@ from .scoring import CandidateScore, rank_candidates
 class ParameterSpace:
     key: str
     values: Tuple[object, ...]
-    applicable: object = None
+    required_bench_flag: str = ""
+    applicable_execution_fingerprints: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,7 +132,7 @@ def _round_robin_children(parents, parameter, definition, resolved_rules):
     groups = {}
     for parent in sorted(parents, key=lambda candidate: candidate.candidate_id):
         children = []
-        if parameter.applicable is not None and not parameter.applicable(parent):
+        if parameter.required_bench_flag and execution_fingerprint(parent.execution_environment) not in parameter.applicable_execution_fingerprints:
             groups[parent.candidate_id] = [parent]
             continue
         for value in _parameter_values(parent, parameter):
