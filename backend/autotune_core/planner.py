@@ -24,6 +24,7 @@ class StageDefinition:
     workloads: Tuple[BenchmarkWorkload, ...]
     top_k: int
     max_candidates: int
+    scoring_intent: str = "auto"  # auto, throughput, relative, or latency
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,13 @@ def _candidate_settings(candidate):
     return dict(candidate.settings, backend=candidate.backend)
 
 
-def _filter(candidates, resolved_rules, maximum):
+def _preference_score(candidate, resolved_rules):
+    settings = _candidate_settings(candidate)
+    return sum(preference.weight for preference in resolved_rules.preferences
+               if settings.get(preference.key) == preference.value)
+
+
+def _allowed_unique(candidates, resolved_rules):
     out, seen = [], set()
     for candidate in candidates:
         if not candidate_allowed(_candidate_settings(candidate), resolved_rules):
@@ -81,26 +88,77 @@ def _filter(candidates, resolved_rules, maximum):
         if candidate.candidate_id not in seen:
             seen.add(candidate.candidate_id)
             out.append(candidate)
-        if len(out) >= maximum:
-            break
+    return tuple(out)
+
+
+def _bounded_by_environment(candidates, resolved_rules, maximum):
+    """Bound initial/final pools without letting one backend/build consume all slots."""
+    groups = {}
+    for candidate in _allowed_unique(candidates, resolved_rules):
+        key = execution_fingerprint(candidate.execution_environment)
+        groups.setdefault(key, []).append(candidate)
+    for group in groups.values():
+        group.sort(key=lambda candidate: (-_preference_score(candidate, resolved_rules), candidate.candidate_id))
+    out = []
+    while groups and len(out) < maximum:
+        for key in sorted(tuple(groups)):
+            if len(out) >= maximum:
+                break
+            out.append(groups[key].pop(0))
+            if not groups[key]:
+                del groups[key]
+    return tuple(out)
+
+
+def _parameter_values(candidate, parameter):
+    values = list(parameter.values)
+    baseline = candidate.settings.get(parameter.key)
+    if baseline is not None:
+        values.insert(0, baseline)
+    unique = {}
+    for value in values:
+        unique.setdefault(json.dumps(value, sort_keys=True, default=str), value)
+    return [unique[key] for key in sorted(unique)] if baseline is None else [baseline] + [
+        unique[key] for key in sorted(unique) if unique[key] != baseline]
+
+
+def _round_robin_children(parents, parameter, definition, resolved_rules):
+    """Preserve one candidate per parent before exploring further child values."""
+    groups = {}
+    for parent in sorted(parents, key=lambda candidate: candidate.candidate_id):
+        children = []
+        for value in _parameter_values(parent, parameter):
+            settings = dict(parent.settings)
+            settings[parameter.key] = value
+            children.append(_candidate(parent.backend, settings, parent.execution_environment, definition.stage_id))
+        children = list(_allowed_unique(children, resolved_rules))
+        baseline = parent.settings.get(parameter.key)
+        children.sort(key=lambda candidate: (candidate.settings.get(parameter.key) != baseline,
+                                             -_preference_score(candidate, resolved_rules), candidate.candidate_id))
+        if children:
+            groups[parent.candidate_id] = children
+    out, seen = [], set()
+    while groups and len(out) < definition.max_candidates:
+        for key in sorted(tuple(groups)):
+            if len(out) >= definition.max_candidates:
+                break
+            candidate = groups[key].pop(0)
+            if candidate.candidate_id not in seen:
+                seen.add(candidate.candidate_id)
+                out.append(candidate)
+            if not groups[key]:
+                del groups[key]
     return tuple(out)
 
 
 def _expand(definition, bases, resolved_rules):
     """Expand each parameter locally and prune immediately; no global product."""
-    candidates = tuple(bases)
+    candidates = _bounded_by_environment(bases, resolved_rules, definition.max_candidates)
     for parameter in definition.parameters:
-        next_candidates = []
-        for candidate in candidates:
-            for value in parameter.values:
-                settings = dict(candidate.settings)
-                settings[parameter.key] = value
-                next_candidates.append(_candidate(candidate.backend, settings,
-                                                  candidate.execution_environment, definition.stage_id))
-        candidates = _filter(next_candidates, resolved_rules, definition.max_candidates)
+        candidates = _round_robin_children(candidates, parameter, definition, resolved_rules)
         if not candidates:
             break
-    return _filter(candidates, resolved_rules, definition.max_candidates)
+    return _bounded_by_environment(candidates, resolved_rules, definition.max_candidates)
 
 
 def _cases(definition, candidates):
@@ -128,12 +186,12 @@ def initial_stage_plan(strategy, resolved_rules, execution_environments):
             if canonical_backend_id(requested) != environment.backend:
                 continue
             bases.append(_candidate(environment.backend, settings, environment, ""))
-    candidates = _expand(definition, _filter(bases, resolved_rules, definition.max_candidates), resolved_rules)
+    candidates = _expand(definition, bases, resolved_rules)
     return StagePlan(definition, candidates, _cases(definition, candidates))
 
 
 def stage_outcome(plan, measurements, trim_fraction=0.0):
-    return StageOutcome(plan, rank_candidates(plan, measurements, trim_fraction))
+    return StageOutcome(plan, rank_candidates(plan, measurements, trim_fraction, plan.definition.scoring_intent))
 
 
 def next_stage_plan(strategy, outcome, resolved_rules):

@@ -33,3 +33,24 @@ class TestPlanner(unittest.TestCase):
         self.assertEqual(len(refined.candidates), 2)
         self.assertEqual({candidate.backend for candidate in refined.candidates}, {"hip"})
         self.assertEqual(len(refined.cases), 4)
+
+    def test_bounded_initial_search_preserves_backend_coverage(self):
+        strategy = BenchmarkStrategy((StageDefinition(
+            "coarse", (ParameterSpace("n-gpu-layers", (0, 99)),),
+            (BenchmarkWorkload("tg", 0, 64, 0),), top_k=1, max_candidates=2),))
+        plan = initial_stage_plan(strategy, ResolvedRules((), (), (), ()),
+                                  (_environment("hip", "hip-build"), _environment("vulkan", "vk-build")))
+        self.assertEqual(len(plan.candidates), 2)
+        self.assertEqual({candidate.backend for candidate in plan.candidates}, {"hip", "vulkan"})
+
+    def test_parameter_expansion_preserves_parent_baseline_before_new_values(self):
+        strategy = BenchmarkStrategy((
+            StageDefinition("coarse", (), (BenchmarkWorkload("tg", 0, 64, 0),), top_k=1, max_candidates=1),
+            StageDefinition("refine", (ParameterSpace("threads", (2, 4)),),
+                            (BenchmarkWorkload("tg", 0, 64, 0),), top_k=1, max_candidates=1),
+        ))
+        rules = ResolvedRules((type("Seed", (), {"settings": {"threads": 8}})(),), (), (), ())
+        coarse = initial_stage_plan(strategy, rules, (_environment("hip", "hip-build"),))
+        outcome = stage_outcome(coarse, (BenchmarkMeasurement(coarse.cases[0].case_id, 0, None, 1.0, exit_code=0),))
+        refined = next_stage_plan(strategy, outcome, rules)
+        self.assertEqual(refined.candidates[0].settings["threads"], 8)

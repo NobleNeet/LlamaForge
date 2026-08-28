@@ -18,9 +18,13 @@ def _measurement_score(workload, measurement):
         return measurement.prompt_tokens_per_second
     if workload.mode == "tg":
         return measurement.generation_tokens_per_second
-    values = [value for value in (measurement.prompt_tokens_per_second,
-                                  measurement.generation_tokens_per_second) if value is not None]
-    return sum(values) / len(values) if values else None
+    prompt_rate, generation_rate = measurement.prompt_tokens_per_second, measurement.generation_tokens_per_second
+    if prompt_rate is None or generation_rate is None or prompt_rate <= 0 or generation_rate <= 0:
+        return None
+    # pg is represented as requests/sec derived from its actual token mix,
+    # never as an average of incomparable pp/tg rates.
+    latency = workload.prompt_tokens / prompt_rate + workload.generation_tokens / generation_rate
+    return 1.0 / latency if latency > 0 else None
 
 
 def aggregate_case_measurements(workload, measurements, trim_fraction=0.0):
@@ -35,11 +39,45 @@ def aggregate_case_measurements(workload, measurements, trim_fraction=0.0):
     return float(median(values))
 
 
-def rank_candidates(stage_plan, measurements, trim_fraction=0.0):
+def _signature(case):
+    workload = case.workload
+    return workload.mode, workload.prompt_tokens, workload.generation_tokens, workload.context_depth
+
+
+def _weighted_mean(values):
+    total_weight = sum(weight for _, weight in values)
+    return sum(value * weight for value, weight in values) / total_weight if total_weight else None
+
+
+def _latency_score(case_values):
+    """Combine workloads as estimated request latency, then invert for ranking."""
+    latency = 0.0
+    for case, value in case_values:
+        workload = case.workload
+        if value <= 0:
+            return None
+        if workload.mode == "pp":
+            latency += workload.weight * workload.prompt_tokens / value
+        elif workload.mode == "tg":
+            latency += workload.weight * workload.generation_tokens / value
+        else:
+            latency += workload.weight / value  # pg value is already requests/sec
+    return 1.0 / latency if latency > 0 else None
+
+
+def rank_candidates(stage_plan, measurements, trim_fraction=0.0, scoring_intent="auto"):
+    """Rank stage candidates without averaging raw rates across workload types.
+
+    ``auto`` uses direct throughput only when all cases share one workload; a
+    mixed stage uses per-workload relative normalization.  ``latency`` combines
+    each workload's token/rate latency, while ``relative`` always normalizes.
+    """
+    if scoring_intent not in ("auto", "throughput", "relative", "latency"):
+        raise ValueError("unknown scoring intent")
     by_case = {}
     for measurement in measurements:
         by_case.setdefault(measurement.case_id, []).append(measurement)
-    scores = []
+    raw_by_candidate = {}
     for candidate in stage_plan.candidates:
         case_scores = []
         for case in stage_plan.cases:
@@ -47,7 +85,28 @@ def rank_candidates(stage_plan, measurements, trim_fraction=0.0):
                 continue
             score = aggregate_case_measurements(case.workload, by_case.get(case.case_id, ()), trim_fraction)
             if score is not None:
-                case_scores.append(score)
+                case_scores.append((case, score))
         if case_scores:
-            scores.append(CandidateScore(candidate.candidate_id, sum(case_scores) / len(case_scores), tuple(case_scores)))
+            raw_by_candidate[candidate.candidate_id] = case_scores
+    signatures = {_signature(case) for values in raw_by_candidate.values() for case, _ in values}
+    if scoring_intent == "throughput" and len(signatures) > 1:
+        raise ValueError("throughput scoring cannot combine distinct workloads")
+    intent = "relative" if scoring_intent == "auto" and len(signatures) > 1 else scoring_intent
+    best_by_signature = {}
+    for values in raw_by_candidate.values():
+        for case, value in values:
+            key = _signature(case)
+            best_by_signature[key] = max(best_by_signature.get(key, 0), value)
+    scores = []
+    for candidate_id, case_values in raw_by_candidate.items():
+        raw_scores = tuple(value for _, value in case_values)
+        if intent == "latency":
+            score = _latency_score(case_values)
+        elif intent == "relative":
+            score = _weighted_mean([(value / best_by_signature[_signature(case)], case.workload.weight)
+                                    for case, value in case_values])
+        else:
+            score = _weighted_mean([(value, case.workload.weight) for case, value in case_values])
+        if score is not None:
+            scores.append(CandidateScore(candidate_id, score, raw_scores))
     return tuple(sorted(scores, key=lambda score: (-score.score, score.candidate_id)))

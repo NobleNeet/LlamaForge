@@ -12,6 +12,7 @@ class BenchmarkWorkload:
     prompt_tokens: int
     generation_tokens: int
     context_depth: int
+    weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,8 @@ class TuneResult:
 
 def _workload_dict(workload):
     return {"mode": workload.mode, "prompt_tokens": workload.prompt_tokens,
-            "generation_tokens": workload.generation_tokens, "context_depth": workload.context_depth}
+            "generation_tokens": workload.generation_tokens, "context_depth": workload.context_depth,
+            "weight": workload.weight}
 
 
 def _binary_dict(binary):
@@ -84,6 +86,8 @@ def validate_result(result):
             errors.append("case %s has invalid workload mode" % case.case_id)
         if min(workload.prompt_tokens, workload.generation_tokens, workload.context_depth) < 0:
             errors.append("case %s has negative workload values" % case.case_id)
+        if workload.weight <= 0:
+            errors.append("case %s has non-positive workload weight" % case.case_id)
         if case.backend != case.execution_environment.backend:
             errors.append("case %s backend does not match execution environment" % case.case_id)
     for measurement in result.measurements:
@@ -131,7 +135,8 @@ def deserialize_result(data):
                                    str(item.get("candidate_id") or ""), str(item.get("backend") or ""),
                                    dict(item.get("settings") or {}),
                                    BenchmarkWorkload(str(workload.get("mode") or ""), int(workload.get("prompt_tokens") or 0),
-                                                     int(workload.get("generation_tokens") or 0), int(workload.get("context_depth") or 0)),
+                                                     int(workload.get("generation_tokens") or 0), int(workload.get("context_depth") or 0),
+                                                     float(workload.get("weight") or 1.0)),
                                    execution))
     return TuneResult(
         result_id=str(data.get("result_id") or ""), model_fingerprint=str(data.get("model_fingerprint") or ""),
