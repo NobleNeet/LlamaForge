@@ -75,6 +75,11 @@ def derive_request_latencies(stage_plan, measurements, trim_fraction=0.0):
                        and case.workload.context_depth == request.context_depth), None)
             tg = next((case for case in cases if case.workload.mode == "tg" and case.workload.generation_tokens == request.generation_tokens
                        and case.workload.context_depth == request.context_depth), None)
+            # A cold prefill starts at depth zero, while decode starts after the prompt.
+            # Preserve legacy same-depth matching first; only then use this explicit fallback.
+            if pp is None:
+                pp = next((case for case in cases if case.workload.mode == "pp" and case.workload.prompt_tokens == request.prompt_tokens
+                           and case.workload.context_depth == 0), None)
             if pp is None or tg is None:
                 continue
             workload_id = "request:%s:%s:%s" % (request.prompt_tokens, request.generation_tokens, request.context_depth)

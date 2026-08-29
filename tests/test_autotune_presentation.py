@@ -6,7 +6,8 @@ import conftest_paths  # noqa: F401
 from autotune_core.orchestrator import GeneratedProfile
 from autotune_core.results import TuneResult
 from autotune_core.staleness import ProfileIdentity
-from autotune_service import (AutoTuneService, IncompatibleBackendError, ProfileStaleError)
+from autotune_service import (AutoTuneService, IncompatibleBackendError, ProfileStaleError,
+                              PRODUCTION_REPETITIONS, PRODUCTION_TIMEOUT_SECONDS)
 import model_settings
 
 
@@ -73,6 +74,10 @@ class TestAutoTunePresentation(unittest.TestCase):
 
 
 class TestAutoTuneMaterialization(unittest.TestCase):
+    def test_strategy_v2_service_execution_defaults(self):
+        self.assertEqual(2, PRODUCTION_REPETITIONS)
+        self.assertEqual(300, PRODUCTION_TIMEOUT_SECONDS)
+
     def test_all_is_materialized_but_partial_offload_is_not(self):
         self.assertEqual("99", model_settings.materialize_autotune_settings({"n-gpu-layers": "all"}, SCHEMA)["settings"]["n-gpu-layers"])
         self.assertEqual("20", model_settings.materialize_autotune_settings({"n-gpu-layers": 20}, SCHEMA)["settings"]["n-gpu-layers"])

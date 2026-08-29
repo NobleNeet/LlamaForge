@@ -4,7 +4,7 @@ import { api, esc, setHTML, toast } from "./core.js";
 const sessions = new Map();
 let bridge = null;
 const terminal = new Set(["completed", "failed", "cancelled", "interrupted"]);
-const stageLabel = {coarse: "Initial search", refine: "Fine tuning", validate: "Validation"};
+const stageLabel = {coarse: "Initial search", batch_probe: "Batch sizing", flash_probe: "Flash attention", kv_probe: "KV cache", validate: "Final validation"};
 const RUN_STORAGE_KEY = "lf_autotune_runs_v1";
 
 function savedRuns() {

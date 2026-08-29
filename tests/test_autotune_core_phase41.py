@@ -41,6 +41,20 @@ class TestPhase41(unittest.TestCase):
         self.assertEqual(derived[0].latency_seconds, 2.0)
         self.assertEqual(derive_request_latencies(plan, tuple(item for item in measurements if "-1" not in item.case_id)), ())
 
+    def test_request_falls_back_to_cold_prefill_and_long_context_decode(self):
+        pp = BenchmarkWorkload("pp", 16384, 0, 0)
+        tg = BenchmarkWorkload("tg", 0, 128, 16384)
+        request = BenchmarkWorkload("request", 16384, 128, 16384)
+        plan = _plan((pp, tg, request))
+        measurements = tuple(BenchmarkMeasurement(case.case_id, repetition, 8192.0 if case.workload.mode == "pp" else None,
+                                                   64.0 if case.workload.mode == "tg" else None, exit_code=0)
+                             for case in plan.cases for repetition in (0, 1))
+        derived = derive_request_latencies(plan, measurements)
+        self.assertEqual(2, len(derived))
+        self.assertEqual(4.0, derived[0].latency_seconds)
+        self.assertTrue(derived[0].source_pp_case_id.endswith("-0"))
+        self.assertTrue(derived[0].source_tg_case_id.endswith("-1"))
+
     def test_missing_one_required_depth_makes_candidate_ineligible(self):
         workloads = (BenchmarkWorkload("tg", 0, 8, 0), BenchmarkWorkload("tg", 0, 8, 4096))
         plan = _plan(workloads)

@@ -23,6 +23,10 @@ from autotune_core.resource_lease import BenchmarkResourceLease
 from autotune_core.strategy_factory import build_production_strategy
 
 
+PRODUCTION_REPETITIONS = 2
+PRODUCTION_TIMEOUT_SECONDS = 300
+
+
 class AutoTuneServiceError(RuntimeError):
     status = 400
 
@@ -116,7 +120,7 @@ class AutoTuneService:
             strategy = build_production_strategy(gguf, snapshot, tuple(prepared), rules)
             AutoTuneOrchestrator(self.store, self.runner_factory()).run(run_id, strategy, rules,
                 tuple(item.execution_environment for item in prepared), BenchmarkTarget(path, expected_model_fp),
-                3, 120, token, tuple(prepared))
+                PRODUCTION_REPETITIONS, PRODUCTION_TIMEOUT_SECONDS, token, tuple(prepared))
         except Exception as exc:
             error = self._safe_worker_error(exc)
             # Diagnostics remain server-side; browser DTOs only receive this safe form.

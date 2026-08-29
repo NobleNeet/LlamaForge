@@ -42,3 +42,8 @@ class TestAutoTuneFrontendBoundary(unittest.TestCase):
         self.assertIn("if (s.runId && !s.restored)", autotune)
         self.assertIn("data-autotune-rerun", autotune)
         self.assertIn('"Run again"', autotune)
+
+    def test_strategy_v2_stage_labels_are_present(self):
+        with open(os.path.join(ROOT, "web", "js", "autotune.js"), encoding="utf-8") as handle: autotune = handle.read()
+        for label in ("Batch sizing", "Flash attention", "KV cache", "Final validation"):
+            self.assertIn(label, autotune)
