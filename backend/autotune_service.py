@@ -226,7 +226,7 @@ class AutoTuneService:
     @staticmethod
     def _summary(manifest):
         error = manifest.get("error")
-        if isinstance(error, dict) and error.get("code") in ("model_changed", "artifact_unavailable"):
+        if isinstance(error, dict) and error.get("code") in ("model_changed", "artifact_unavailable", "stage_exhausted", "incomplete_validation"):
             error = {"code": error["code"], "message": str(error.get("message") or "Auto Tune failed.")[:120]}
         elif error:
             error = {"code": "internal_error", "message": "Auto Tune failed."}

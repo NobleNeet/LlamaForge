@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 
 from .bench_argv import build_bench_argv
-from .bench_parse import BenchParseError, expand_record, parse_structured_output
+from .bench_parse import BenchParseError, expand_record, parse_structured_output, select_record
 from .bench_artifacts import BenchBinaryRef, identify_bench_binary
 from .gguf_normalize import fast_fingerprint
 
@@ -77,7 +77,7 @@ class BenchRunner:
         started_wall = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         started = self.clock()
         argv, process, paths = (), None, (None, None, None, None)
-        status, error, measurements, exit_code = "failed", None, (), None
+        status, error, error_code, measurements, exit_code = "failed", None, None, (), None
         self.store.acquire(run_id)
         try:
             if expected_binary_identity is not None:
@@ -96,11 +96,11 @@ class BenchRunner:
                 while process.poll() is None:
                     elapsed = self.clock() - started
                     if cancellation is not None and cancellation.cancelled():
-                        status, error = "cancelled", "cancelled"
+                        status, error, error_code = "cancelled", "cancelled", "cancelled"
                         self._terminate_owned_group(process)
                         break
                     if elapsed > timeout_seconds:
-                        status, error = "failed", "timeout"
+                        status, error, error_code = "failed", "timeout", "timeout"
                         self._terminate_owned_group(process)
                         break
                     self.store.heartbeat(run_id)
@@ -111,17 +111,23 @@ class BenchRunner:
                     exit_code = process.poll()
             self.store.finalize_raw_files(out_tmp, err_tmp, out_path, err_path)
             if status == "completed" and exit_code != 0:
-                status, error = "failed", "llama-bench exited with %s" % exit_code
+                status, error, error_code = "failed", "llama-bench exited with %s" % exit_code, "nonzero_exit"
             if status == "completed":
                 records = parse_structured_output(self._read_bounded(out_path))
-                if len(records) != 1:
-                    raise BenchParseError("one invocation must produce exactly one record")
-                measurements = expand_record(records[0], case, argv, exit_code, started_wall,
+                record = select_record(records, case.workload)
+                measurements = expand_record(record, case, argv, exit_code, started_wall,
                                              datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
                                              self.clock() - started, repetitions)
         except Exception as exc:
             status = "failed" if status != "cancelled" else status
             error = str(exc) or exc.__class__.__name__
+            if error_code is None:
+                if isinstance(exc, BenchParseError): error_code = "parse_error"
+                elif isinstance(exc, FileNotFoundError): error_code = "invocation_error"
+                elif "unsupported knob" in error: error_code = "unsupported_knob"
+                elif "model changed" in error: error_code = "model_changed"
+                elif "binary changed" in error: error_code = "binary_changed"
+                else: error_code = "invocation_error"
         finally:
             if process is not None and process.poll() is None:
                 self._terminate_owned_group(process)
@@ -136,10 +142,12 @@ class BenchRunner:
                     "argv": list(argv), "stdout_path": os.path.basename(out_path) if out_path else None,
                     "stderr_path": os.path.basename(err_path) if err_path else None, "exit_code": exit_code,
                     "started_at": started_wall, "finished_at": finished_wall, "duration_seconds": duration,
-                    "error": error, "measurements": [measurement.__dict__ for measurement in measurements]}
+                    "error": error, "error_code": error_code,
+                    "measurements": [measurement.__dict__ for measurement in measurements]}
         try:
             self.store.record_invocation(run_id, invocation_id, artifact)
         except Exception as exc:
             status, error = "failed", "persistence failure: %s" % exc
-            artifact["status"], artifact["error"] = status, error
+            error_code = "persistence_error"
+            artifact["status"], artifact["error"], artifact["error_code"] = status, error, error_code
         return status, measurements, artifact

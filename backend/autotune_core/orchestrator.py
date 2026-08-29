@@ -103,11 +103,19 @@ class AutoTuneOrchestrator:
             final_plan = plan
             stage_index = 0
             stage_count = len(strategy.stages)
+            stage_ids = tuple(definition.stage_id for definition in strategy.stages)
             while plan is not None:
                 counts = {"succeeded": 0, "failed": 0, "skipped": 0}
-                self.store.update_progress(run_id, {"stage_index": stage_index, "stage_count": stage_count, "stage_id": plan.definition.stage_id,
-                                                    "candidates": len(plan.candidates), "cases": len(plan.cases),
-                                                    "counts": counts})
+                failures = []
+
+                def report(status=None):
+                    progress = {"stage_index": stage_index, "stage_count": stage_count, "stage_ids": stage_ids,
+                                "stage_id": plan.definition.stage_id, "candidates": len(plan.candidates),
+                                "cases": len(plan.cases), "counts": counts, "failures": failures}
+                    if status is not None: progress["status"] = status
+                    self.store.update_progress(run_id, progress)
+
+                report()
                 for case in plan.cases:
                     if cancellation is not None and cancellation.cancelled():
                         self.store.finish(run_id, "cancelled")
@@ -122,16 +130,14 @@ class AutoTuneOrchestrator:
                             if cancellation is not None and cancellation.cancelled():
                                 self.store.finish(run_id, "cancelled")
                                 return None
-                            self.store.update_progress(run_id, {"stage_index": stage_index, "stage_count": stage_count, "stage_id": plan.definition.stage_id,
-                                                                "status": "waiting_for_resource", "candidates": len(plan.candidates),
-                                                                "cases": len(plan.cases), "counts": counts})
+                            report("waiting_for_resource")
                     try:
                         arguments = (run_id, target, case, repetitions, timeout_seconds, cancellation,
                                      capabilities[execution_fingerprint(case.execution_environment)])
                         prepared = supplied.get(execution_fingerprint(case.execution_environment))
                         if prepared is not None:
                             arguments += (prepared.execution_environment.bench_binary, target.model_fingerprint)
-                        status, measurements, _ = self.runner.run_case(*arguments)
+                        status, measurements, artifact = self.runner.run_case(*arguments)
                     finally:
                         lease.release()
                     if cancellation is not None and cancellation.cancelled():
@@ -141,8 +147,12 @@ class AutoTuneOrchestrator:
                         counts["succeeded"] += 1; all_measurements.extend(measurements)
                     else:
                         counts["failed"] += 1
-                    self.store.update_progress(run_id, {"stage_index": stage_index, "stage_count": stage_count, "stage_id": plan.definition.stage_id,
-                                                        "candidates": len(plan.candidates), "cases": len(plan.cases), "counts": counts})
+                        failure = {key: artifact.get(key) for key in ("case_id", "candidate_id", "invocation_id", "error_code", "exit_code")}
+                        failures.append(failure)
+                        print("Auto Tune case failed: run=%s stage=%s case=%s candidate=%s invocation=%s error_code=%s exit_code=%s" %
+                              (run_id, plan.definition.stage_id, failure["case_id"], failure["candidate_id"],
+                               failure["invocation_id"], failure["error_code"], failure["exit_code"]), flush=True)
+                    report()
                 all_cases.extend(plan.cases)
                 if cancellation is not None and cancellation.cancelled():
                     self.store.finish(run_id, "cancelled")
@@ -150,15 +160,18 @@ class AutoTuneOrchestrator:
                 outcome = stage_outcome(plan, all_measurements)
                 valid = bool(outcome.candidate_scores)
                 stage_status = "completed" if valid and not (counts["failed"] or counts["skipped"]) else "partial" if valid else "failed"
-                self.store.update_progress(run_id, {"stage_index": stage_index, "stage_count": stage_count, "stage_id": plan.definition.stage_id,
-                                                    "status": stage_status, "candidates": len(plan.candidates),
-                                                    "cases": len(plan.cases), "counts": counts})
+                report(stage_status)
                 if not valid:
-                    # Exhausted candidates are normal benchmark evidence, not a run-level failure.
-                    break
+                    label = {"coarse": "Initial search", "batch_probe": "Batch sizing", "flash_probe": "Flash attention",
+                             "kv_probe": "KV cache", "validate": "Final validation"}.get(plan.definition.stage_id, "benchmark")
+                    self.store.fail(run_id, "stage_exhausted", "Auto Tune could not complete the %s stage." % label)
+                    return None
                 final_plan = plan
                 plan = next_stage_plan(strategy, outcome, rules)
                 stage_index += 1
+            if final_plan.definition.stage_id != strategy.stages[-1].stage_id:
+                self.store.fail(run_id, "incomplete_validation", "Auto Tune did not reach final validation.")
+                return None
             derived = derive_request_latencies(final_plan, all_measurements)
             result = TuneResult(run_id, target.model_fingerprint, environments[0].hardware_fingerprint,
                                 tuple(all_cases), tuple(all_measurements), derived)
@@ -171,6 +184,9 @@ class AutoTuneOrchestrator:
                                        capabilities[execution_fingerprint(environment)].fingerprint, _fingerprint(rules),
                                        _fingerprint(strategy), SCORING_SCHEMA_VERSION, candidate.backend)
             profiles = generate_profiles(final_plan, all_measurements, identity_for) if all_measurements else ()
+            if {profile.name for profile in profiles} != {"balanced", "fast_prefill", "fast_decode"}:
+                self.store.fail(run_id, "incomplete_validation", "Auto Tune could not produce complete final validation profiles.")
+                return None
             if cancellation is not None and cancellation.cancelled():
                 self.store.finish(run_id, "cancelled")
                 return None

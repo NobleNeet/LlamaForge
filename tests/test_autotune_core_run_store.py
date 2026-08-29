@@ -18,6 +18,7 @@ class TestRunStore(unittest.TestCase):
         store.acquire("run")
         store.record_invocation("run", "i1", {"ok": True})
         self.assertEqual(store.load_manifest("run")["invocation_ids"], ["i1"])
+        self.assertEqual({"ok": True}, store.load_invocation("run", "i1"))
         with open(os.path.join(root, "runs", "run", "invocations", "i1.json"), encoding="utf-8") as handle:
             self.assertEqual(json.load(handle), {"ok": True})
 

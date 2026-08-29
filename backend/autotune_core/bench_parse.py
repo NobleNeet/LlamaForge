@@ -40,6 +40,18 @@ def _matches(record, workload):
     return record.get("n_prompt") == expected_prompt and record.get("n_gen") == expected_generation and record.get("n_depth") == workload.context_depth
 
 
+def select_record(records, workload):
+    """Select the one structured record representing this logical workload.
+
+    ``-pg`` can emit auxiliary PP/TG records in addition to its native combined
+    record. They are valid diagnostics, but not measurements for this case.
+    """
+    matches = [record for record in records if _matches(record, workload)]
+    if len(matches) != 1:
+        raise BenchParseError("structured output does not contain exactly one matching workload record")
+    return matches[0]
+
+
 def expand_record(record, case, argv, exit_code, started_at, finished_at, duration_seconds, requested_repetitions=None):
     if not _matches(record, case.workload):
         raise BenchParseError("output workload does not match benchmark case")

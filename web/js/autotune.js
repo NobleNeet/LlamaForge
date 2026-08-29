@@ -33,6 +33,7 @@ function profileCard(profile, result) {
   return `<section class="at-profile"><h4>${esc(profile.name.replace("_", " "))}</h4><div class="at-meta">${esc(provenance.backend || "unknown")} · ${esc(profile.evidence || "measured")}</div><div class="at-settings">${settings}</div>${latency ? `<div class="at-latency">${latency}</div>` : ""}${identity ? `<div class="at-meta">${esc(identity)}</div>` : ""}<button class="qbtn" data-autotune-preview="${esc(profile.name)}">Preview</button></section>`;
 }
 function stageProgress(item) {
+  if (item.status === "not_run") return "not run";
   const counts = item.counts || {};
   const done = Number(counts.succeeded || 0) + Number(counts.failed || 0) + Number(counts.skipped || 0);
   const extras = [counts.failed && `${counts.failed} failed`, counts.skipped && `${counts.skipped} skipped`].filter(Boolean);
@@ -41,7 +42,7 @@ function stageProgress(item) {
 function stageHistory(progress) {
   return (progress.stages || []).map(item => {
     const current = item.stage_index === progress.stage_index;
-    const marker = current ? "›" : item.status === "completed" ? "✓" : item.status === "partial" ? "!" : "·";
+    const marker = current ? "›" : item.status === "completed" ? "✓" : item.status === "partial" ? "!" : item.status === "failed" ? "✕" : "·";
     return `<div class="at-stage${current ? " current" : ""}"><b>${marker}</b><span>${esc(stageLabel[item.stage_id] || item.stage_id)}</span><small>${esc(stageProgress(item))}</small></div>`;
   }).join("");
 }
@@ -59,11 +60,13 @@ function render(modelId) {
     } else body += `<div class="at-progress">Preparing benchmark...</div>`;
     body += `<button class="qbtn stop" data-autotune-cancel ${s.cancelling ? "disabled" : ""}>${s.cancelling ? "Cancelling..." : "Cancel"}</button>`;
   }
-  if (status === "failed" && s.error) body += `<div class="msg err">${esc(s.error.message || "Auto Tune failed.")}</div>`;
-  setHTML(el, body + "</div>");
-  if (status === "completed") {
+  if (status === "failed" && s.error) body += `<div class="msg err">${esc(s.error.message || "Auto Tune stopped because all candidates failed.")}</div>`;
+  if (terminal.has(status)) {
     body += `<button class="qbtn" data-autotune-rerun ${s.starting ? "disabled" : ""}>${s.starting ? "Starting..." : "Run again"}</button>`;
-    if (s.result) body += `<div class="at-progress">Completed · ${esc(progress.stage_count || (progress.stages || []).length)} stages</div><div class="at-stages">${stageHistory(progress)}</div><div class="at-profiles">${(s.result.profiles || []).map(profile => profileCard(profile, s.result)).join("")}</div>`;
+    body += `<div class="at-stages">${stageHistory(progress)}</div>`;
+  }
+  if (status === "completed" && s.result) {
+    body += `<div class="at-progress">Completed · ${esc(progress.stage_count || (progress.stages || []).length)} stages</div><div class="at-profiles">${(s.result.profiles || []).map(profile => profileCard(profile, s.result)).join("")}</div>`;
   }
   setHTML(el, body + "</div>");
 }

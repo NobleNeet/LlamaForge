@@ -24,6 +24,11 @@ def _case(binary):
     return BenchmarkCase("case", "stage", "candidate", "cpu", {}, BenchmarkWorkload("pp", 4, 0, 0), env)
 
 
+def _pg_case(binary):
+    env = ExecutionEnvironment("hw", "cpu", {}, BenchBinaryIdentity("cpu", binary, "b", "f", "v", "artifact"), "now")
+    return BenchmarkCase("pg", "stage", "candidate", "cpu", {}, BenchmarkWorkload("pg_native", 8, 2, 4), env)
+
+
 class TestBenchRunner(unittest.TestCase):
     def _run(self, script, timeout=2, cancellation=None, max_parse_bytes=1024 * 1024):
         root = tempfile.mkdtemp()
@@ -39,10 +44,21 @@ class TestBenchRunner(unittest.TestCase):
         self.assertEqual(len(measurements), 2)
         self.assertIn("--repetitions", artifact["argv"])
 
+    def test_pg_auxiliary_jsonl_records_select_the_native_record(self):
+        script = _script("import json\nfor p,g in ((4,0),(0,8),(8,2)): print(json.dumps({'n_prompt':p,'n_gen':g,'n_depth':4,'samples_ts':[3,4],'samples_ns':[10,20]}))\n")
+        root = tempfile.mkdtemp(); store = RunStore(root, instance_id="runner", pid=os.getpid()); store.create_run("run", {}, {})
+        runner = BenchRunner(store, poll_interval=0.01)
+        status, measurements, artifact = runner.run_case("run", BenchmarkTarget("/m", "f"), _pg_case(script), 2, 2)
+        self.assertEqual("completed", status)
+        self.assertEqual(2, len(measurements))
+        self.assertEqual(4.0, measurements[1].native_tokens_per_second)
+        self.assertIsNone(artifact["error_code"])
+
     def test_timeout_and_cancellation_terminate_only_owned_process_group(self):
         script = _script("import time\ntime.sleep(10)\n")
-        (status, _, _), root = self._run(script, timeout=0.03)
+        (status, _, artifact), root = self._run(script, timeout=0.03)
         self.assertEqual(status, "failed")
+        self.assertEqual("timeout", artifact["error_code"])
         self.assertEqual(RunStore(root).load_manifest("run")["status"], "running")
         token = CancellationToken(); token.cancel()
         (status, _, _), root = self._run(script, cancellation=token)
@@ -82,6 +98,21 @@ class TestBenchRunner(unittest.TestCase):
             self.assertTrue(artifact["error"])
             self.assertTrue(os.path.exists(os.path.join(root, "runs", "run", "invocations", artifact["invocation_id"] + ".json")))
             self.assertEqual(RunStore(root).load_manifest("run")["status"], "running")
+
+    def test_nonzero_exit_and_parse_failure_are_classified_and_retained(self):
+        cases = (
+            (_script("import sys\nsys.stderr.write('bench failed')\nsys.exit(7)\n"), "nonzero_exit"),
+            (_script("print('not structured output')\n"), "parse_error"),
+        )
+        for script, expected_code in cases:
+            (status, _, artifact), root = self._run(script)
+            self.assertEqual("failed", status)
+            self.assertEqual(expected_code, artifact["error_code"])
+            persisted = RunStore(root).load_invocation("run", artifact["invocation_id"])
+            self.assertEqual(expected_code, persisted["error_code"])
+            if expected_code == "nonzero_exit":
+                with open(os.path.join(root, "runs", "run", "invocations", artifact["stderr_path"]), encoding="utf-8") as handle:
+                    self.assertEqual("bench failed", handle.read())
 
     def test_termination_race_is_safe(self):
         class Gone:

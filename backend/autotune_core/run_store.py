@@ -245,15 +245,27 @@ class RunStore:
             previous = manifest.get("progress") or {}
             stages = {item.get("stage_index"): dict(item) for item in previous.get("stages", ())
                       if isinstance(item, dict) and isinstance(item.get("stage_index"), int)}
+            stage_ids = tuple(current.get("stage_ids") or previous.get("stage_ids") or ())
+            for position, known_stage_id in enumerate(stage_ids):
+                stages.setdefault(position, {"stage_index": position, "stage_id": known_stage_id, "status": "not_run",
+                                             "candidates": 0, "cases": 0, "counts": {}, "failures": []})
             index, stage_id = current.get("stage_index"), current.get("stage_id")
             if isinstance(index, int) and stage_id:
+                failures = []
+                for failure in current.get("failures") or ():
+                    if not isinstance(failure, dict):
+                        continue
+                    failures.append({key: failure.get(key) for key in ("case_id", "candidate_id", "invocation_id", "error_code", "exit_code")})
+                    if len(failures) == 10: break
                 stages[index] = {"stage_index": index, "stage_id": stage_id,
                                  "status": current.get("status", "running"),
                                  "candidates": current.get("candidates", 0), "cases": current.get("cases", 0),
-                                 "counts": dict(current.get("counts") or {})}
+                                 "counts": dict(current.get("counts") or {}), "failures": failures}
                 current["stages"] = [stages[key] for key in sorted(stages)]
+                current["stage_ids"] = stage_ids
             elif stages:
                 current["stages"] = [stages[key] for key in sorted(stages)]
+                current["stage_ids"] = stage_ids
             manifest["progress"] = current
             self._save_manifest(manifest)
             return manifest
@@ -270,6 +282,11 @@ class RunStore:
     def write_invocation(self, run_id, invocation_id, artifact):
         """The invocation document is committed before its manifest reference."""
         atomicio.write_json(os.path.join(self._artifact_dir(run_id), invocation_id + ".json"), artifact)
+
+    def load_invocation(self, run_id, invocation_id):
+        """Public read API for durable invocation diagnostics."""
+        with open(os.path.join(self._artifact_dir(run_id), invocation_id + ".json"), encoding="utf-8") as handle:
+            return json.load(handle)
 
     def record_invocation(self, run_id, invocation_id, artifact):
         with self._locked(run_id):

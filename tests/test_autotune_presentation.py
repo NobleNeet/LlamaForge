@@ -72,6 +72,14 @@ class TestAutoTunePresentation(unittest.TestCase):
         self.assertEqual("internal_error", error["code"])
         self.assertNotIn("/private/path", error["message"])
 
+    def test_stage_exhausted_error_is_safe_and_visible(self):
+        self.service.store.create_run(self.failed_id, {}, {"model_name": "qwen"})
+        self.service.store.acquire(self.failed_id)
+        self.service.store.fail(self.failed_id, "stage_exhausted", "Auto Tune could not complete the Flash attention stage.")
+        error = self.service.status(self.failed_id)["error"]
+        self.assertEqual("stage_exhausted", error["code"])
+        self.assertNotIn("/models/", error["message"])
+
 
 class TestAutoTuneMaterialization(unittest.TestCase):
     def test_strategy_v2_service_execution_defaults(self):

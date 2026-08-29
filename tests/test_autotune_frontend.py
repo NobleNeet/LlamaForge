@@ -47,3 +47,9 @@ class TestAutoTuneFrontendBoundary(unittest.TestCase):
         with open(os.path.join(ROOT, "web", "js", "autotune.js"), encoding="utf-8") as handle: autotune = handle.read()
         for label in ("Batch sizing", "Flash attention", "KV cache", "Final validation"):
             self.assertIn(label, autotune)
+
+    def test_failed_stage_and_not_run_stages_are_rendered(self):
+        with open(os.path.join(ROOT, "web", "js", "autotune.js"), encoding="utf-8") as handle: autotune = handle.read()
+        self.assertIn('item.status === "failed" ? "✕"', autotune)
+        self.assertIn('item.status === "not_run"', autotune)
+        self.assertIn('terminal.has(status)', autotune)
