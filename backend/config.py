@@ -32,6 +32,12 @@ DEFAULTS = {
     "panel_host":  "127.0.0.1",             # 127.0.0.1 = local only, 0.0.0.0 = reachable on the LAN
     "router_host": "127.0.0.1",               # 127.0.0.1 = local only, 0.0.0.0 = reachable on the LAN
     "router_api_key": "",                     # required by clients when router_host != 127.0.0.1
+    # How many models the llama.cpp router may hold loaded at once. The router
+    # evicts by COUNT, never by free memory: at 1 (the historical value, and
+    # still the default) loading a second model always unloaded the first.
+    # 0 = unlimited, which disables llama.cpp's eviction and hands the decision
+    # to LlamaForge's memory-aware admission. Needs a router restart.
+    "router_models_max": 1,
     "wsl_distro":  "",                        # WSL distro that runs vLLM ("" = auto-pick default)
     "vllm_port":   8081,                      # port vLLM serves on (WSL localhost-forwarded to Windows)
     "cmake_flags": {},                       # persisted build flags (from hardware detect)

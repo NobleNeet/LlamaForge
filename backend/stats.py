@@ -4,7 +4,9 @@ The dashboard never sees inference traffic (clients hit the llama.cpp router
 directly), and llama.cpp's own Prometheus counters reset on restart and keep no
 per-model history. So this module runs a background poller that scrapes the
 router's `/metrics`, diffs the token counters, attributes the delta to the
-currently-loaded model (safe: the router runs with --models-max 1), and
+currently-loaded model (safe: config.json keeps `router_models_max` at 1, so
+there is at most one loaded model - raising it would need per-model attribution
+here first, and `/models` reports neither load order nor a busy flag), and
 persists per-model + daily totals to stats.json. Pure stdlib.
 """
 import json, os, re, threading, time, urllib.request, urllib.parse

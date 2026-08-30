@@ -67,7 +67,12 @@ if (-not (Listening $cfg.router_port)) {
   }
   if (Test-Path $serverBin) {
     $routerHost = if ($cfg.router_host) { $cfg.router_host } else { "127.0.0.1" }
-    $args = @("--models-preset", $modelsIni, "--models-max", "1", "--offline",
+    # llama.cpp's router evicts by loaded-model COUNT, so at --models-max 1
+    # loading a second model always unloaded the first. 0 means unlimited and
+    # hands the decision to LlamaForge, so test for presence here rather than
+    # truthiness - a configured 0 must survive.
+    $modelsMax = if ($null -ne $cfg.router_models_max) { $cfg.router_models_max } else { 1 }
+    $args = @("--models-preset", $modelsIni, "--models-max", "$modelsMax", "--offline",
               "--host", $routerHost, "--port", "$($cfg.router_port)", "--metrics")
     if ($cfg.router_api_key) { $args += @("--api-key", $cfg.router_api_key) }
     Start-Process -FilePath $serverBin -ArgumentList $args -WindowStyle Hidden `

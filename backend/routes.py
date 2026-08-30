@@ -1551,7 +1551,8 @@ def post_network(req):
     sbin = _active_server_bin(c)
     ini = config.ini_path()
     ok, err = router_ctl.restart(sbin, ini, port,
-                                 host, api_key, LOGDIR)
+                                 host, api_key, LOGDIR,
+                                 models_max=router_ctl.resolve_models_max(c))
     if ok and panel_restart_required and callable(PANEL_RESTART):
         try:
             PANEL_RESTART(panel_host, c["panel_port"])
@@ -1588,7 +1589,8 @@ def post_engine_switch(req):
     c = config.update({"active_engine": engine})
     ok, err = router_ctl.restart(sbin, config.ini_path(), c["router_port"],
                                  c.get("router_host", "127.0.0.1"),
-                                 c.get("router_api_key", ""), LOGDIR)
+                                 c.get("router_api_key", ""), LOGDIR,
+                                 models_max=router_ctl.resolve_models_max(c))
     return 200, {"ok": ok, "active_engine": engine, "error": err}
 
 

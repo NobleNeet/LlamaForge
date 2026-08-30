@@ -116,6 +116,45 @@ def total_ram_bytes():
     return 0
 
 
+def parse_mem_available(text):
+    """MemAvailable (bytes) from /proc/meminfo contents; 0 if absent.
+
+    MemAvailable, not MemFree, is what a new model could still be given: it
+    counts page cache the kernel will hand back. llama.cpp's --fit measures
+    device memory and assumes system RAM is unlimited (llama.cpp/common/fit.h),
+    so on a unified-memory APU it is LlamaForge that has to notice the host is
+    out of RAM.
+    """
+    for line in text.splitlines():
+        if line.startswith("MemAvailable:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1]) * 1024   # value is in kB
+    return 0
+
+
+def available_ram_bytes():
+    """RAM a newly loaded model could still be given, in bytes; 0 if unknown.
+    Never raises. Callers must read 0 as "no idea" and stay conservative, not
+    as "no room"."""
+    try:
+        if IS_MAC:
+            return int(parse_vm_stat(run_text(["vm_stat"])) or 0)
+        if IS_LINUX:
+            with open("/proc/meminfo", encoding="utf-8") as f:
+                return parse_mem_available(f.read())
+        if IS_WIN:
+            # FreePhysicalMemory is in kB, unlike the TotalPhysicalMemory the
+            # total path above reads.
+            out = run_text(["powershell", "-NoProfile", "-Command",
+                            "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory"])
+            digits = out.strip()
+            return int(digits) * 1024 if digits.isdigit() else 0
+    except Exception:
+        return 0
+    return 0
+
+
 def parse_vm_stat(text):
     """Free+inactive bytes from `vm_stat` output (best-effort)."""
     m = re.search(r"page size of (\d+)", text)

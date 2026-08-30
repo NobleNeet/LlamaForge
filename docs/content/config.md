@@ -22,6 +22,7 @@ order: 1
 | `panel_host` | string | `"127.0.0.1"` | Dashboard bind address. `127.0.0.1` = local only; `0.0.0.0` = reachable on the LAN. |
 | `router_host` | string | `"127.0.0.1"` | Router bind address. `127.0.0.1` = local only; `0.0.0.0` = reachable on the LAN. |
 | `router_api_key` | string | `""` | API key required from clients when `router_host` is not `127.0.0.1`. |
+| `router_models_max` | int | `1` | How many models the router may hold loaded at once. `llama-server` evicts by **count** and never looks at free memory, so at `1` loading a second model always unloads the first. `0` = unlimited: llama.cpp's own eviction is then switched off entirely and LlamaForge would have to decide — leave it at `1` unless you know why. A negative or non-numeric value falls back to `1`, and changing it only takes effect on a router restart (which unloads every model). |
 | `wsl_distro` | string | `""` | WSL distro that runs vLLM. Empty string auto-picks the default distro. |
 | `vllm_port` | int | `8081` | Port vLLM serves on inside WSL (localhost-forwarded to Windows). |
 | `cmake_flags` | object | `{}` | Persisted CMake build flags, normally seeded from hardware detection. |

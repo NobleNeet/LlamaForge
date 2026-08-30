@@ -31,6 +31,11 @@ server_bin="$(getcfg server_bin)"
 models_ini="$(getcfg models_ini)"
 router_host="$(getcfg router_host)"; [ -n "$router_host" ] || router_host=127.0.0.1
 api_key="$(getcfg router_api_key)"
+# llama.cpp's router evicts by loaded-model COUNT, so at --models-max 1 loading
+# a second model always unloaded the first. 0 means unlimited and hands the
+# decision to LlamaForge. 0 is a real value here, so fall back to the old 1 only
+# when the key is absent rather than whenever it looks falsy.
+router_models_max="$(getcfg router_models_max)"; [ -n "$router_models_max" ] || router_models_max=1
 
 # Mirror config._abs(): the router inherits this shell's CWD, and
 # config.example.json ships "./models.ini", so a relative value resolved against
@@ -79,7 +84,7 @@ fi
 # 1. llama.cpp router (only if not already up)
 if ! listening "$router_port"; then
   if [ -x "$server_bin" ]; then
-    args=(--models-preset "$models_ini" --models-max 1 --offline
+    args=(--models-preset "$models_ini" --models-max "$router_models_max" --offline
           --host "$router_host" --port "$router_port" --metrics)
     [ -n "$api_key" ] && args+=(--api-key "$api_key")
     nohup "$server_bin" "${args[@]}" \

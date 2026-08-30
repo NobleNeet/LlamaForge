@@ -334,12 +334,13 @@ class NetworkConfigTest(unittest.TestCase):
     def test_network_updates_router_port_and_restarts_on_new_port(self):
         saved = {}
         base = {"router_host": "127.0.0.1", "router_api_key": "", "router_port": 8080,
-                "panel_host": "127.0.0.1", "panel_port": 8090}
+                "panel_host": "127.0.0.1", "panel_port": 8090, "router_models_max": 4}
         with mock.patch.object(routes, "cfg", return_value={"router_host": "127.0.0.1",
                                                             "router_api_key": "",
                                                             "router_port": 8080,
                                                             "panel_host": "127.0.0.1",
-                                                            "panel_port": 8090}), \
+                                                            "panel_port": 8090,
+                                                            "router_models_max": 4}), \
              mock.patch.object(config, "update",
                                side_effect=lambda ch: (saved.update(ch), dict(base, **saved))[1]), \
              mock.patch.object(routes, "_active_server_bin", return_value="/bin/llama-server"), \
@@ -355,7 +356,11 @@ class NetworkConfigTest(unittest.TestCase):
         self.assertEqual(out["port"], 9090)
         self.assertTrue(out["panel_restart_required"])
         restart.assert_called_once_with("/bin/llama-server", "/tmp/models.ini",
-                                        9090, "0.0.0.0", "secret", routes.LOGDIR)
+                                        9090, "0.0.0.0", "secret", routes.LOGDIR,
+                                        # Applied from config.json: restarting the
+                                        # router to change host/port must not
+                                        # silently reset the loaded-model limit.
+                                        models_max=4)
         panel_restart.assert_called_once_with("0.0.0.0", 8090)
 
     def test_network_keeps_existing_key_when_field_is_omitted(self):

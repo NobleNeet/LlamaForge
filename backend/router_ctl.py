@@ -22,7 +22,8 @@ def lan_ip():
         s.close()
 
 # ---------------------------------------------------------------- capability
-# The router is driven as `<server_bin> --models-preset <ini> --models-max 1`.
+# The router is driven as `<server_bin> --models-preset <ini> --models-max N`
+# (see resolve_models_max below for where N comes from).
 # Not every llama-family binary can do that: ik_llama.cpp forked before router
 # mode existed and answers `unknown argument: --models-preset`, which would take
 # the router down and leave the dashboard with nothing to talk to. Ask first.
@@ -53,6 +54,34 @@ def supports_router_mode(server_bin):
     ok = "--models-preset" in out
     _ROUTER_MODE[key] = ok
     return ok
+
+
+# ---------------------------------------------------------------- models-max
+# The router counts loaded models; it never looks at free memory. `--models-max 1`
+# is precisely why loading a second model unloaded the first one - llama.cpp's
+# count-based LRU (tools/server/server-models.cpp) evicts whenever the count is
+# exceeded, and only runs at all when models_max > 0 (0 = unlimited). Raising the
+# limit therefore moves the eviction decision to LlamaForge, which is what the
+# memory-aware admission policy needs. The shipped default stays 1 so nothing
+# changes for existing installs until config.json (or Setup) raises it.
+DEFAULT_MODELS_MAX = 1
+
+
+def normalize_models_max(value):
+    """A usable --models-max from anything: 0 = unlimited, never negative.
+
+    Negative would make llama-server's own argument parser exit the router at
+    startup, and a typo in config.json must not cost the user their router."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_MODELS_MAX
+    return n if n >= 0 else DEFAULT_MODELS_MAX
+
+
+def resolve_models_max(cfg):
+    """The configured --models-max for this config dict."""
+    return normalize_models_max((cfg or {}).get("router_models_max", DEFAULT_MODELS_MAX))
 
 
 def _pid_on_port(port):
@@ -95,7 +124,7 @@ def stop(port, timeout=10):
     time.sleep(0.5)
     return _pid_on_port(port) is None
 
-def start(server_bin, models_ini, port, host, api_key, logdir):
+def start(server_bin, models_ini, port, host, api_key, logdir, models_max=None):
     if not server_bin or not os.path.exists(server_bin):
         return False, "server_bin not found - build llama.cpp first"
     # Port 8080 is a popular default (XAMPP, Apache, other dev servers). Without
@@ -107,8 +136,10 @@ def start(server_bin, models_ini, port, host, api_key, logdir):
         return False, (f"port {port} is already in use by another process - "
                        f"stop it, or change the router port in Setup")
     os.makedirs(logdir, exist_ok=True)
-    args = [server_bin, "--models-preset", models_ini, "--models-max", "1", "--offline",
-            "--host", host, "--port", str(port), "--metrics"]
+    args = [server_bin, "--models-preset", models_ini, "--models-max",
+            str(normalize_models_max(DEFAULT_MODELS_MAX if models_max is None
+                                     else models_max)),
+            "--offline", "--host", host, "--port", str(port), "--metrics"]
     if api_key:
         args += ["--api-key", api_key]
     out = open(os.path.join(logdir, "router.out.log"), "a", encoding="utf-8", errors="replace")
@@ -126,6 +157,7 @@ def start(server_bin, models_ini, port, host, api_key, logdir):
         err.close()
     return True, ""
 
-def restart(server_bin, models_ini, port, host, api_key, logdir):
+def restart(server_bin, models_ini, port, host, api_key, logdir, models_max=None):
     stop(port)
-    return start(server_bin, models_ini, port, host, api_key, logdir)
+    return start(server_bin, models_ini, port, host, api_key, logdir,
+                 models_max=models_max)
