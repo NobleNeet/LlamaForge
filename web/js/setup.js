@@ -156,6 +156,15 @@ export async function loadSetup() {
         <span class="msg" id="api-idle-msg"></span>
       </div>
       <div class="note"><code>0</code> disables this timer. When set above <code>0</code>, a llama.cpp model that served requests through <code>/v1/chat/completions</code> or <code>/v1/messages</code> is unloaded after that many idle minutes. Active or streaming requests are never interrupted.</div>
+      <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:flex-end">
+        <div class="fld" style="max-width:240px">
+          <label>Models kept loaded at once</label>
+          <input id="models-max" type="number" min="0" step="1" value="${esc(String(net.models_max ?? 1))}">
+        </div>
+        <button id="models-max-save" class="ghost">Save &amp; restart router</button>
+        <span class="msg" id="models-max-msg"></span>
+      </div>
+      <div class="note">Keep <code>1</code> to stay on llama.cpp's default of one model: loading a second one always unloads the first, because llama.cpp evicts by <b>count</b> and never looks at free memory. A higher number lets several models stay resident side by side, and <code>0</code> switches that count-based eviction off entirely. The limit is read when the router starts, so saving here <b>restarts the router and unloads every loaded model</b>. Usage stats attribute inference to one model, so they stay exact only at <code>1</code>.</div>
       <div class="note">The selected model loads automatically once the router is ready after launch &mdash; handy for always-on setups. An optional tray icon (loaded-model count, quick open) is available if you <b>pip install pystray pillow</b>; without them LlamaForge stays pure-stdlib.</div>
     </div>
     <div class="card"><h3>Network Access</h3>
@@ -235,6 +244,45 @@ export async function loadSetup() {
     await api("/api/config", {api_idle_unload_minutes: mins});
     msg.className = "msg ok";
     msg.textContent = mins ? `saved (${mins} min)` : "disabled";
+  };
+  const mmSave = $("#models-max-save");
+  if (mmSave) mmSave.onclick = async () => {
+    const msg = $("#models-max-msg");
+    const val = Number($("#models-max").value);
+    if (!Number.isInteger(val) || val < 0) {
+      msg.className = "msg err";
+      msg.textContent = "a whole number, 0 for unlimited";
+      return;
+    }
+    if (val === net.models_max) {
+      msg.className = "msg";
+      msg.textContent = `already ${val}`;
+      return;
+    }
+    // The restart is what makes this take effect, and it costs every loaded
+    // model - so name them, rather than a bare "are you sure".
+    const resident = models().filter(m => m.status === "loaded" || m.status === "loading").map(m => m.id);
+    const label = val === 0 ? "unlimited models" : `${val} model${val === 1 ? "" : "s"}`;
+    if (!confirm(`Restart the router to keep ${label} loaded at once?`
+        + (resident.length ? ` This unloads: ${resident.join(", ")}.` : ""))) return;
+    msg.className = "msg work"; msg.textContent = "saving...";
+    const c = await api("/api/config", {router_models_max: val});
+    if (!c.ok || (c.rejected || []).includes("router_models_max")) {
+      msg.className = "msg err"; msg.textContent = c.error || "rejected"; return;
+    }
+    msg.className = "msg work"; msg.textContent = "restarting router...";
+    const r = await api("/api/router/restart", {});
+    if (!r.ok) {
+      msg.className = "msg err";
+      msg.textContent = r.error || "router restart failed - see the router log";
+      return;
+    }
+    msg.className = "msg ok";
+    msg.textContent = (r.unloaded && r.unloaded.length)
+      ? `applied; ${r.unloaded.length} model${r.unloaded.length === 1 ? "" : "s"} unloaded`
+      : "applied";
+    toast(`Router keeps ${label}`, "ok");
+    setTimeout(loadSetup, 1500);
   };
   const bwSave = $("#bw-save");
   if (bwSave) bwSave.onclick = async () => {

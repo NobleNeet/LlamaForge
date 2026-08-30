@@ -30,6 +30,8 @@ After a successful install, the running process's `PATH` is refreshed from the r
 
 The tab also surfaces `hardware.recommend()`'s detected CPU/GPU/backends (shared with the Build tab), including AMD architecture strings such as `gfx1151` when available, lets you pick a **favourite model to auto-load on launch** (`auto_load_model` in `config.json`), and — on Windows — the vLLM/WSL2 install flow described in [vLLM Backend](vllm.md).
 
+**Models kept loaded at once.** Under **Startup**, a **Models kept loaded at once** field edits `router_models_max` in `config.json`. At the shipped default of `1` loading a second model always unloads the first, because `llama-server` evicts by **count** and never inspects free memory; a higher number lets several models stay resident, and `0` switches llama.cpp's own count-based eviction off entirely. The limit is baked into the router's command line at startup, so saving this field restarts the router through `POST /api/router/restart` — after a confirmation that names the models about to be unloaded.
+
 ## How to use it
 
 1. Open the **Setup** tab. **Prerequisites** lists Git, CMake, Ninja, Python, your C++ compiler, and acceleration-specific toolchains such as CUDA, ROCm/HIP, and Vulkan when applicable.
@@ -39,6 +41,7 @@ The tab also surfaces `hardware.recommend()`'s detected CPU/GPU/backends (shared
 5. Click **Scan for GGUF models** to walk those directories for `.gguf` files; review the results and apply the ones you want registered.
 6. Click **Check for deleted models** to find registry entries whose backing file no longer exists on disk, then prune the ones you confirm.
 7. Optionally pick a model under **Startup** to auto-load when LlamaForge launches.
+8. Optionally raise **Models kept loaded at once** (or set `0`) under **Startup** to hold more than one model resident. Confirm the restart when prompted — it unloads whatever is loaded, and per-model usage stats are only exact at `1`.
 
 ## Screenshot
 
@@ -57,6 +60,7 @@ The tab also surfaces `hardware.recommend()`'s detected CPU/GPU/backends (shared
 | PATH refresh after install | `osplat.refresh_path()` | Windows-only; re-reads PATH from the registry so a just-installed tool is detected without a restart. |
 | Registry prune | `POST /api/scan/prune` | Removes a `models.ini` section only if its `model` file no longer exists on disk; unloads it from the router first if loaded. |
 | Auto-load | `config.json: auto_load_model` | Model ID to load automatically once the router is ready after launch. |
+| Loaded-model limit | `router_models_max` → `POST /api/config` + `POST /api/router/restart` | How many models `llama-server` may hold loaded at once (`--models-max`); `0` = unlimited, and llama.cpp's count-based eviction is what a higher number raises. The limit is read at router startup only, so saving restarts the router — which unloads every loaded model, after a confirmation naming them. |
 
 ## Troubleshooting
 

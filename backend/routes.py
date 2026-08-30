@@ -949,6 +949,10 @@ def get_network(req):
         "panel_port": c["panel_port"],
         "has_api_key": bool(c.get("router_api_key")),
         "lan_ip": router_ctl.lan_ip(),
+        # What the NEXT router start will pass as --models-max. The running
+        # router's own value is not readable from outside it (llama.cpp's
+        # /models does not report it), so this is labelled configured.
+        "models_max": router_ctl.resolve_models_max(c),
         "router_running": router_ctl.is_running(c["router_port"]),
         "panel_running": router_ctl.is_running(c["panel_port"]),
     }
@@ -1436,6 +1440,13 @@ def _v_bool(v):  return bool(v) if isinstance(v, bool) else None
 def _v_str(v):   return v if isinstance(v, str) else None
 def _v_port(v):  return v if isinstance(v, int) and 1 <= v <= 65535 else None
 def _v_nonneg_int(v): return v if isinstance(v, int) and v >= 0 else None
+def _v_models_max(v):
+    """`router_models_max` as a count, where 0 = unlimited. Narrower than
+    _v_nonneg_int: bool passes isinstance(v, int) in Python, and a checkbox
+    POSTing True must not silently mean "keep exactly one model loaded"."""
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        return None
+    return v
 def _v_mode(v):  return v if v in ("lite", "advanced") else None
 def _v_theme(v): return v if v in ("", "light", "dark") else None
 def _v_backend(v): return v if v in ("auto", "cuda", "hip", "vulkan", "cpu") else None
@@ -1473,6 +1484,9 @@ CONFIG_WRITABLE = {
     "onboarded":               _v_bool,
     "auto_load_model":         _v_str,
     "api_idle_unload_minutes": _v_nonneg_int,
+    # Effective only on a router restart; POST /api/router/restart does that
+    # deliberately, since the restart unloads every loaded model.
+    "router_models_max":        _v_models_max,
     "wsl_distro":              _v_str,
     "vllm_port":               _v_port,
     "model_dirs":              _v_dirs,
@@ -1561,6 +1575,50 @@ def post_network(req):
     return (200 if ok else 500), {"ok": ok, "error": err, "host": host, "port": port,
                                   "panel_host": panel_host,
                                   "panel_restart_required": panel_restart_required}
+
+
+def post_router_restart(req):
+    """Restart the router on purpose so a config.json-only setting takes effect.
+
+    `router_models_max` has no per-model apply path: llama.cpp reads it once,
+    into the process's command line, so the only way to change it is a restart
+    - which unloads every loaded model. That is why this is its own route rather
+    than a side effect of /api/config, and why the loaded ids come back in the
+    response: the dashboard asks the user to confirm against that list.
+
+    Refused without touching anything when the active binary cannot be the
+    router; stopping a working router to start one that dies would leave the
+    user with nothing (same reasoning as post_engine_switch)."""
+    c = cfg()
+    sbin = _active_server_bin(c)
+    if not sbin or not os.path.exists(sbin):
+        return 200, {"ok": False, "error": f"binary not found: {sbin or '(unset)'} - "
+                                           "build llama.cpp first"}
+    if not router_ctl.supports_router_mode(sbin):
+        return 200, {"ok": False, "error": f"{os.path.basename(sbin)} has no router mode "
+                                          f"(it rejects --models-preset), so LlamaForge "
+                                          f"cannot run it as the router. Nothing changed."}
+    port = c["router_port"]
+    st, data = router("/models")
+    loaded = [m["id"] for m in data.get("data", [])
+              if st == 200 and m.get("id") != "default"
+              and m.get("status", {}).get("value") in ("loaded", "loading")]
+    models_max = router_ctl.resolve_models_max(c)
+    ok, err = router_ctl.restart(sbin, config.ini_path(), port,
+                                 c.get("router_host", "127.0.0.1"),
+                                 c.get("router_api_key", ""), LOGDIR,
+                                 models_max=models_max)
+    # Those models left with the process instead of through /models/unload, so
+    # the hook has to hear about it here or they would still count as resident.
+    if ok and callable(MODEL_UNLOAD_HOOK):
+        for mid in loaded:
+            try:
+                MODEL_UNLOAD_HOOK(mid, source=req.path or "/api/router/restart",
+                                  backend="llamacpp")
+            except Exception:
+                pass
+    return (200 if ok else 500), {"ok": ok, "error": err, "models_max": models_max,
+                                  "router_port": port, "unloaded": loaded}
 
 
 def post_engine_switch(req):
@@ -1835,6 +1893,7 @@ POST_ROUTES = {
     "/api/stats/reset":         post_stats_reset,
     "/api/config":              post_config,
     "/api/network":             post_network,
+    "/api/router/restart":      post_router_restart,
     "/api/engine/switch":       post_engine_switch,
     "/api/vllm/load":           post_vllm_load,
     "/api/vllm/unload":         post_vllm_unload,

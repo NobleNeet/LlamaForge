@@ -4,7 +4,7 @@ Each handler is now a plain function of Req -> (status, payload), so these run
 with no socket and no live router.
 """
 import conftest_paths  # noqa: F401
-import os, tempfile, unittest
+import contextlib, os, tempfile, unittest
 from unittest import mock
 
 import config, routes
@@ -27,12 +27,19 @@ class ConfigAllowlistTest(unittest.TestCase):
         status, out = routes.post_config(Req(body={
             "theme": "dark", "cvd": True, "ui_mode": "advanced",
             "onboarded": True, "auto_load_model": "qwen", "wsl_distro": "Ubuntu",
-            "llama_backend": "vulkan"}))
+            "router_models_max": 4, "llama_backend": "vulkan"}))
         self.assertEqual(status, 200)
         self.assertEqual(self.saved["theme"], "dark")
         self.assertEqual(self.saved["ui_mode"], "advanced")
+        self.assertEqual(self.saved["router_models_max"], 4)
         self.assertEqual(self.saved["llama_backend"], "vulkan")
         self.assertNotIn("rejected", out)
+
+    def test_router_models_max_zero_means_unlimited_and_is_valid(self):
+        """0 is llama.cpp's "no count limit", not an absent value - and the Setup
+        field is where users type it, so it must survive the validator."""
+        routes.post_config(Req(body={"router_models_max": 0}))
+        self.assertEqual(self.saved, {"router_models_max": 0})
 
     def test_refuses_executable_path_keys(self):
         """The RCE path: set server_bin, then GET /api/schema runs it."""
@@ -54,6 +61,10 @@ class ConfigAllowlistTest(unittest.TestCase):
                      {"vllm_port": 99999}, {"vllm_port": "8081"},
                      {"model_dirs": "not-a-list"}, {"onboarded": 1},
                      {"api_idle_unload_minutes": -1},
+                     {"router_models_max": -1}, {"router_models_max": "4"},
+                     # bool passes isinstance(v, int); a stray True must not
+                     # become "keep exactly one model loaded".
+                     {"router_models_max": True},
                      {"llama_backend": "metal"}):
             with self.assertRaises(ApiError, msg=str(body)):
                 routes.post_config(Req(body=body))
@@ -395,6 +406,90 @@ class NetworkConfigTest(unittest.TestCase):
         with self.assertRaises(ApiError) as cm:
             routes.post_network(Req(body={"host": "127.0.0.1", "panel_host": "192.168.1.5"}))
         self.assertEqual(cm.exception.status, 400)
+
+    def test_get_network_reports_the_configured_models_max(self):
+        """The Setup field needs something to show; llama.cpp never reports its
+        own --models-max back out, so the configured value is all there is."""
+        with mock.patch.object(routes, "cfg", return_value={"router_host": "127.0.0.1",
+                                                            "router_port": 8080,
+                                                            "panel_host": "127.0.0.1",
+                                                            "panel_port": 8090,
+                                                            "router_api_key": "",
+                                                            "router_models_max": 0}), \
+             mock.patch.object(routes.router_ctl, "lan_ip", return_value="192.168.1.9"), \
+             mock.patch.object(routes.router_ctl, "is_running", return_value=True):
+            status, out = routes.get_network(Req())
+        self.assertEqual(status, 200)
+        self.assertEqual(out["models_max"], 0)
+
+
+class RouterRestartTest(unittest.TestCase):
+    """`router_models_max` is read once, into the router's command line, so the
+    only way to apply it is to restart - and a restart unloads every model. The
+    route therefore has to name what it cost, and refuse rather than trade a
+    working router for one that cannot start."""
+
+    BASE = {"router_host": "127.0.0.1", "router_api_key": "", "router_port": 8080,
+            "router_models_max": 4}
+
+    def _run(self, loaded=("a", "b"), restart=(True, ""), router_mode=True,
+             sbin="/bin/llama-server", exists=True):
+        seen_hooks, restart_calls = [], []
+        rows = [{"id": "default", "status": {"value": "loaded"}}] + \
+               [{"id": mid, "status": {"value": "loaded"}} for mid in loaded] + \
+              [{"id": "gone", "status": {"value": "offline"}}]
+
+        def fake_restart(server_bin, ini, port, host, key, logdir, models_max=None):
+            restart_calls.append(models_max)
+            return restart
+
+        with contextlib.ExitStack() as stack:
+            for p in (mock.patch.object(routes, "cfg", return_value=dict(self.BASE)),
+                      mock.patch.object(routes, "_active_server_bin", return_value=sbin),
+                      # Whether the binary is on disk is its own axis: no test
+                      # should depend on what this machine happens to have.
+                      mock.patch.object(os.path, "exists", return_value=exists),
+                      mock.patch.object(config, "ini_path", return_value="/tmp/models.ini"),
+                      mock.patch.object(routes.router_ctl, "supports_router_mode",
+                                        return_value=router_mode),
+                      mock.patch.object(routes.router_ctl, "restart", side_effect=fake_restart),
+                      mock.patch.object(routes, "router", return_value=(200, {"data": rows})),
+                      mock.patch.object(routes, "MODEL_UNLOAD_HOOK", side_effect=lambda mid, source="", backend="": seen_hooks.append((mid, source)))):
+                stack.enter_context(p)
+            status, out = routes.post_router_restart(Req(body={}, path="/api/router/restart"))
+        return status, out, restart_calls, seen_hooks
+
+    def test_restart_applies_the_configured_limit_and_reports_the_cost(self):
+        status, out, restart_calls, hooks = self._run(loaded=("a", "b"))
+        self.assertEqual(status, 200)
+        self.assertTrue(out["ok"])
+        self.assertEqual(restart_calls, [4])          # from config.json, not the old default
+        self.assertEqual(out["models_max"], 4)
+        self.assertEqual(out["unloaded"], ["a", "b"])  # the UI confirms against this
+        # These left with the process, not via /models/unload, so accounting
+        # only stays honest if the hook hears about it here.
+        self.assertEqual(hooks, [("a", "/api/router/restart"), ("b", "/api/router/restart")])
+
+    def test_restart_refuses_a_binary_without_router_mode(self):
+        """Stopping a healthy router to start one that dies would leave nothing."""
+        status, out, restart_calls, _ = self._run(router_mode=False)
+        self.assertEqual(status, 200)
+        self.assertFalse(out["ok"])
+        self.assertIn("--models-preset", out["error"])
+        self.assertEqual(restart_calls, [])
+
+    def test_restart_refuses_a_missing_binary(self):
+        status, out, restart_calls, _ = self._run(exists=False)
+        self.assertEqual(status, 200)
+        self.assertFalse(out["ok"])
+        self.assertEqual(restart_calls, [])
+
+    def test_failed_restart_is_500_and_keeps_the_hooks_quiet(self):
+        status, out, _, hooks = self._run(restart=(False, "port still busy"))
+        self.assertEqual(status, 500)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "port still busy")
+        self.assertEqual(hooks, [])   # nothing actually went away
 
 
 class AutotuneRefineCleaningTest(unittest.TestCase):

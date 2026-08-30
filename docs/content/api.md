@@ -80,8 +80,9 @@ These are the endpoints external coding agents (Claude Code, Codex, etc.) talk t
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/network` | Current router host/port, whether an API key is set, LAN IP, and whether the router is running. |
+| GET | `/api/network` | Current router host/port, whether an API key is set, LAN IP, the configured `router_models_max` (`models_max`), and whether the router is running. |
 | POST | `/api/network` | Update `router_host`/`router_port`/`router_api_key` plus `panel_host` in `config.json`, restart the router, and automatically restart the dashboard too when its own bind host changes. |
+| POST | `/api/router/restart` | Restart the llama.cpp router so settings it reads only at startup — `router_models_max` — take effect. **Unloads every loaded model**; returns `{ok, models_max, router_port, unloaded: [ids]}`. Refused with `ok: false` (nothing stopped) when the active binary has no router mode. |
 | GET | `/api/router/log` | Tail of the router's log. |
 | GET | `/api/stats` | Usage stats summary. |
 | POST | `/api/stats/reset` | Reset usage stats. |
