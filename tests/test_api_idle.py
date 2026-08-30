@@ -115,6 +115,26 @@ class ApiIdleUnloadTest(unittest.TestCase):
             ("/models/load", "POST", {"model": "m"}),
         ])
 
+    def test_preset_sync_busy_check_is_per_model(self):
+        # `router_models_max > 1`: a second resident model must not be held
+        # "busy" by the traffic of the first one.
+        live = {"loaded_model": "a", "loaded_models": ["a", "b"],
+                "models": {"a": {"requests_processing": 1, "gen_per_sec": 20.0},
+                           "b": {"requests_processing": 0, "gen_per_sec": 0.0}},
+                "requests_processing": 1, "gen_per_sec": 20.0, "router_up": True}
+        with mock.patch.object(stats.TRACKER, "live", live):
+            self.assertTrue(server._preset_sync_busy("a"))
+            self.assertFalse(server._preset_sync_busy("b"))
+
+    def test_preset_sync_defers_loaded_model_without_metrics(self):
+        # A resident model whose metrics did not come back this poll cannot be
+        # proven idle, so the unload is deferred instead of cutting a run short.
+        live = {"loaded_model": "b", "loaded_models": ["b"], "models": {},
+                "requests_processing": 0, "gen_per_sec": 0.0, "router_up": True}
+        with mock.patch.object(stats.TRACKER, "live", live):
+            self.assertTrue(server._preset_sync_busy("b"))
+            self.assertFalse(server._preset_sync_busy("c"))   # not loaded at all
+
     def test_preset_sync_refreshes_cache_only_when_model_is_not_loaded(self):
         calls = []
 

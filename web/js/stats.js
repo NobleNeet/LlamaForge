@@ -44,6 +44,9 @@ export async function loadStats(silent) {
     return;
   }
   const t = s.totals, live = s.live;
+  // The router can hold several models loaded at once (`router_models_max`);
+  // older backends only reported a single `loaded_model`.
+  const loaded = live.loaded_models || (live.loaded_model ? [live.loaded_model] : []);
   const rows = [...s.per_model].sort((a,b) => (b[statsSort]||0) - (a[statsSort]||0));
   const daily = s.daily.slice(-statsRange);
   const maxDaily = Math.max(1, ...daily.map(d => d.prompt + d.generated));
@@ -57,7 +60,7 @@ export async function loadStats(silent) {
       ${statCard("Most used", t.most_used||"-")}
     </div>
     <div class="card"><h3>Live Throughput${live.router_up?"":` <span style="color:var(--red);font-size:10px">(router offline)</span>`}</h3>
-      <div class="kv"><span class="k">loaded model</span><span class="v ${live.loaded_model?"ok":""}">${esc(live.loaded_model||"none")}</span></div>
+      <div class="kv"><span class="k">loaded model${loaded.length>1?"s":""}</span><span class="v ${loaded.length?"ok":""}">${esc(loaded.join(", ")||"none")}</span></div>
       <div class="kv"><span class="k">generation</span><span class="v">${(live.gen_per_sec||0).toFixed(1)} tok/s</span></div>
       <div class="kv"><span class="k">prompt eval</span><span class="v">${(live.prompt_per_sec||0).toFixed(1)} tok/s</span></div>
       <div class="kv"><span class="k">active requests</span><span class="v">${esc(live.requests_processing)}</span></div>
@@ -87,7 +90,7 @@ export async function loadStats(silent) {
       </div>
       <div class="list" style="margin-top:12px">${rows.map(m=>`
         <div class="row"><div class="rhead" style="cursor:default;grid-template-columns:9px 1fr auto auto auto auto auto">
-          <span class="led ${live.loaded_model===m.id?"loaded":""}"></span>
+          <span class="led ${loaded.includes(m.id)?"loaded":""}"></span>
           <span class="mid">${esc(m.id)}</span>
           <span class="ctxpill" title="prompt ${fmtNum(m.prompt)} + generated ${fmtNum(m.generated)}">${fmtNum(m.tokens)} tok</span>
           <span class="stat" title="average generation speed while active">${m.avg_tps?m.avg_tps+" tok/s":"-"}</span>

@@ -140,10 +140,24 @@ def _api_idle_loop(poll_secs=15):
 def _preset_sync_busy(model):
     with _API_IDLE_LOCK:
         inflight = _API_IDLE_INFLIGHT.get(model, 0)
+    if inflight > 0:
+        return True
     live = getattr(getattr(stats, "TRACKER", None), "live", {}) or {}
+    # The tracker reports per-model rates for every loaded model, so a model is
+    # judged by its own traffic - not by whatever the router happens to have
+    # loaded first, which would keep a second resident model forever "busy".
+    rates = live.get("models")
+    if isinstance(rates, dict):
+        mine = rates.get(model)
+        if mine is None:
+            # Loaded but this poll's scrape came back empty, so we cannot tell
+            # whether it is serving - defer rather than risk cutting a run short.
+            return model in (live.get("loaded_models") or [])
+        return (int(mine.get("requests_processing", 0) or 0) > 0
+                or float(mine.get("gen_per_sec", 0.0) or 0.0) > 0)
     reqs = int(live.get("requests_processing", 0) or 0)
     gen = float(live.get("gen_per_sec", 0.0) or 0.0)
-    return inflight > 0 or (live.get("loaded_model") == model and (reqs > 0 or gen > 0))
+    return live.get("loaded_model") == model and (reqs > 0 or gen > 0)
 
 
 def _reload_model_for_preset(model, source=""):
