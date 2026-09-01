@@ -163,6 +163,101 @@ class SaveAndPresetTest(unittest.TestCase):
         self.assertEqual(written, {"temp": "0.2", "ctx-size": None, "n-gpu-layers": "99"})
 
 
+class BuildUnloadTest(unittest.TestCase):
+    """Pulling and rebuilding llama.cpp overwrites the running binary, so any
+    model the router is holding should be unloaded first. These lock in that
+    behaviour: the preload unload runs for the llamacpp build, is a genuine
+    no-op when nothing is loaded, happens before the build starts, is skipped
+    for the ikllama build (which has no router models) and never crashes the
+    build when the router will not answer.
+    """
+
+    def setUp(self):
+        self.timeline = []          # ordered ("unload", mid) / "build" events
+        self._loaded = []
+
+        def fake_router(path, method="GET", body=None, timeout=30):
+            if path == "/models":
+                return 200, {"data": [{"id": i, "status": {"value": "loaded"}}
+                                      for i in self._loaded]}
+            if path == "/models/unload" and body is not None:
+                self.timeline.append(("unload", body["model"]))
+            return 200, {}
+
+        def record_build(*a, **k):
+            self.timeline.append("build")
+            return True
+
+        self.builder = mock.Mock()
+        self.builder.start.side_effect = record_build
+        self.builder_ik = mock.Mock()
+        self.builder_ik.start.side_effect = record_build
+
+        for p in (
+            mock.patch.object(routes, "router", side_effect=fake_router),
+            mock.patch.object(routes, "BUILDER_LLAMA", self.builder),
+            mock.patch.object(routes, "BUILDER_IKLLAMA", self.builder_ik),
+            mock.patch.object(config, "update", mock.Mock()),
+        ):
+            p.start()
+        self.addCleanup(mock.patch.stopall)
+
+    def _recommend_cpu(self):
+        return mock.patch.object(
+            routes.hardware, "recommend",
+            return_value={"selected_backend": "cpu", "cmake_flags": {}})
+
+    def test_llamacpp_build_unloads_every_loaded_model_before_building(self):
+        self._loaded = ["m1", "m2"]
+        with mock.patch.object(routes.BuildManager, "validate_paths", return_value=""), \
+             self._recommend_cpu():
+            status, out = routes.post_build_start(Req(body={"target": "llamacpp"}))
+        self.assertTrue(out["started"])
+        # timeline mixes ("unload", mid) tuples with the "build" string event
+        loaded = [entry for entry in self.timeline if isinstance(entry, tuple)]
+        unloads = [mid for _event, mid in loaded]
+        self.assertEqual(unloads, ["m1", "m2"])
+        # the build is the last thing that happens - after all unloads
+        self.assertEqual(self.timeline[-1], "build")
+
+    def test_llamacpp_build_with_no_loaded_models_does_not_unload(self):
+        self._loaded = []
+        with mock.patch.object(routes.BuildManager, "validate_paths", return_value=""), \
+             self._recommend_cpu():
+            status, out = routes.post_build_start(Req(body={"target": "llamacpp"}))
+        self.assertTrue(out["started"])
+        # the only event is the build itself - nothing to unload
+        self.assertEqual(self.timeline, ["build"])
+
+    def test_ikkllama_build_does_not_unload_models(self):
+        # ikllama predates router mode, so its rebuild must not touch models.
+        self._loaded = ["m1"]
+        with mock.patch.object(routes.BuildManager, "validate_paths", return_value=""), \
+             self._recommend_cpu():
+            status, out = routes.post_build_start(Req(body={"target": "ikkllama"}))
+        self.assertTrue(out["started"])
+        self.assertEqual(self.timeline, ["build"])
+
+    def test_helper_reports_the_unloaded_ids_and_calls_the_hook(self):
+        self._loaded = ["m1", "m2"]
+        with mock.patch.object(routes, "MODEL_UNLOAD_HOOK") as hook:
+            unloaded = routes._unload_all_models(source="build")
+        self.assertEqual(unloaded, ["m1", "m2"])
+        self.assertEqual(self.timeline, [("unload", "m1"), ("unload", "m2")])
+        first = hook.call_args_list[0]
+        self.assertEqual(first.kwargs["source"], "build")
+        self.assertEqual(first.kwargs["backend"], "llamacpp")
+
+    def test_helper_returns_empty_when_router_does_not_answer(self):
+        def no_router(path, method="GET", body=None, timeout=30):
+            return 599, {"error": "no router"}
+        with mock.patch.object(routes, "router", side_effect=no_router), \
+             mock.patch.object(routes, "MODEL_UNLOAD_HOOK") as hook:
+            unloaded = routes._unload_all_models()
+        self.assertEqual(unloaded, [])
+        hook.assert_not_called()
+
+
 class ModelLifecycleHookTest(unittest.TestCase):
     def test_load_and_unload_routes_call_hooks_on_success(self):
         seen = []

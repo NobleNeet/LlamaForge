@@ -1154,19 +1154,33 @@ def post_unload(req):
     return (200 if code == 200 else 400), res
 
 
-def post_unload_all(req):
+def _unload_all_models(source=""):
+    """Unload every currently-loaded model through the llama.cpp router.
+
+    Returns the list of model ids that were unloaded (possibly empty). The
+    router only ever holds llamacpp models - the ikllama fork predates router
+    mode - so this is a genuine no-op unless something is actually loaded. A
+    router that will not answer simply leaves nothing unloaded.
+    """
     st, data = router("/models")
-    loaded = [m["id"] for m in data.get("data", [])
-              if st == 200 and m.get("id") != "default"
-              and m.get("status", {}).get("value") in ("loaded", "loading")]
+    loaded = []
+    if st == 200:
+        loaded = [m["id"] for m in data.get("data", [])
+                  if m.get("id") != "default"
+                  and m.get("status", {}).get("value") in ("loaded", "loading")]
     for mid in loaded:
         router("/models/unload", "POST", {"model": mid})
         if callable(MODEL_UNLOAD_HOOK):
             try:
-                MODEL_UNLOAD_HOOK(mid, source=req.path or "/api/unload_all", backend="llamacpp")
+                MODEL_UNLOAD_HOOK(mid, source=source, backend="llamacpp")
             except Exception:
                 pass
-    return 200, {"ok": True, "unloaded": loaded}
+    return loaded
+
+
+def post_unload_all(req):
+    unloaded = _unload_all_models(source=req.path or "/api/unload_all")
+    return 200, {"ok": True, "unloaded": unloaded}
 
 
 def post_autotune_recommend(req):
@@ -1280,6 +1294,16 @@ def post_build_start(req):
     bad = BuildManager.validate_paths(src, bdir)
     if bad:
         return 200, {"started": False, "target": target, "error": bad}
+    # Preload: free the running process of any loaded weights before its binary
+    # is replaced by the rebuild. Only the llamacpp engine holds models through
+    # this router (ikkllama predates router mode), so it is a no-op otherwise.
+    # A router that will not answer, or a hook that raises, must never stop a
+    # good build - swallow everything here.
+    if target == "llamacpp":
+        try:
+            _unload_all_models(source=req.path or "/api/build/start")
+        except Exception:
+            pass
     ok = builder.start(src, bdir, flags, pull=req.body.get("pull", True), env=env)
     return 200, {"started": ok, "target": target, "backend": selected_backend}
 
