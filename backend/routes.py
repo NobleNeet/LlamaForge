@@ -37,7 +37,7 @@ LOGDIR  = os.path.join(ROOT, "logs")
 # Each engine records the binary its own build produced (see _record_server_bin).
 # Resolved at call time, so the helper can live further down with its siblings.
 BUILDER_LLAMA   = BuildManager(LOGDIR, "build",
-                               on_built=lambda p: _record_server_bin("server_bin", p))
+                               on_built=lambda p: _on_built_llamacpp("server_bin", p))
 BUILDER_IKLLAMA = BuildManager(LOGDIR, "build-ikllama",
                                on_built=lambda p: _record_server_bin("ik_llama_server_bin", p))
 
@@ -1176,6 +1176,51 @@ def _unload_all_models(source=""):
             except Exception:
                 pass
     return loaded
+
+
+def _stop_router_after_build(source=""):
+    """Stop a still-running llama.cpp router once a rebuild has finished.
+
+    A rebuild overwrites the binary the running router was launched from, so a
+    live process would keep serving stale code and keep its models resident -
+    the exact situation the dashboard must not leave behind after a build. The
+    router is the only thing that holds models (ik_llama predates router mode),
+    so terminating it on `router_port` unloads them for real. Their ids are read
+    first so the bookkeeping hook still hears about them, mirroring
+    post_router_restart. A router that is not running makes this a no-op.
+
+    Runs on the build thread, so every failure is swallowed: a build that
+    succeeded must not be reported as failed because the cleanup hiccuped.
+    """
+    st, data = router("/models")
+    loaded = []
+    if st == 200:
+        loaded = [m["id"] for m in data.get("data", [])
+                  if m.get("id") != "default"
+                  and m.get("status", {}).get("value") in ("loaded", "loading")]
+    c = cfg()
+    try:
+        router_ctl.stop(c.get("router_port", 8080))
+    except Exception:
+        pass
+    if callable(MODEL_UNLOAD_HOOK):
+        for mid in loaded:
+            try:
+                MODEL_UNLOAD_HOOK(mid, source=source, backend="llamacpp")
+            except Exception:
+                pass
+    return loaded
+
+
+def _on_built_llamacpp(key, path):
+    """on_built for the llama.cpp engine: record the fresh binary, then make sure
+    no process is left running on the binary we just replaced."""
+    changed = _record_server_bin(key, path)
+    try:
+        _stop_router_after_build(source="/api/build/start")
+    except Exception:
+        pass
+    return changed
 
 
 def post_unload_all(req):

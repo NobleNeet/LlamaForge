@@ -258,6 +258,94 @@ class BuildUnloadTest(unittest.TestCase):
         hook.assert_not_called()
 
 
+class BuildAfterStopTest(unittest.TestCase):
+    """A llama.cpp rebuild overwrites the binary the running router was launched
+    from, so once the build succeeds the lingering router must be stopped (and
+    its loaded models unloaded) rather than left serving stale code. These lock
+    that in: the post-build stop kills the router and reports the resident ids
+    through the unload hook, a router that is not running is a no-op, the
+    llamacpp builder's on_built performs the stop while the ikllama builder's
+    does not (it has no router-mode models), and a hiccup during cleanup never
+    turns a finished build into a failure.
+    """
+
+    def setUp(self):
+        self.timeline = []
+        self._loaded = []
+
+        def fake_router(path, method="GET", body=None, timeout=30):
+            if path == "/models":
+                return 200, {"data": [{"id": i, "status": {"value": "loaded"}}
+                                      for i in self._loaded]}
+            return 200, {}
+
+        self.router_ctl = mock.Mock()
+        self.router_ctl.stop.side_effect = lambda port, *a, **k: self.timeline.append(("stop", port))
+        for p in (
+            mock.patch.object(routes, "router", side_effect=fake_router),
+            mock.patch.object(routes, "router_ctl", self.router_ctl),
+            mock.patch.object(routes, "cfg", lambda: {"router_port": 8080}),
+            mock.patch.object(config, "update", mock.Mock()),
+        ):
+            p.start()
+        self.addCleanup(mock.patch.stopall)
+
+    def test_stop_terminates_the_router_and_reports_resident_models(self):
+        self._loaded = ["m1", "m2"]
+        with mock.patch.object(routes, "MODEL_UNLOAD_HOOK") as hook:
+            unloaded = routes._stop_router_after_build(source="build")
+        self.assertEqual(unloaded, ["m1", "m2"])
+        self.assertEqual(self.timeline, [("stop", 8080)])
+        self.assertEqual([c.kwargs["source"] for c in hook.call_args_list],
+                         ["build", "build"])
+        self.assertEqual([c.kwargs["backend"] for c in hook.call_args_list],
+                         ["llamacpp", "llamacpp"])
+
+    def test_stop_when_router_is_not_running_is_a_noop(self):
+        def no_router(path, method="GET", body=None, timeout=30):
+            return 599, {"error": "no router"}
+        with mock.patch.object(routes, "router", side_effect=no_router), \
+             mock.patch.object(routes, "MODEL_UNLOAD_HOOK") as hook:
+            unloaded = routes._stop_router_after_build(source="build")
+        self.assertEqual(unloaded, [])
+        # stop() still runs (it is the no-op when nothing holds the port)
+        self.assertEqual(self.timeline, [("stop", 8080)])
+        hook.assert_not_called()
+
+    def test_stop_swallows_a_kill_error(self):
+        self._loaded = ["m1"]
+        self.router_ctl.stop.side_effect = RuntimeError("kill blew up")
+        with mock.patch.object(routes, "MODEL_UNLOAD_HOOK") as hook:
+            unloaded = routes._stop_router_after_build(source="build")
+        # the loaded ids are still reported even though the kill raised
+        self.assertEqual(unloaded, ["m1"])
+        hook.assert_called_once()
+
+    def test_llamacpp_on_built_records_bin_then_stops_router(self):
+        with mock.patch.object(routes, "_record_server_bin", return_value=True) as rec, \
+             mock.patch.object(routes, "_stop_router_after_build") as stop:
+            changed = routes._on_built_llamacpp("server_bin", "/tmp/llama-server")
+        self.assertTrue(changed)
+        rec.assert_called_once_with("server_bin", "/tmp/llama-server")
+        stop.assert_called_once()
+
+    def test_llamacpp_on_built_survives_a_stop_failure(self):
+        with mock.patch.object(routes, "_record_server_bin", return_value=True), \
+             mock.patch.object(routes, "_stop_router_after_build",
+                               side_effect=RuntimeError("boom")):
+            changed = routes._on_built_llamacpp("server_bin", "/tmp/llama-server")
+        self.assertTrue(changed)
+
+    def test_builder_llama_on_built_stops_but_builder_ikllama_does_not(self):
+        self._loaded = ["m1"]
+        with mock.patch.object(routes, "MODEL_UNLOAD_HOOK"):
+            routes.BUILDER_LLAMA.on_built("/tmp/llama-server")
+            self.assertIn(("stop", 8080), self.timeline)
+            self.timeline.clear()
+            routes.BUILDER_IKLLAMA.on_built("/tmp/ik_llama-server")
+        self.assertEqual(self.timeline, [])   # ikllama build never stops the router
+
+
 class ModelLifecycleHookTest(unittest.TestCase):
     def test_load_and_unload_routes_call_hooks_on_success(self):
         seen = []
