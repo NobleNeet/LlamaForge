@@ -126,10 +126,14 @@ function isMultiValueEl(el) {
 }
 function knobValue(el) {
   if (!isMultiValueEl(el)) return String(el?.value ?? "").trim();
-  return joinMultiValue([...el.selectedOptions].map(opt => opt.value), el.dataset.separator || ",");
+  // Some comma-delimited knobs are rendered as inputs, not multi-selects.
+  // Reading selectedOptions from those inputs throws in Firefox.
+  if (!el?.options) return String(el?.value ?? "").trim();
+  return joinMultiValue([...el.options].filter(opt => opt.selected).map(opt => opt.value),
+                        el.dataset.separator || ",");
 }
 function setKnobValue(el, raw) {
-  if (!isMultiValueEl(el)) {
+  if (!isMultiValueEl(el) || !el?.options) {
     el.value = raw == null ? "" : String(raw);
     return;
   }

@@ -78,3 +78,10 @@ class TestAutoTuneFrontendBoundary(unittest.TestCase):
         self.assertIn('showModal("Overwrite bound preset"', models)
         self.assertIn('id="preset-overwrite-confirm"', models)
         self.assertNotIn('confirm(`Overwrite preset', models)
+
+    def test_multi_value_inputs_do_not_assume_select_selected_options(self):
+        with open(os.path.join(ROOT, "web", "js", "models.js"), encoding="utf-8") as handle: models = handle.read()
+        self.assertIn('if (!el?.options) return String(el?.value ?? "").trim();', models)
+        self.assertIn('filter(opt => opt.selected)', models)
+        self.assertIn('if (!isMultiValueEl(el) || !el?.options)', models)
+        self.assertNotIn('el.selectedOptions', models)
