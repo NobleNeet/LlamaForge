@@ -18,7 +18,7 @@ content_type. Raising ApiError(status, message) produces {"error": message}.
 Streaming responses (the Anthropic and OpenAI SSE proxies) are not in these
 tables: they write to the socket themselves and stay in server.py.
 """
-import json, os, subprocess, sys, urllib.request, urllib.error, urllib.parse
+import json, os, subprocess, sys, threading, time, urllib.request, urllib.error, urllib.parse
 
 import config, argspec, hardware, osplat, prereqs, scanner, hub, router_ctl, stats
 import autotune, anthropic_shim, agentsetup, wiki, docs, model_settings
@@ -57,6 +57,17 @@ MODEL_LOAD_HOOK = None
 MODEL_UNLOAD_HOOK = None
 PRESET_SYNC_HOOK = None
 _AUTOTUNE_SERVICE = None
+
+# Rebuild session restore. A llama.cpp rebuild overwrites the binary the running
+# router launched from, so the post-build cleanup stops the router (freeing the
+# binary) - which would otherwise leave the dashboard with a dead port and a lost
+# session. Capture what was live before the build here and restore it (router +
+# models) once the fresh binary is in place. Guarded because post_build_start
+# writes it (request thread) and the builder's on_built reads it (build thread);
+# builds are serialized, but the lock keeps the pairing explicit.
+_state_lock = threading.Lock()
+_PREBUILD_RUNNING = False
+_PREBUILD_LOADED = []
 
 
 def autotune_service_instance():
@@ -1214,13 +1225,90 @@ def _stop_router_after_build(source=""):
 
 def _on_built_llamacpp(key, path):
     """on_built for the llama.cpp engine: record the fresh binary, then make sure
-    no process is left running on the binary we just replaced."""
+    no process is left running on the binary we just replaced, and bring the router
+    back up so the API keeps answering after a rebuild instead of leaving the
+    dashboard with a dead port and a lost session."""
     changed = _record_server_bin(key, path)
     try:
         _stop_router_after_build(source="/api/build/start")
+        _bring_router_back()
     except Exception:
         pass
     return changed
+
+
+def _bring_router_back(source=""):
+    """Restart the router after a rebuild so the dashboard is left with a live
+    server, not a dead port.
+
+    The rebuild overwrote the binary the router ran from, so the post-build stop
+    left nothing listening on the port. Bring the fresh binary back up (only when
+    it actually runs as the router) and reload whatever was loaded so the user's
+    session is restored rather than emptied. Runs on the build thread; every
+    failure is swallowed - a finished build must not fail because a restart
+    hiccuped.
+    """
+    global _PREBUILD_RUNNING, _PREBUILD_LOADED
+    with _state_lock:
+        was_running, loaded = _PREBUILD_RUNNING, list(_PREBUILD_LOADED)
+        _PREBUILD_RUNNING, _PREBUILD_LOADED = False, []
+    if not was_running:
+        return   # nothing was running to restore
+    c = cfg()
+    sbin = _active_server_bin(c)
+    if not sbin or not os.path.exists(sbin):
+        return
+    if not router_ctl.supports_router_mode(sbin):
+        return   # a binary that cannot be the router must not replace a good one
+    ok, _ = router_ctl.restart(sbin, config.ini_path(), c.get("router_port", 8080),
+                               c.get("router_host", "127.0.0.1"),
+                               c.get("router_api_key", ""), LOGDIR,
+                               models_max=router_ctl.resolve_models_max(c))
+    if not ok:
+        return
+    if _wait_router_ready(c.get("router_port", 8080)):
+        _reload_loaded_models(loaded, source=source or "/api/build/start")
+    # The process is up but not serving yet: leave the (empty) router running so
+    # the API still answers and the models can be reloaded by hand.
+
+
+def _wait_router_ready(port, timeout=30):
+    """Wait until the just-restarted router answers /models. The process is
+    spawned detached and takes a moment to bind and initialize, so reloading
+    models immediately would only hit connection-refused and be silently dropped.
+    Best-effort: returns False on timeout without raising."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if router_ctl.is_running(port):
+                status, _ = router("/models", timeout=2)
+                if status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.4)
+    return False
+
+
+def _reload_loaded_models(loaded, source=""):
+    """Reload the models a rebuild unloaded, against the freshly-built router, so
+    the user returns to the model they had loaded rather than an empty list."""
+    if not loaded:
+        return
+    try:
+        router("/models?reload=1")
+    except Exception:
+        pass
+    for mid in loaded:
+        try:
+            code, _ = router("/models/load", "POST", {"model": mid})
+            if code == 200 and callable(MODEL_LOAD_HOOK):
+                try:
+                    MODEL_LOAD_HOOK(mid, source=source, backend="llamacpp")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 def post_unload_all(req):
@@ -1312,6 +1400,7 @@ def post_presets_apply(req):
 
 
 def post_build_start(req):
+    global _PREBUILD_RUNNING, _PREBUILD_LOADED
     c = cfg()
     target = req.body.get("target", "llamacpp")
     builder = _builder_for(target)
@@ -1342,13 +1431,19 @@ def post_build_start(req):
     # Preload: free the running process of any loaded weights before its binary
     # is replaced by the rebuild. Only the llamacpp engine holds models through
     # this router (ikkllama predates router mode), so it is a no-op otherwise.
-    # A router that will not answer, or a hook that raises, must never stop a
-    # good build - swallow everything here.
+    # Remember what the build is about to take away so the finished build can bring
+    # the router (and its loaded models) back - otherwise the dashboard is left
+    # with a dead port after a rebuild. A router that will not answer, or a hook
+    # that raises, must never stop a good build - swallow everything here.
     if target == "llamacpp":
         try:
-            _unload_all_models(source=req.path or "/api/build/start")
+            was_running = router_ctl.is_running(c.get("router_port", 8080))
+            unloaded = _unload_all_models(source=req.path or "/api/build/start")
         except Exception:
-            pass
+            was_running = False
+            unloaded = []
+        with _state_lock:
+            _PREBUILD_RUNNING, _PREBUILD_LOADED = was_running, list(unloaded)
     ok = builder.start(src, bdir, flags, pull=req.body.get("pull", True), env=env)
     return 200, {"started": ok, "target": target, "backend": selected_backend}
 

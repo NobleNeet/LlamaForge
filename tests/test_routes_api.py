@@ -193,8 +193,12 @@ class BuildUnloadTest(unittest.TestCase):
         self.builder_ik = mock.Mock()
         self.builder_ik.start.side_effect = record_build
 
+        self.addCleanup(lambda: (setattr(routes, "_PREBUILD_RUNNING", False),
+                                 setattr(routes, "_PREBUILD_LOADED", [])))
+
         for p in (
             mock.patch.object(routes, "router", side_effect=fake_router),
+            mock.patch.object(routes.router_ctl, "is_running", return_value=False),
             mock.patch.object(routes, "BUILDER_LLAMA", self.builder),
             mock.patch.object(routes, "BUILDER_IKLLAMA", self.builder_ik),
             mock.patch.object(config, "update", mock.Mock()),
@@ -281,6 +285,8 @@ class BuildAfterStopTest(unittest.TestCase):
 
         self.router_ctl = mock.Mock()
         self.router_ctl.stop.side_effect = lambda port, *a, **k: self.timeline.append(("stop", port))
+        self.addCleanup(lambda: (setattr(routes, "_PREBUILD_RUNNING", False),
+                                 setattr(routes, "_PREBUILD_LOADED", [])))
         for p in (
             mock.patch.object(routes, "router", side_effect=fake_router),
             mock.patch.object(routes, "router_ctl", self.router_ctl),
@@ -321,13 +327,16 @@ class BuildAfterStopTest(unittest.TestCase):
         self.assertEqual(unloaded, ["m1"])
         hook.assert_called_once()
 
-    def test_llamacpp_on_built_records_bin_then_stops_router(self):
+    def test_llamacpp_on_built_records_bin_then_stops_then_bings_router_back(self):
         with mock.patch.object(routes, "_record_server_bin", return_value=True) as rec, \
-             mock.patch.object(routes, "_stop_router_after_build") as stop:
+             mock.patch.object(routes, "_stop_router_after_build") as stop, \
+             mock.patch.object(routes, "_bring_router_back") as restart:
             changed = routes._on_built_llamacpp("server_bin", "/tmp/llama-server")
         self.assertTrue(changed)
         rec.assert_called_once_with("server_bin", "/tmp/llama-server")
         stop.assert_called_once()
+        # a finished build must leave a server listening, not a dead port
+        restart.assert_called_once()
 
     def test_llamacpp_on_built_survives_a_stop_failure(self):
         with mock.patch.object(routes, "_record_server_bin", return_value=True), \
@@ -344,6 +353,46 @@ class BuildAfterStopTest(unittest.TestCase):
             self.timeline.clear()
             routes.BUILDER_IKLLAMA.on_built("/tmp/ik_llama-server")
         self.assertEqual(self.timeline, [])   # ikllama build never stops the router
+
+    def test_on_built_bings_the_router_back_after_a_rebuild(self):
+        # A rebuild that had a live router holding two models must leave a server
+        # listening again (restart) with those models reloaded, not a dead port.
+        routes._PREBUILD_RUNNING = True
+        routes._PREBUILD_LOADED = ["m1", "m2"]
+        self.router_ctl.supports_router_mode.return_value = True
+        self.router_ctl.restart.return_value = (True, None)
+        self.addCleanup(lambda: (setattr(routes, "_PREBUILD_RUNNING", False),
+                                 setattr(routes, "_PREBUILD_LOADED", [])))
+        with mock.patch.object(routes, "cfg",
+                               lambda: {"active_engine": "llamacpp",
+                                        "router_port": 8080,
+                                        "router_host": "127.0.0.1",
+                                        "router_api_key": "",
+                                        "server_bin": "/tmp/llama-server"}), \
+             mock.patch("os.path.exists", return_value=True), \
+             mock.patch.object(routes, "MODEL_LOAD_HOOK"):
+            routes._bring_router_back()
+        # restart was scheduled exactly once, against the fresh binary on the
+        # same port the dashboard expects
+        self.router_ctl.restart.assert_called_once()
+        args = self.router_ctl.restart.call_args[0]
+        self.assertEqual(args[0], "/tmp/llama-server")   # the rebuilt binary
+        self.assertEqual(args[2], 8080)                  # same listening port
+
+    def test_on_built_leaves_a_dead_bin_without_restarting(self):
+        # a finished build must not try to restart a binary it cannot find - that
+        # is a graceful no-op, not a failure
+        routes._PREBUILD_RUNNING = True
+        routes._PREBUILD_LOADED = ["m1"]
+        self.addCleanup(lambda: (setattr(routes, "_PREBUILD_RUNNING", False),
+                                 setattr(routes, "_PREBUILD_LOADED", [])))
+        with mock.patch.object(routes, "cfg",
+                               lambda: {"active_engine": "llamacpp",
+                                        "router_port": 8080,
+                                        "server_bin": "/tmp/does-not-exist"}), \
+             mock.patch("os.path.exists", return_value=False):
+            routes._bring_router_back()
+        self.router_ctl.restart.assert_not_called()
 
 
 class ModelLifecycleHookTest(unittest.TestCase):
