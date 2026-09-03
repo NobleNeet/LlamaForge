@@ -5,6 +5,14 @@ import argspec
 
 
 class CanonicalAliasTest(unittest.TestCase):
+    def test_flags_preserve_long_and_short_cli_options(self):
+        text = "--ctx-size, -c N  size of the prompt context\n"
+        items = argspec.parse_help(text)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["key"], "ctx-size")
+        self.assertEqual(items[0]["flags"], ["--ctx-size", "-c"])
+        self.assertEqual(items[0]["aliases"], ["ctx-size"])
+
     def test_prefers_legacy_gpu_layers_key_when_both_aliases_exist(self):
         text = "--gpu-layers, --n-gpu-layers N  number of layers to store in VRAM\n"
         items = argspec.parse_help(text)
@@ -65,6 +73,14 @@ class CanonicalAliasTest(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["type"], "str")
         self.assertTrue(items[0]["multiple"])
+
+    def test_unknown_option_keeps_dynamic_cli_flags(self):
+        text = "--future-knob, -F VALUE  brand new option from upstream\n"
+        items = argspec.parse_help(text)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["key"], "future-knob")
+        self.assertEqual(items[0]["flags"], ["--future-knob", "-F"])
+        self.assertEqual(items[0]["desc"], "brand new option from upstream")
 
 
 if __name__ == "__main__":

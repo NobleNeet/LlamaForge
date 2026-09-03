@@ -109,6 +109,18 @@ function splitMultiValue(raw, sep = ",") {
 function joinMultiValue(values, sep = ",") {
   return (values || []).map(v => String(v).trim()).filter(Boolean).join(sep);
 }
+function knobCliFlags(k) {
+  const flags = Array.isArray(k?.flags) ? k.flags : [];
+  return flags.map(flag => String(flag).trim()).filter(Boolean);
+}
+function knobSearchText(k) {
+  return [
+    k?.key || "",
+    ...(k?.aliases || []),
+    ...knobCliFlags(k),
+    k?.desc || "",
+  ].join(" ").toLowerCase();
+}
 function isMultiValueEl(el) {
   return el?.dataset?.multiple === "1";
 }
@@ -129,6 +141,7 @@ function knobField(m, k) {
   const ph = k.default ? `inherit (${k.default})` : "inherit";
   const aliasAttr = ` data-aliases="${esc((k.aliases || []).join(","))}"`;
   const multiAttr = k.multiple ? ` data-multiple="1" data-separator="${esc(k.separator || ",")}"` : "";
+  const cliFlags = knobCliFlags(k).join(", ");
   let ctrl;
   if (k.type === "enum" && k.multiple) {
     const selected = new Set(splitMultiValue(v, k.separator || ","));
@@ -144,8 +157,9 @@ function knobField(m, k) {
   } else {
     ctrl = `<input data-k="${esc(k.key)}"${aliasAttr}${multiAttr} value="${esc(v)}" placeholder="${esc(ph)}" ${(k.type==="int"||k.type==="float")?'inputmode="numeric"':''}>`;
   }
-  return `<div class="fld ${isSet?"set":""}${LITE_KNOBS.has(k.key)?"":" advanced-only"}" data-desc="${esc((k.key+' '+k.desc).toLowerCase())}">
+  return `<div class="fld ${isSet?"set":""}${LITE_KNOBS.has(k.key)?"":" advanced-only"}" data-desc="${esc(knobSearchText(k))}">
     <label title="${esc(k.desc)}">${esc(k.key)}</label>${ctrl}
+    ${cliFlags?`<div class="cli" title="${esc(cliFlags)}">${esc(cliFlags)}</div>`:""}
     ${k.desc?`<div class="hint" title="${esc(k.desc)}">${esc(k.desc)}</div>`:""}</div>`;
 }
 function modelMeta(m) {
