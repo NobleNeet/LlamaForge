@@ -12,6 +12,8 @@ from unittest import mock
 
 import routes, server
 
+REAL_CFG = routes.cfg   # the un-patched loader, for the isolation guard below
+
 
 class GuardUnitTest(unittest.TestCase):
     def test_host_accepts_loopback_names(self):
@@ -149,6 +151,10 @@ class LiveServerTest(unittest.TestCase):
                                          "panel_host": "0.0.0.0",
                                          "anthropic_shim_enabled": False})
         self.cfg_patch.start()
+        # setUp only knows about the patch it made, so this replacement has to
+        # register its own teardown: it used to leak, and every later test in
+        # the same process then read a stub config with three keys in it.
+        self.addCleanup(self.cfg_patch.stop)
         with mock.patch.object(routes.router_ctl, "lan_ip", return_value="192.168.1.50"):
             status, body = self._req("/api/_probe",
                                      headers={"Host": f"192.168.1.50:{self.port}",
@@ -200,6 +206,19 @@ class LiveServerTest(unittest.TestCase):
         with mock.patch.dict(routes.GET_ROUTES, {"/api/_refuse": refuse}):
             status, body = self._req("/api/_refuse")
         self.assertEqual((status, body["error"]), (418, "nope"))
+
+
+class PatchIsolationTest(unittest.TestCase):
+    """Runs last in this module, on purpose.
+
+    `LiveServerTest` swaps `routes.cfg` for a three-key stub. When one of its
+    tests replaced that stub without registering a teardown, the stub survived
+    into every test that ran afterwards in the same process - failures reported
+    hundreds of tests away, in code that never touched a mock.
+    """
+
+    def test_routes_cfg_is_the_real_loader_again(self):
+        self.assertIs(routes.cfg, REAL_CFG)
 
 
 if __name__ == "__main__":

@@ -101,9 +101,17 @@ export function loadDiscover() {
       </div>
       <div class="note">Fit ratings compare file size against your total VRAM (<span id="hub-vram">?</span> GB across all GPUs).
         FITS = full GPU offload with headroom &middot; TIGHT = loads but little room for context &middot; CPU OFFLOAD = larger than VRAM, will use system RAM (slower).</div>
+      <div class="toolbar" id="hub-dirrow" style="margin:12px 0 0">
+        <span class="k" style="color:var(--dim);font-size:12px">Save downloads to</span>
+        <input class="search" id="hub-dir" placeholder="(default folder)">
+        <button id="hub-dir-save">Save</button>
+        <button class="ghost" id="hub-dir-default">Use default</button>
+      </div>
+      <div class="note" id="hub-dir-note"></div>
     </div>
     <div id="hub-results"></div>
     <div class="card" id="hub-dlcard" style="display:none"><h3>Download</h3>
+      <div class="kv"><span class="k">saved to</span><span class="v" id="dl-dest" style="word-break:break-all">-</span></div>
       <div class="kv"><span class="k">file</span><span class="v" id="dl-file">-</span></div>
       <div class="meter" style="margin-top:8px" id="dl-meter"></div>
       <div class="kv"><span class="k">progress</span><span class="v" id="dl-prog">-</span></div>
@@ -122,6 +130,12 @@ export function loadDiscover() {
     const r = await api("/api/hub/resume", {});
     if (r.ok) { toast("Resuming download", "ok"); ggufDlPoll(); } else toast("Nothing to resume", "err");
   };
+  // Where the GGUF files land. The box holds the raw setting; the note under it
+  // states the folder the backend resolves, so a typo shows up before download.
+  $("#hub-dir-save").onclick = hubDirSave;
+  $("#hub-dir-default").onclick = () => { $("#hub-dir").value = ""; hubDirSave(); };
+  $("#hub-dir").addEventListener("keydown", e => { if (e.key === "Enter") hubDirSave(); });
+  hubDirMode(); hubDirLoad();
   // vLLM (safetensors) is Windows/WSL-only; drop the mode on other platforms
   if (S.STATE && S.STATE.vllm_supported === false) {
     const opt = $('#hub-mode option[value="safetensors"]');
@@ -135,9 +149,57 @@ export function loadDiscover() {
     if (saved.q) $("#hub-q").value = saved.q;
   } catch (e) {}
   $("#hub-go").onclick = hubSearch;
-  $("#hub-mode").onchange = () => hubSearch();
+  $("#hub-mode").onchange = () => { hubDirMode(); hubSearch(); };
   $("#hub-q").addEventListener("keydown", e => { if (e.key === "Enter") hubSearch(); });
   hubSearch();
+}
+
+/* ---------- where the GGUF files are saved ---------- */
+// The box carries the raw `download_dir` setting (blank = follow the server's
+// default), the note carries the folder the backend actually resolved. Reading
+// it back from GET /api/hub/dir after every save means the UI can never claim a
+// folder the next download will not use.
+function hubDirMode() {
+  const row = $("#hub-dirrow");
+  if (!row) return;
+  // safetensors downloads go to the vLLM cache inside WSL; this folder is
+  // llama.cpp-only, so hiding it avoids implying it steers those too.
+  row.style.display = ($("#hub-mode") || {}).value === "safetensors" ? "none" : "";
+}
+
+function hubDirNote(d) {
+  const el = $("#hub-dir-note");
+  if (!el) return;
+  if (!d || d.error) {
+    setHTML(el, `<span style="color:var(--red)">save folder: ${esc(String((d && d.error) || "unavailable").slice(0, 80))}</span>`);
+    return;
+  }
+  const isDefault = d.custom ? "" : ` <span style="color:var(--dim)">- the default</span>`;
+  const reach = d.scanned
+    ? `<span style="color:var(--dim)">Under a scan folder, so the Setup scan sees these files too.</span>`
+    : `<span style="color:var(--amber)">Not under a scan folder: finish a download with Add to my models, or list the folder under Setup.</span>`;
+  setHTML(el, `saves to <code>${esc(d.dir)}</code>${isDefault}<br>${reach}`);
+}
+
+async function hubDirLoad() {
+  const d = await api("/api/hub/dir");
+  const box = $("#hub-dir");
+  if (d.error) { hubDirNote(d); return; }
+  if (box) {
+    // never clobber a path mid-typing
+    if (box !== document.activeElement) box.value = d.custom || "";
+    box.placeholder = d.default;
+  }
+  hubDirNote(d);
+}
+
+async function hubDirSave() {
+  const path = $("#hub-dir").value.trim();
+  const r = await api("/api/config", {download_dir: path});
+  if (r.error) { toast(r.error.slice(0, 70), "err"); return; }
+  if (r.rejected && r.rejected.includes("download_dir")) { toast("Server refused that folder", "err"); return; }
+  toast(path ? "Downloads will be saved there" : "Back to the default download folder", "ok");
+  await hubDirLoad();   // re-read, so the note shows the resolved folder
 }
 
 async function hubSearch() {
@@ -181,6 +243,7 @@ async function hubDownload(repo, path, shards, mmproj) {
   if (!r.started) { toast("A download is already running", "err"); return; }
   toast("Download started", "ok");
   $("#hub-dlcard").style.display = ""; $("#dl-done").style.display = "none";
+  $("#dl-dest").textContent = r.dest;      // the folder the server actually used
   $("#dl-run").style.display = ""; dlPrev = null;
   ggufDlPoll();
 }
@@ -191,6 +254,7 @@ function ggufDlPoll() {
   clearInterval(dlPoll);
   dlPoll = setInterval(async () => {
     const s = await api("/api/hub/progress");
+    if (s.dest) $("#dl-dest").textContent = s.dest   // survives a Resume re-poll
     $("#dl-file").textContent = `${s.repo} :: ${s.file||"-"} (${s.done_files+1 > s.total_files ? s.total_files : s.done_files+1}/${s.total_files})`;
     const pct = s.total ? Math.round(100*s.downloaded/s.total) : 0;
     setHTML($("#dl-meter"), meter(s.downloaded, Math.max(s.total,1)));
@@ -259,6 +323,7 @@ async function vllmHubDownload(repo, sizeBytes, quant) {
   toast("Download started", "ok");
   $("#hub-dlcard").style.display = ""; $("#dl-done").style.display = "none";
   $("#dl-run").style.display = "none"; dlPrev = null;   // WSL transfer: no cancel
+  $("#dl-dest").textContent = "vLLM cache (inside WSL)";  // not the GGUF folder
   clearInterval(dlPoll);
   dlPoll = setInterval(async () => {
     const s = await api("/api/vllm/hub/progress");

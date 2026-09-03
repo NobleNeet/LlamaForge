@@ -198,11 +198,35 @@ def total_vram_mib():
     return hardware.total_fit_vram_mib(hardware.detect_gpus())
 
 
-def download_dir():
-    c = cfg()
-    if c.get("model_dirs"):
-        return os.path.join(c["model_dirs"][0], "LlamaForge-downloads")
+# Discover writes each download into its own subfolder named after the repo
+# (`acme--model`), inside whichever of these the user has not overridden.
+DL_FOLDER_NAME = "LlamaForge-downloads"
+
+
+def default_download_dir(c=None):
+    """Where Discover puts files when the user has not picked a folder: the
+    first scan root's LlamaForge-downloads folder, else the repo's own
+    models folder. Never reads `download_dir` - this is what it falls back to."""
+    c = cfg() if c is None else c
+    dirs = _v_dirs(c.get("model_dirs") or []) or []
+    if dirs:
+        return os.path.join(dirs[0], DL_FOLDER_NAME)
     return os.path.join(ROOT, "models")
+
+
+def _abs_path(raw):
+    """A path from config.json as the backend uses it: `~` expanded, a relative
+    value anchored to the folder the dashboard was launched from."""
+    p = os.path.expanduser((raw or "").strip())
+    return p if os.path.isabs(p) else os.path.abspath(p)
+
+
+def download_dir(c=None):
+    """The folder a Discover download is written into (config `download_dir`),
+    falling back to default_download_dir() when it is blank."""
+    c = cfg() if c is None else c
+    custom = (c.get("download_dir") or "").strip()
+    return _abs_path(custom) if custom else default_download_dir(c)
 
 
 def _agent_endpoint(agent):
@@ -1548,6 +1572,23 @@ def post_vram_predict(req):
     return 200, out
 
 
+def get_hub_dir(req):
+    """Discover's save-to settings, so the UI states the folder the backend
+    really uses rather than whatever was last typed into the box.
+
+    `scanned` answers the question the user actually cares about: would Setup's
+    scan also find the files here? The scan walks `model_dirs`, or every drive
+    when none are configured, so an empty roots list is not "nowhere".
+    """
+    c = cfg()
+    eff = download_dir(c)
+    roots = _v_dirs(c.get("model_dirs") or []) or []
+    return 200, {"dir": eff,
+                 "custom": (c.get("download_dir") or "").strip(),
+                 "default": default_download_dir(c),
+                 "scanned": _path_under_roots(eff, roots or scanner.list_drives())}
+
+
 def post_hub_download(req):
     repo   = req.body.get("repo", "")
     first  = req.body.get("path", "")
@@ -1654,6 +1695,10 @@ CONFIG_WRITABLE = {
     "wsl_distro":              _v_str,
     "vllm_port":               _v_port,
     "model_dirs":              _v_dirs,
+    # Where Discover writes its GGUF downloads. Deliberately browser-settable
+    # even though it is a path: it only names a folder the backend writes to,
+    # never a program it executes or a file it reads.
+    "download_dir":            _v_str,
     "anthropic_default_model": _v_str,
     "anthropic_shim_enabled":  _v_bool,
     "vram_bandwidths":         _v_bandwidths,
@@ -1999,6 +2044,7 @@ GET_ROUTES = {
     "/api/build/info":        get_build_info,
     "/api/build/log":         get_build_log,
     "/api/hub/progress":      get_hub_progress,
+    "/api/hub/dir":           get_hub_dir,
     "/api/router/log":        get_router_log,
     "/api/llama/log":         get_llama_output_log,
     "/api/stats":             get_stats,

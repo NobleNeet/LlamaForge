@@ -108,7 +108,10 @@ class DownloadManager:
     def _idle_state():
         return {"running": False, "repo": "", "file": "", "done_files": 0,
                 "total_files": 0, "downloaded": 0, "total": 0, "cancel": False,
-                "paused": False, "error": "", "finished_path": "", "phase": "idle"}
+                "paused": False, "error": "", "finished_path": "", "phase": "idle",
+                # the folder the bytes are landing in, so the dashboard can name
+                # it while a job runs and again after a Resume
+                "dest": ""}
 
     def progress(self):
         return dict(self.state)
@@ -188,6 +191,7 @@ class DownloadManager:
 
     def _run(self, repo, paths, dest_dir):
         try:
+            self.state["dest"] = dest_dir     # resume() reuses the state dict
             os.makedirs(dest_dir, exist_ok=True)
             self.state.update(total_files=len(paths), phase="downloading")
             final = self.state.get("finished_path") or ""
@@ -218,8 +222,8 @@ class DownloadManager:
                 return False
             self._job = (repo, paths, dest_dir)
             self.state = self._idle_state()
-            self.state.update(running=True, repo=repo, total_files=len(paths),
-                              phase="starting")
+            self.state.update(running=True, repo=repo, dest=dest_dir,
+                              total_files=len(paths), phase="starting")
         threading.Thread(target=self._run, args=(repo, paths, dest_dir), daemon=True).start()
         return True
 

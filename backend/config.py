@@ -27,6 +27,11 @@ DEFAULTS = {
     "server_bin":  "",                       # path to llama-server(.exe)
     "models_ini":  os.path.join(ROOT, "models.ini"),
     "model_dirs":  [],                       # directories to scan for GGUFs
+    # Folder Discover downloads GGUFs into (one subfolder per repo). "" = follow
+    # routes.default_download_dir(): the first model_dirs entry's
+    # LlamaForge-downloads folder, else <repo root>/models. Set from the
+    # Discover tab; a relative path is anchored to where the dashboard runs.
+    "download_dir": "",
     "router_port": 8080,
     "panel_port":  8090,
     "panel_host":  "127.0.0.1",             # 127.0.0.1 = local only, 0.0.0.0 = reachable on the LAN

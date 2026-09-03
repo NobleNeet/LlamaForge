@@ -17,6 +17,7 @@ order: 1
 | `server_bin` | string | `""` | Path to the built `llama-server` (or `llama-server.exe`) binary. |
 | `models_ini` | string | `<repo root>/models.ini` | Path to the `models.ini` preset file passed to `llama-server --models-preset`. |
 | `model_dirs` | list | `[]` | Directories the Setup scan targets for GGUF discovery, and the base location for Discover downloads. Empty means use the platform-default scan roots. |
+| `download_dir` | string | `""` | Folder the Discover tab writes GGUF downloads into (one subfolder per repo, e.g. `acme--model`). Empty follows the default: the first `model_dirs` entry's `LlamaForge-downloads` folder, else `<repo root>/models`. Set from the Discover tab; `~` is expanded and a relative path is anchored to the folder the dashboard was launched from. |
 | `router_port` | int | `8080` | Port `llama-server` (the router) listens on. |
 | `panel_port` | int | `8090` | Port the LlamaForge dashboard (`backend/server.py`) listens on. |
 | `panel_host` | string | `"127.0.0.1"` | Dashboard bind address. `127.0.0.1` = local only; `0.0.0.0` = reachable on the LAN. |
@@ -26,6 +27,7 @@ order: 1
 | `wsl_distro` | string | `""` | WSL distro that runs vLLM. Empty string auto-picks the default distro. |
 | `vllm_port` | int | `8081` | Port vLLM serves on inside WSL (localhost-forwarded to Windows). |
 | `cmake_flags` | object | `{}` | Persisted CMake build flags, normally seeded from hardware detection. |
+| `cmake_backend` | string | `""` | Which backend (cuda/hip/vulkan/cpu) those `cmake_flags` were generated for, so stale flags for a different backend are recognised rather than reused. |
 | `git_remote` | string | `"https://github.com/ggml-org/llama.cpp"` | Remote used to clone/update the `llama.cpp` source. |
 | `active_engine` | string | `"llamacpp"` | Which llama-family binary the router uses: `"llamacpp"` or `"ikllama"`. |
 | `ik_llama_src` | string | `""` | Path to a git checkout of `ik_llama.cpp`. |
@@ -34,7 +36,10 @@ order: 1
 | `ik_llama_models_ini` | string | `""` | ik_llama's own registry; empty resolves to a `-ikllama` sibling of `models_ini`. |
 | `ik_llama_git_remote` | string | `"https://github.com/ikawrakow/ik_llama.cpp"` | Remote used to clone/update ik_llama. |
 | `ik_llama_cmake_flags` | object | `{}` | Persisted CMake build flags for the ik_llama build. |
+| `ik_llama_cmake_backend` | string | `""` | Which backend those ik_llama flags were generated for. |
+| `llama_backend` | string | `"auto"` | Backend the Setup build targets: `auto`, `cuda`, `hip`, `vulkan` or `cpu`. `auto` lets hardware detection choose. |
 | `auto_load_model` | string | `""` | Model id to load automatically on launch. Empty string disables auto-load. |
+| `api_idle_unload_minutes` | int | `0` | Unload llama.cpp models that were loaded through the API and then sat unused for this many minutes. `0` disables the idle unload. |
 | `presets` | object | `{}` | Legacy global presets from older installs. New saves are model-scoped. |
 | `model_presets` | object | `{}` | Named knob sets per model: `{model_id: {preset_name: {knob: value}}}`. |
 | `preset_bindings` | object | `{}` | Preset bound as each model's default: `{model_id: preset_name}`. |
@@ -51,7 +56,7 @@ order: 1
 | `vram_predict_enabled` | bool | `True` | Whether the offline VRAM-fit/tok-s estimate is computed (Discover, on expand). |
 | `docs_dir` | string | `""` | Directory the in-app docs viewer reads from. Empty string resolves to `<repo root>/docs/content`. |
 
-35 keys total, matching `DEFAULTS` in `backend/config.py`.
+43 keys total, matching `DEFAULTS` in `backend/config.py`.
 
 ## Loading and saving
 

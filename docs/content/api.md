@@ -71,8 +71,9 @@ These are the endpoints external coding agents (Claude Code, Codex, etc.) talk t
 |---|---|---|
 | POST | `/api/hub/search` | Search Hugging Face for GGUF repos, annotated with what's already installed. |
 | POST | `/api/hub/files` | List a repo's files/quantizations, sized against available VRAM. |
-| POST | `/api/hub/download` | Start downloading a model (and optional mmproj) from the Hub. |
-| GET | `/api/hub/progress` | Current download progress. |
+| POST | `/api/hub/download` | Start downloading a model (and optional mmproj) from the Hub. Returns `{started, dest}`, where `dest` is the folder the files are written into (a per-repo subfolder of config `download_dir`). |
+| GET | `/api/hub/progress` | Current download progress. Includes `dest`, so the dashboard can keep naming the folder across a pause/Resume. |
+| GET | `/api/hub/dir` | Where Discover saves GGUFs: `{dir, custom, default, scanned}` — the folder the backend resolves, the raw `download_dir` setting, what the default would be, and whether the folder is under a scan root. |
 | POST | `/api/hub/cancel` / `/api/hub/pause` / `/api/hub/resume` | Control the active download. |
 | POST | `/api/hub/add` | Register a finished manual/download-dir GGUF into `models.ini`. |
 
