@@ -102,19 +102,47 @@ function curVal(m, knob) {
   for (const a of knob.aliases) if (m.settings[a] != null) return m.settings[a];
   return "";
 }
+function splitMultiValue(raw, sep = ",") {
+  if (Array.isArray(raw)) return raw.map(v => String(v).trim()).filter(Boolean);
+  return String(raw ?? "").split(sep).map(v => v.trim()).filter(Boolean);
+}
+function joinMultiValue(values, sep = ",") {
+  return (values || []).map(v => String(v).trim()).filter(Boolean).join(sep);
+}
+function isMultiValueEl(el) {
+  return el?.dataset?.multiple === "1";
+}
+function knobValue(el) {
+  if (!isMultiValueEl(el)) return String(el?.value ?? "").trim();
+  return joinMultiValue([...el.selectedOptions].map(opt => opt.value), el.dataset.separator || ",");
+}
+function setKnobValue(el, raw) {
+  if (!isMultiValueEl(el)) {
+    el.value = raw == null ? "" : String(raw);
+    return;
+  }
+  const want = new Set(splitMultiValue(raw, el.dataset.separator || ","));
+  [...el.options].forEach(opt => { opt.selected = want.has(opt.value); });
+}
 function knobField(m, k) {
   const v = curVal(m, k), isSet = v !== "";
   const ph = k.default ? `inherit (${k.default})` : "inherit";
   const aliasAttr = ` data-aliases="${esc((k.aliases || []).join(","))}"`;
+  const multiAttr = k.multiple ? ` data-multiple="1" data-separator="${esc(k.separator || ",")}"` : "";
   let ctrl;
-  if (k.type === "enum") {
+  if (k.type === "enum" && k.multiple) {
+    const selected = new Set(splitMultiValue(v, k.separator || ","));
+    const size = Math.max(4, Math.min((k.options || []).length || 4, 8));
+    const opts = (k.options || []).map(o => `<option value="${esc(o)}" ${selected.has(String(o))?"selected":""}>${esc(o)}</option>`).join("");
+    ctrl = `<select data-k="${esc(k.key)}"${aliasAttr}${multiAttr} multiple size="${size}">${opts}</select>`;
+  } else if (k.type === "enum") {
     const opts = [""].concat(k.options||[]).map(o => `<option value="${esc(o)}" ${String(o)===String(v)?"selected":""}>${o===""?"(inherit)":esc(o)}</option>`).join("");
-    ctrl = `<select data-k="${esc(k.key)}"${aliasAttr}>${opts}</select>`;
+    ctrl = `<select data-k="${esc(k.key)}"${aliasAttr}${multiAttr}>${opts}</select>`;
   } else if (k.type === "bool") {
     const opts = ["","true","false"].map(o => `<option value="${o}" ${String(o)===String(v)?"selected":""}>${o===""?"(inherit)":o}</option>`).join("");
-    ctrl = `<select data-k="${esc(k.key)}"${aliasAttr}>${opts}</select>`;
+    ctrl = `<select data-k="${esc(k.key)}"${aliasAttr}${multiAttr}>${opts}</select>`;
   } else {
-    ctrl = `<input data-k="${esc(k.key)}"${aliasAttr} value="${esc(v)}" placeholder="${esc(ph)}" ${(k.type==="int"||k.type==="float")?'inputmode="numeric"':''}>`;
+    ctrl = `<input data-k="${esc(k.key)}"${aliasAttr}${multiAttr} value="${esc(v)}" placeholder="${esc(ph)}" ${(k.type==="int"||k.type==="float")?'inputmode="numeric"':''}>`;
   }
   return `<div class="fld ${isSet?"set":""}${LITE_KNOBS.has(k.key)?"":" advanced-only"}" data-desc="${esc((k.key+' '+k.desc).toLowerCase())}">
     <label title="${esc(k.desc)}">${esc(k.key)}</label>${ctrl}
@@ -231,18 +259,21 @@ function knobAliases(el) {
 function syncKnobSetState(el) {
   const fld = knobFieldShell(el);
   if (!fld) return;
-  fld.classList.toggle("set", !!el.value.trim());
+  fld.classList.toggle("set", !!knobValue(el));
 }
 function knobPayloadValue(el, payload) {
   for (const key of [el.dataset.k].concat(knobAliases(el))) {
-    if (payload[key] != null) return payload[key];
+    if (payload[key] != null) {
+      if (Array.isArray(payload[key])) return joinMultiValue(payload[key], el.dataset.separator || ",");
+      return payload[key];
+    }
   }
   return null;
 }
 function rowSettings(row, {dropBlank=false} = {}) {
   const settings = {};
   $$("[data-k]", row).forEach(el => {
-    const v = el.value.trim();
+    const v = knobValue(el);
     if (dropBlank && v === "") return;
     settings[el.dataset.k] = v;
   });
@@ -567,11 +598,11 @@ function applyPresetSettingsToRow(row, settings) {
   $$("[data-k]", row).forEach(el => {
     const next = knobPayloadValue(el, nextSettings);
     const value = next == null ? "" : String(next);
-    if (el.value === value) {
+    if (knobValue(el) === value) {
       syncKnobSetState(el);
       return;
     }
-    el.value = value;
+    setKnobValue(el, value);
     syncKnobSetState(el);
     changed += 1;
   });
@@ -595,7 +626,7 @@ async function bindPreset(model, name) {
 async function savePresetFrom(model) {
   const row = $(`.row[data-id="${CSS.escape(model)}"]`); if (!row) return;
   const settings = {};
-  $$("[data-k]", row).forEach(el => { const v = el.value.trim(); if (v !== "") settings[el.dataset.k] = v; });
+  $$("[data-k]", row).forEach(el => { const v = knobValue(el); if (v !== "") settings[el.dataset.k] = v; });
   if (!Object.keys(settings).length) { toast("No knobs set to save", "err"); return; }
   const name = prompt("Preset name (e.g. coding, creative, fast):");
   if (!name || !name.trim()) return;
@@ -606,7 +637,7 @@ async function savePresetFrom(model) {
 async function overwritePresetFrom(model, name) {
   const row = $(`.row[data-id="${CSS.escape(model)}"]`); if (!row) return;
   const settings = {};
-  $$("[data-k]", row).forEach(el => { const v = el.value.trim(); if (v !== "") settings[el.dataset.k] = v; });
+  $$("[data-k]", row).forEach(el => { const v = knobValue(el); if (v !== "") settings[el.dataset.k] = v; });
   if (!Object.keys(settings).length) { toast("No knobs set to save", "err"); return; }
   if (!confirm(`Overwrite preset "${name}" with the current knob values?`)) return;
   const r = await api("/api/presets/save", {model, name, settings});
@@ -647,14 +678,14 @@ function applyTuneResult(row, rec) {
   const knobs = rec.knobs || {}, changed = [];
   $$("[data-k]", row).forEach(el => {
     const next = knobPayloadValue(el, knobs);
-    if (next == null && AUTOTUNE_MANAGED_KNOBS.has(el.dataset.k) && el.value !== "") {
-      el.value = "";
+    if (next == null && AUTOTUNE_MANAGED_KNOBS.has(el.dataset.k) && knobValue(el) !== "") {
+      setKnobValue(el, "");
       syncKnobSetState(el);
       changed.push(el.dataset.k);
       return;
     }
-    if (next != null && next !== el.value) {
-      el.value = next;
+    if (next != null && next !== knobValue(el)) {
+      setKnobValue(el, next);
       syncKnobSetState(el);
       changed.push(el.dataset.k);
     }
@@ -798,14 +829,14 @@ export function initModels() {
     closeModal,
     unsaved: id => {
       const row = $(`.row[data-id="${CSS.escape(id)}"]`), model = modelRows().find(item => item.id === id);
-      return !!row && !!model && $$('[data-k]', row).some(el => String(el.value) !== String(knobPayloadValue(el, model.settings) ?? ""));
+      return !!row && !!model && $$('[data-k]', row).some(el => String(knobValue(el)) !== String(knobPayloadValue(el, model.settings) ?? ""));
     },
     stage: (id, settings) => {
       const row = $(`.row[data-id="${CSS.escape(id)}"]`); if (!row) return;
       let count = 0;
       $$('[data-k]', row).forEach(el => {
-        const value = knobPayloadValue(el, settings); if (value == null || el.value === String(value)) return;
-        el.value = String(value); syncKnobSetState(el); count += 1;
+        const value = knobPayloadValue(el, settings); if (value == null || knobValue(el) === String(value)) return;
+        setKnobValue(el, String(value)); syncKnobSetState(el); count += 1;
       });
       const msg = $('[data-msg]', row); if (msg) { msg.className = "msg work"; msg.textContent = `${count} Auto Tune knobs loaded into editor - review and use Save + Reload to apply.`; }
     },
@@ -818,7 +849,7 @@ export function initModels() {
   const cr = $("#cmp-run"); if (cr) cr.onclick = () => openCompare();
   const ua = $("#unload-all"); if (ua) ua.onclick = () => unloadAll();
 
-  document.addEventListener("input", e => {
+  const handleKnobMutation = e => {
     // knob-filter box (dynamic, inside an open editor)
     if (e.target.matches("[data-knobfilter]")) { filterKnobs(e.target); return; }
     // flag knob edits so the user knows a Save is pending
@@ -827,7 +858,9 @@ export function initModels() {
     syncKnobSetState(e.target);
     const msg = $("[data-msg]", row);
     if (msg) { msg.className = "msg work"; msg.textContent = "unsaved changes"; }
-  });
+  };
+  document.addEventListener("input", handleKnobMutation);
+  document.addEventListener("change", handleKnobMutation);
 
   // keyboard map: 1-7 tabs, / search, j/k or arrows navigate, Enter expand,
   // L load, U unload, S save the open model. Esc closes a modal / clears search.

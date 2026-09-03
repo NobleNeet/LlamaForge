@@ -51,14 +51,21 @@ def _balance_parens(s):
 OVERRIDES = {
     "cache-type-k": ("enum", ["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"]),
     "cache-type-v": ("enum", ["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"]),
-    "spec-type":    ("enum", ["none", "draft-simple", "draft-eagle3", "draft-mtp",
-                               "ngram-simple", "ngram-map-k", "ngram-map-k4v",
-                               "ngram-mod", "ngram-cache"]),
     "tensor-split": ("str", None),
     "override-tensor": ("str", None),
     "cpu-range":    ("str", None),
     "cpu-range-batch": ("str", None),
 }
+
+_COMMA_LIST_DESC_RE = re.compile(
+    r"\bcomma[- ]separated (?:list|lists|values?)\b|\bseparated by commas?\b",
+    re.I,
+)
+_COMMA_LIST_PLACEHOLDER_RE = re.compile(
+    r"(?:^|[<{\[])\s*[^,\s]+(?:\s*,\s*[^,\s]+)+(?:\s*,\s*(?:\.\.\.?|…))?\s*(?:$|[>\]}])",
+    re.I,
+)
+
 
 def _classify(placeholder, default):
     """Return (type, options) for a value placeholder."""
@@ -80,6 +87,18 @@ def _classify(placeholder, default):
     return "str", None
 
 
+def _is_multi_value(placeholder, desc, typ, opts):
+    p = (placeholder or "").strip()
+    d = (desc or "").strip()
+    desc_says_list = bool(_COMMA_LIST_DESC_RE.search(d))
+    placeholder_says_list = bool(_COMMA_LIST_PLACEHOLDER_RE.search(p)) or (
+        "," in p and "..." in p
+    )
+    if typ == "enum":
+        return desc_says_list
+    return desc_says_list or placeholder_says_list
+
+
 def _preset_supported(placeholder):
     """Whether llama.cpp's models.ini can express this option as one key=value.
 
@@ -98,6 +117,13 @@ def parse_help(text):
     def flush():
         nonlocal pending
         if pending:
+            pending["multiple"] = _is_multi_value(
+                pending.get("placeholder", ""),
+                pending.get("desc", ""),
+                pending.get("type", "str"),
+                pending.get("options"),
+            )
+            pending["separator"] = "," if pending["multiple"] else ""
             items.append(pending); pending = None
 
     for raw in text.splitlines():
@@ -156,7 +182,10 @@ def parse_help(text):
         env = re.search(r"\(env:\s*([A-Z0-9_]+)\)", desc)
         dflt = re.search(r"\(default:\s*(.*?)\)", desc)
         default_val = dflt.group(1) if dflt else ""
-        typ, opts = OVERRIDES.get(key, _classify(placeholder, default_val))
+        dyn_typ, dyn_opts = _classify(placeholder, default_val)
+        typ, opts = OVERRIDES.get(key, (dyn_typ, dyn_opts))
+        if dyn_typ == "enum" and dyn_opts:
+            typ, opts = dyn_typ, dyn_opts
         # canonical default: the value before any ", explanation" tail
         clean_default = re.split(r",\s", default_val)[0].strip() if default_val else ""
         pending = {
@@ -165,6 +194,8 @@ def parse_help(text):
             "aliases": [key] + [a for a in longs if a != key],
             "section": section,
             "type": typ, "options": opts,
+            "multiple": False,
+            "separator": "",
             "placeholder": placeholder,
             "desc": _balance_parens(re.sub(r"\s*\((env|default):.*", "", desc)),
             "default": clean_default,

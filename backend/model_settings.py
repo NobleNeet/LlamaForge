@@ -2,7 +2,7 @@
 
 
 def _aliases(knob_schema):
-    alias_to_key, key_to_aliases = {}, {}
+    alias_to_key, key_to_aliases, knobs = {}, {}, {}
     for group in (knob_schema or {}).get("groups", ()):
         for knob in group.get("knobs", ()):
             key = knob.get("key")
@@ -11,20 +11,31 @@ def _aliases(knob_schema):
             family = [key] + [alias for alias in knob.get("aliases", ()) if alias and alias != key]
             key_to_aliases[key] = family
             alias_to_key.update({alias: key for alias in family})
-    return alias_to_key, key_to_aliases
+            knobs[key] = knob
+    return alias_to_key, key_to_aliases, knobs
+
+
+def _normalize_value(value, knob):
+    if isinstance(value, (list, tuple)):
+        sep = ","
+        if isinstance(knob, dict) and knob.get("multiple"):
+            sep = knob.get("separator") or ","
+        return sep.join(str(part).strip() for part in value if str(part).strip())
+    return "" if value is None else str(value)
 
 
 def clean_settings(updates, knob_schema=None):
     """Canonicalize aliases; blank values retain the existing unset semantics."""
-    alias_to_key, key_to_aliases = _aliases(knob_schema)
+    alias_to_key, key_to_aliases, knobs = _aliases(knob_schema)
     clean = {}
     for raw_key, value in (updates or {}).items():
         key = alias_to_key.get(raw_key, raw_key)
-        value = ("" if value is None else str(value)).strip()
+        value = _normalize_value(value, knobs.get(key)).strip()
         clean[key] = None if value == "" else value
-        for alias in key_to_aliases.get(key, ()):
-            if alias != key and alias not in clean:
-                clean[alias] = None
+        if raw_key != key:
+            for alias in key_to_aliases.get(key, ()):
+                if alias != key and alias not in clean:
+                    clean[alias] = None
     return clean
 
 
@@ -38,7 +49,7 @@ def force_max_gpu_layers(clean):
 
 def materialize_autotune_settings(settings, knob_schema=None):
     """Convert profile values to llama-server editor values without legacy coercion."""
-    alias_to_key, known_aliases = _aliases(knob_schema)
+    alias_to_key, known_aliases, _ = _aliases(knob_schema)
     known = set(known_aliases) if known_aliases else None
     values, warnings = {}, []
     for raw_key, raw_value in (settings or {}).items():

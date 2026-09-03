@@ -128,6 +128,18 @@ class SaveAndPresetTest(unittest.TestCase):
         written = [c for c in self.calls if c[0] == "set"][0][1][1]
         self.assertEqual(written, {"n-gpu-layers": "99", "gpu-layers": None})
 
+    def test_save_joins_multi_enum_values_into_one_models_ini_value(self):
+        fake_schema = {"groups": [{"name": "speculative", "knobs": [{
+            "key": "spec-type", "aliases": ["spec-type"], "type": "enum",
+            "options": ["draft-dflash", "ngram-cache"], "multiple": True, "separator": ",",
+        }]}]}
+        with mock.patch.object(routes, "schema", return_value=fake_schema), \
+             mock.patch.object(routes, "router", self._router()):
+            status, out = routes.post_save(Req(body={
+                "model": "m", "settings": {"spec-type": ["draft-dflash", "ngram-cache"]}}))
+        written = [c for c in self.calls if c[0] == "set"][0][1][1]
+        self.assertEqual(written, {"spec-type": "draft-dflash,ngram-cache"})
+
     def test_save_unloads_a_running_model_before_reload(self):
         with mock.patch.object(routes, "router", self._router(loaded_ids=["m"])):
             status, out = routes.post_save(

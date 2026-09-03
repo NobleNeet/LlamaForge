@@ -38,6 +38,34 @@ class CanonicalAliasTest(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertTrue(items[0]["reserved"])
 
+    def test_spec_type_is_dynamic_multi_enum(self):
+        text = """----- speculative params -----
+
+--spec-type none,draft-mtp,draft-dflash,ngram-cache,draft-future
+    comma-separated list of types of speculative decoding to use
+"""
+        items = argspec.parse_help(text)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["type"], "enum")
+        self.assertEqual(items[0]["options"],
+                         ["none", "draft-mtp", "draft-dflash", "ngram-cache", "draft-future"])
+        self.assertTrue(items[0]["multiple"])
+        self.assertEqual(items[0]["separator"], ",")
+
+    def test_single_enum_is_not_marked_multiple(self):
+        text = "--pooling {none,mean,cls}  pooling strategy\n"
+        items = argspec.parse_help(text)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["type"], "enum")
+        self.assertFalse(items[0]["multiple"])
+
+    def test_comma_separated_placeholder_is_marked_multiple_without_enum(self):
+        text = "--tensor-split N0,N1,N2,...  fraction of the model to offload to each GPU\n"
+        items = argspec.parse_help(text)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["type"], "str")
+        self.assertTrue(items[0]["multiple"])
+
 
 if __name__ == "__main__":
     unittest.main()
