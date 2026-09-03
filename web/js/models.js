@@ -470,7 +470,26 @@ function syncEditor(row, m) {
     const sig = build(m);
     if (row[key] !== sig) { setHTML(el, sig); row[key] = sig; }
   }
+  wirePresetActions(row);
   syncAutoTune(m);
+}
+
+// Preset buttons live in a polling-refreshed region. Bind them to their row
+// directly so a click cannot be lost to another delegated event handler.
+function wirePresetActions(row) {
+  const save = $("[data-preset-save]", row);
+  if (save) save.onclick = async event => {
+    event.preventDefault();
+    event.stopPropagation();
+    await savePresetFrom(save.dataset.presetSave, row);
+  };
+  const overwrite = $("[data-preset-overwrite]", row);
+  if (overwrite) overwrite.onclick = event => {
+    event.preventDefault();
+    event.stopPropagation();
+    overwritePresetFrom(overwrite.dataset.presetOverwrite,
+                        overwrite.dataset.presetOverwriteName, row);
+  };
 }
 
 /* ---------- quick-load + sequential queue ---------- */
@@ -640,8 +659,9 @@ async function bindPreset(model, name) {
     delete diagCache[model]; invalidateKnobs(); await refresh(true);
   } else toast(r.error || "bind failed", "err");
 }
-async function savePresetFrom(model) {
-  const row = $(`.row[data-id="${CSS.escape(model)}"]`); if (!row) return;
+async function savePresetFrom(model, row) {
+  row ||= $(`.row[data-id="${CSS.escape(model)}"]`);
+  if (!row) { toast("Could not find the model editor", "err"); return; }
   const settings = rowSettings(row, {dropBlank: true});
   if (!Object.keys(settings).length) { toast("No knobs set to save", "err"); return; }
   const names = Object.keys(configOfPresets(model));
@@ -662,8 +682,13 @@ async function savePresetFrom(model) {
     input.focus();
     input.select();
   }
+  const form = $("[data-preset-save-form]");
+  if (form) form.onsubmit = async event => {
+    event.preventDefault();
+    await confirmPresetSave(model, row);
+  };
 }
-async function confirmPresetSave(model) {
+async function confirmPresetSave(model, row) {
   const input = $("#preset-save-name");
   const name = (input?.value || "").trim();
   if (!name) {
@@ -671,7 +696,8 @@ async function confirmPresetSave(model) {
     input?.focus();
     return;
   }
-  const row = $(`.row[data-id="${CSS.escape(model)}"]`); if (!row) return;
+  row ||= $(`.row[data-id="${CSS.escape(model)}"]`);
+  if (!row) { toast("Could not find the model editor", "err"); return; }
   const settings = rowSettings(row, {dropBlank: true});
   if (!Object.keys(settings).length) { toast("No knobs set to save", "err"); return; }
   const r = await api("/api/presets/save", {model, name, settings});
@@ -684,13 +710,25 @@ async function confirmPresetSave(model) {
     input?.focus();
   }
 }
-async function overwritePresetFrom(model, name) {
-  const row = $(`.row[data-id="${CSS.escape(model)}"]`); if (!row) return;
+function overwritePresetFrom(model, name, row) {
+  row ||= $(`.row[data-id="${CSS.escape(model)}"]`);
+  if (!row) { toast("Could not find the model editor", "err"); return; }
   const settings = rowSettings(row, {dropBlank: true});
   if (!Object.keys(settings).length) { toast("No knobs set to save", "err"); return; }
-  if (!confirm(`Overwrite preset "${name}" with the current knob values?`)) return;
+  showModal("Overwrite bound preset", `<div class="note">Replace <code>${esc(name)}</code> with the current knob values for <code>${esc(model)}</code>?</div>
+    <div class="actions" style="margin-top:14px">
+      <button type="button" class="primary" id="preset-overwrite-confirm">Overwrite preset</button>
+      <button type="button" class="ghost" data-mclose>Cancel</button>
+    </div>`);
+  const confirmButton = $("#preset-overwrite-confirm");
+  if (confirmButton) confirmButton.onclick = async () => {
+    confirmButton.disabled = true;
+    await confirmPresetOverwrite(model, name, settings);
+  };
+}
+async function confirmPresetOverwrite(model, name, settings) {
   const r = await api("/api/presets/save", {model, name, settings});
-  if (r.ok) { toast(`Overwrote preset "${name}"`, "ok"); await refresh(true); }
+  if (r.ok) { closeModal(); toast(`Overwrote preset "${name}"`, "ok"); await refresh(true); }
   else toast(r.error || "overwrite failed", "err");
 }
 
@@ -910,13 +948,6 @@ export function initModels() {
   };
   document.addEventListener("input", handleKnobMutation);
   document.addEventListener("change", handleKnobMutation);
-  document.addEventListener("submit", async e => {
-    const form = e.target.closest("[data-preset-save-form]");
-    if (!form) return;
-    e.preventDefault();
-    await confirmPresetSave(form.dataset.presetSaveForm);
-  });
-
   // keyboard map: 1-7 tabs, / search, j/k or arrows navigate, Enter expand,
   // L load, U unload, S save the open model. Esc closes a modal / clears search.
   document.addEventListener("keydown", e => {
@@ -1004,15 +1035,6 @@ export function initModels() {
       if (pdel) { await api("/api/presets/delete", {model: pBind.dataset.presetBindModel, name: pdel.dataset.presetDel}); toast("Preset deleted","ok"); await refresh(true); return; }
       await bindPreset(pBind.dataset.presetBindModel, pBind.dataset.presetBind); return;
     }
-    const pOverwrite = e.target.closest("[data-preset-overwrite]");
-    if (pOverwrite) {
-      e.stopPropagation();
-      await overwritePresetFrom(pOverwrite.dataset.presetOverwrite,
-                                pOverwrite.dataset.presetOverwriteName);
-      return;
-    }
-    const pSave = e.target.closest("[data-preset-save]");
-    if (pSave) { e.stopPropagation(); await savePresetFrom(pSave.dataset.presetSave); return; }
     // autotune
     const tRef = e.target.closest("[data-tune-refine]");
     if (tRef) { e.stopPropagation(); await handleTuneRefine(tRef.dataset.tuneRefine); return; }

@@ -65,3 +65,16 @@ class TestAutoTuneFrontendBoundary(unittest.TestCase):
         with open(os.path.join(ROOT, "web", "js", "models.js"), encoding="utf-8") as handle: models = handle.read()
         self.assertIn('type="button" data-preset-save', models)
         self.assertIn('type="button" data-preset-overwrite', models)
+
+    def test_preset_actions_are_bound_to_the_rendered_row(self):
+        with open(os.path.join(ROOT, "web", "js", "models.js"), encoding="utf-8") as handle: models = handle.read()
+        self.assertIn("function wirePresetActions(row)", models)
+        self.assertIn("wirePresetActions(row);", models)
+        self.assertIn("await savePresetFrom(save.dataset.presetSave, row)", models)
+        self.assertIn("overwritePresetFrom(overwrite.dataset.presetOverwrite,", models)
+
+    def test_overwrite_uses_the_app_modal_instead_of_native_confirm(self):
+        with open(os.path.join(ROOT, "web", "js", "models.js"), encoding="utf-8") as handle: models = handle.read()
+        self.assertIn('showModal("Overwrite bound preset"', models)
+        self.assertIn('id="preset-overwrite-confirm"', models)
+        self.assertNotIn('confirm(`Overwrite preset', models)
