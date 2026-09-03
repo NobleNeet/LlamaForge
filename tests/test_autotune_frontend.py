@@ -53,3 +53,15 @@ class TestAutoTuneFrontendBoundary(unittest.TestCase):
         self.assertIn('item.status === "failed" ? "✕"', autotune)
         self.assertIn('item.status === "not_run"', autotune)
         self.assertIn('terminal.has(status)', autotune)
+
+    def test_preset_save_uses_modal_instead_of_native_prompt(self):
+        with open(os.path.join(ROOT, "web", "js", "models.js"), encoding="utf-8") as handle: models = handle.read()
+        self.assertIn('showModal("Save preset"', models)
+        self.assertIn('data-preset-save-form', models)
+        self.assertIn('confirmPresetSave(', models)
+        self.assertNotIn('prompt("Preset name', models)
+
+    def test_preset_bar_buttons_are_explicit_non_submit_buttons(self):
+        with open(os.path.join(ROOT, "web", "js", "models.js"), encoding="utf-8") as handle: models = handle.read()
+        self.assertIn('type="button" data-preset-save', models)
+        self.assertIn('type="button" data-preset-overwrite', models)

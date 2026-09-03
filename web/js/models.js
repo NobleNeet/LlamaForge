@@ -563,6 +563,10 @@ function showModal(title, inner) {
   setHTML($("#modal-root"), `<div class="modal-bg"><div class="modal">
     <span class="mclose" data-mclose>&times;</span><h3>${esc(title)}</h3>${inner}</div></div>`);
 }
+function configOfPresets(model) {
+  const scoped = (cfgOf().model_presets || {})[model];
+  return scoped || cfgOf().presets || {};
+}
 
 /* ---------- client config ---------- */
 function endpointFor(m) {
@@ -586,8 +590,7 @@ function openClientConfig(id) {
 
 /* ---------- presets ---------- */
 function presetBar(m) {
-  const all = cfgOf().model_presets || {};
-  const P = all[m.id] || cfgOf().presets || {};
+  const P = configOfPresets(m.id);
   const bound = (cfgOf().preset_bindings || {})[m.id] || "";
   const chips = Object.keys(P).map(n => {
     const isBound = n === bound;
@@ -596,13 +599,13 @@ function presetBar(m) {
       + `${esc(n)}<span class="px" data-preset-del="${esc(n)}" title="delete preset">&times;</span></span>`;
   }).join("");
   const overwrite = bound
-    ? `<button class="qbtn" data-preset-overwrite="${esc(m.id)}" data-preset-overwrite-name="${esc(bound)}" title="overwrite the currently bound preset with this model's current knob values">Overwrite bound</button>`
+    ? `<button class="qbtn" type="button" data-preset-overwrite="${esc(m.id)}" data-preset-overwrite-name="${esc(bound)}" title="overwrite the currently bound preset with this model's current knob values">Overwrite bound</button>`
     : "";
   return `<div class="presetbar">
     <span style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)">Presets</span>
     ${chips||'<span class="note" style="margin:0">none saved yet</span>'}
     ${overwrite}
-    <button class="qbtn" data-preset-save="${esc(m.id)}" title="save this model's set knobs as a named preset">Save current +</button>
+    <button class="qbtn" type="button" data-preset-save="${esc(m.id)}" title="save this model's set knobs as a named preset">Save current +</button>
   </div>`;
 }
 function applyPresetSettingsToRow(row, settings) {
@@ -639,19 +642,51 @@ async function bindPreset(model, name) {
 }
 async function savePresetFrom(model) {
   const row = $(`.row[data-id="${CSS.escape(model)}"]`); if (!row) return;
-  const settings = {};
-  $$("[data-k]", row).forEach(el => { const v = knobValue(el); if (v !== "") settings[el.dataset.k] = v; });
+  const settings = rowSettings(row, {dropBlank: true});
   if (!Object.keys(settings).length) { toast("No knobs set to save", "err"); return; }
-  const name = prompt("Preset name (e.g. coding, creative, fast):");
-  if (!name || !name.trim()) return;
-  const r = await api("/api/presets/save", {model, name: name.trim(), settings});
-  if (r.ok) { toast(`Saved preset "${name.trim()}"`, "ok"); await refresh(true); }
-  else toast(r.error || "save failed", "err");
+  const names = Object.keys(configOfPresets(model));
+  showModal("Save preset", `<form data-preset-save-form="${esc(model)}">
+    <div class="note">Save the current knob values for <code>${esc(model)}</code> as a named preset.</div>
+    <div class="fld" style="margin:12px 0 0">
+      <label for="preset-save-name">Preset name</label>
+      <input id="preset-save-name" name="name" autocomplete="off" placeholder="e.g. coding, creative, fast">
+    </div>
+    ${names.length ? `<div class="note" style="margin-top:10px">Existing presets: ${esc(names.join(", "))}</div>` : ""}
+    <div class="actions" style="margin-top:14px">
+      <button type="submit" class="primary">Save preset</button>
+      <button type="button" class="ghost" data-mclose>Cancel</button>
+    </div>
+  </form>`);
+  const input = $("#preset-save-name");
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+async function confirmPresetSave(model) {
+  const input = $("#preset-save-name");
+  const name = (input?.value || "").trim();
+  if (!name) {
+    toast("Preset name is required", "err");
+    input?.focus();
+    return;
+  }
+  const row = $(`.row[data-id="${CSS.escape(model)}"]`); if (!row) return;
+  const settings = rowSettings(row, {dropBlank: true});
+  if (!Object.keys(settings).length) { toast("No knobs set to save", "err"); return; }
+  const r = await api("/api/presets/save", {model, name, settings});
+  if (r.ok) {
+    closeModal();
+    toast(`Saved preset "${name}"`, "ok");
+    await refresh(true);
+  } else {
+    toast(r.error || "save failed", "err");
+    input?.focus();
+  }
 }
 async function overwritePresetFrom(model, name) {
   const row = $(`.row[data-id="${CSS.escape(model)}"]`); if (!row) return;
-  const settings = {};
-  $$("[data-k]", row).forEach(el => { const v = knobValue(el); if (v !== "") settings[el.dataset.k] = v; });
+  const settings = rowSettings(row, {dropBlank: true});
   if (!Object.keys(settings).length) { toast("No knobs set to save", "err"); return; }
   if (!confirm(`Overwrite preset "${name}" with the current knob values?`)) return;
   const r = await api("/api/presets/save", {model, name, settings});
@@ -875,6 +910,12 @@ export function initModels() {
   };
   document.addEventListener("input", handleKnobMutation);
   document.addEventListener("change", handleKnobMutation);
+  document.addEventListener("submit", async e => {
+    const form = e.target.closest("[data-preset-save-form]");
+    if (!form) return;
+    e.preventDefault();
+    await confirmPresetSave(form.dataset.presetSaveForm);
+  });
 
   // keyboard map: 1-7 tabs, / search, j/k or arrows navigate, Enter expand,
   // L load, U unload, S save the open model. Esc closes a modal / clears search.
