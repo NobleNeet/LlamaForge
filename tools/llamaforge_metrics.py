@@ -618,7 +618,9 @@ class Collector:
 
         ev["prefill"] = dict(st["prompt"])
         ev["decode"] = dict(st["eval"])
-        ev["context"] = {"tokens_at_decode_start": st["prompt"]["tokens"]}
+        # Prefill tokens exclude any reused KV/prompt-cache context, so the
+        # decode-start context length is unknown unless logged explicitly.
+        ev["context"] = {"tokens_at_decode_start": None}
         if st["draft"] is not None:
             ev["speculative"] = dict(st["draft"])
         runtime = {}
