@@ -83,6 +83,9 @@ function predictBadge(p) {
 export function loadDiscover() {
   if (discoverLoaded) return;
   discoverLoaded = true;
+  // The Download progress card is placed directly under the search card and
+  // above #hub-results on purpose: a search lists dozens of repos, so a card
+  // after the results would only be reachable by scrolling past all of them.
   setHTML($("#view-discover"), `
     <div class="card"><h3>Discover models on huggingface.co</h3>
       <div class="toolbar">
@@ -109,7 +112,6 @@ export function loadDiscover() {
       </div>
       <div class="note" id="hub-dir-note"></div>
     </div>
-    <div id="hub-results"></div>
     <div class="card" id="hub-dlcard" style="display:none"><h3>Download</h3>
       <div class="kv"><span class="k">saved to</span><span class="v" id="dl-dest" style="word-break:break-all">-</span></div>
       <div class="kv"><span class="k">file</span><span class="v" id="dl-file">-</span></div>
@@ -123,7 +125,8 @@ export function loadDiscover() {
       <div class="actions" id="dl-done" style="display:none">
         <button class="primary" id="dl-add">Add to my models</button><span class="msg" id="dl-msg"></span>
       </div>
-    </div>`);
+    </div>
+    <div id="hub-results"></div>`);
   $("#dl-cancel").onclick = async () => { const r = await api("/api/hub/cancel", {}); toast(r.ok?"Cancelling...":"No download running", r.ok?"ok":"err"); };
   $("#dl-pause").onclick = async () => { const r = await api("/api/hub/pause", {}); toast(r.ok?"Pausing...":"No download running", r.ok?"ok":"err"); };
   $("#dl-resume").onclick = async () => {
