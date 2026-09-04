@@ -81,6 +81,15 @@ ARGS_BLOCK_HEADER_RE = re.compile(
     r"spawning\s+server\s+instance\s+with\s+args:", re.IGNORECASE)
 # A single CLI flag with an optional (same-line) value.
 CLI_ARG_TOKEN_RE = re.compile(r"--([A-Za-z0-9-]+)(?:\s+(\S+))?")
+INTEGER_VALUE_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
+FLOAT_VALUE_RE = re.compile(
+    r"^-?(?:(?:0|[1-9][0-9]*)\.[0-9]+|(?:0|[1-9][0-9]*)[eE][+-]?[0-9]+|"
+    r"(?:0|[1-9][0-9]*)\.[0-9]+[eE][+-]?[0-9]+)$"
+)
+
+# llama.cpp accepts multiple speculative decoding modes. This remains a list
+# even with one value so downstream consumers have a stable representation.
+MULTI_VALUE_PARAMETER_KEYS = {"spec_type"}
 
 
 
@@ -115,29 +124,47 @@ def _add_cli_arg(cli: dict, flag: str, value: str) -> None:
 def _normalize_cli_params(cli: dict) -> "dict | None":
     """Build the typed ``parameters`` view from raw CLI args.
 
-    Only keys whose llama.cpp meaning is known are coerced to typed values and
-    emitted. Unknown / future flags are intentionally dropped here (they are
-    preserved verbatim in ``cli_parameters`` so nothing is ever lost).
+    Every recorded option is retained with its leading dashes converted to a
+    BI-friendly snake_case key. Values are converted only when their lexical
+    form is unambiguous. Raw CLI spelling remains available in
+    ``cli_parameters``.
     """
-    int_keys = {"ctx-size": "ctx_size",
-                "n-gpu-layers": "n_gpu_layers",
-                "spec-draft-n-max": "spec_draft_n_max"}
     norm = {}
     for raw_flag, value in cli.items():
-        key = raw_flag[2:]  # strip leading "--"
-        if key in int_keys:
-            if isinstance(value, list):
-                # keep the last known value; lists are not typed
-                value = value[-1]
-            try:
-                norm[int_keys[key]] = int(value)
-            except (TypeError, ValueError):
-                pass
-        elif key == "flash-attn":
-            norm["flash_attn"] = value
-        elif key == "spec-type":
-            norm["spec_type"] = [value] if isinstance(value, str) else value
+        key = raw_flag.lstrip("-").replace("-", "_")
+        preserve_numeric_text = _is_identifier_parameter(key)
+        if isinstance(value, list):
+            normalized = [_normalize_cli_value(item, preserve_numeric_text)
+                          for item in value]
+        else:
+            normalized = _normalize_cli_value(value, preserve_numeric_text)
+        if key in MULTI_VALUE_PARAMETER_KEYS and not isinstance(normalized, list):
+            normalized = [normalized]
+        norm[key] = normalized
     return norm or None
+
+
+def _is_identifier_parameter(key: str) -> bool:
+    """Whether numeric-looking values for a generic identifier must stay text."""
+    return key == "id" or key.endswith("_id") or "alias" in key or "path" in key
+
+
+def _normalize_cli_value(value, preserve_numeric_text: bool):
+    """Convert a raw CLI scalar only where doing so cannot lose its meaning."""
+    if isinstance(value, bool) or not isinstance(value, str):
+        return value
+    lowered = value.lower()
+    if lowered in {"true", "on"}:
+        return True
+    if lowered in {"false", "off"}:
+        return False
+    if preserve_numeric_text or not value or "/" in value or "\\" in value:
+        return value
+    if INTEGER_VALUE_RE.fullmatch(value):
+        return int(value)
+    if FLOAT_VALUE_RE.fullmatch(value):
+        return float(value)
+    return value
 
 
 def dedup_key(event: dict) -> str:
@@ -215,7 +242,7 @@ class LoadSession:
     kv_unified: "str | None" = None
     mtp: bool = False
     cli: dict = field(default_factory=dict)
-    # Normalized typed view of the CLI args (known keys only).
+    # Normalized typed view of all CLI args.
     cli_norm: dict = field(default_factory=dict)
     # Relative-time (min.sec.mmm.us) markers for load duration calc; absolute
     # timestamps are never available from the logs.
@@ -339,7 +366,7 @@ class Collector:
         if session.n_slots is not None:
             params["n_slots"] = session.n_slots
         if session.kv_unified is not None:
-            params["kv_cache"] = session.kv_unified
+            params["kv_cache"] = _normalize_cli_value(session.kv_unified, False)
         if session.mtp:
             params["mtp"] = True
         return params or None
