@@ -259,6 +259,14 @@ function applyKnobFilter(root) {
     const hitSet = !onlySet || f.classList.contains("set");
     f.style.display = (hitQ && hitSet) ? "" : "none";
   });
+  // Expand only the groups that still show at least one matching field, collapse
+  // the rest. With no active filter, fall back to the default (first group open).
+  const filterActive = !!kquery || onlySet;
+  $$(".kgroup", root).forEach((group, i) => {
+    if (!filterActive) { group.toggleAttribute("open", i === 0); return; }
+    const hasMatch = $$(".fld", group).some(f => f.style.display !== "none");
+    group.toggleAttribute("open", hasMatch);
+  });
 }
 function filterKnobs(inp) {
   kquery = inp.value.trim().toLowerCase();
