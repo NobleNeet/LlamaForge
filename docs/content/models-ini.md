@@ -59,6 +59,24 @@ Beyond these, any `llama-server` flag can be set as a key — the dashboard's Ad
 
 `config.apply_ctx_defaults()` keeps `ctx-size` values sane across the file: it sets `[*] ctx-size = 150000` (the `gguf.CTX_FULL` baseline), and for any model whose GGUF-reported trained context length is below that, writes an explicit per-model `ctx-size` override capped to what the model actually supports (never over-extending it). Models whose trained length can't be read are left untouched, and a model that already supports the full 150000 has any smaller per-model override removed so it falls back to the global. This runs on server startup and after scan/download operations that add new models.
 
+## Auto-wired vision projectors
+
+Keep each model family and its matching `mmproj*.gguf` in the same directory.
+Scanning or registering a download attaches the projector to the model's
+`mmproj` setting without relying on an architecture allowlist. This also works
+for multiple quantizations of the same model and sharded GGUFs. Nonempty
+projectors smaller than the normal 50 MB scan threshold are included.
+
+Exactly one distinct projector in the directory is attached automatically. If
+there are several, set `mmproj` explicitly in the model section or keep the
+desired model/projector pair in its own directory. Keep unrelated model families
+in separate directories; sharing a directory does not establish compatibility.
+Rescans and download registration preserve an existing `mmproj` setting when
+the model path has not changed.
+
+For models already registered without a projector, rescan and apply the results
+in Setup. Unload and reload any previously loaded model to use the new setting.
+
 ## Auto-wired MTP draft models
 
 When a scan finds an `mtp-*` GGUF next to a model, it attaches it the way `mmproj` is attached: the sibling's path is written as `spec-draft-model` on the parent section. It additionally sets `spec-type = draft-mtp` **only** when the sidecar declares NextN layers (`gguf.has_nextn()` — the property llama.cpp gates MTP on), so a sidecar the current build can't use is attached but left inert rather than breaking the load. This wiring is **additive**: because `spec-type` is also how you select `ngram-*` speculation, a re-scan never overwrites a `spec-type` (or `spec-draft-model`) you already set by hand.

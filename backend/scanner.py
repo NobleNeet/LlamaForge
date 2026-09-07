@@ -4,7 +4,7 @@ model entries the router understands. Portable: no hardcoded paths.
 Rules:
 - skip mmproj* (vision projectors; attached to their model instead)
 - skip recycle bin and obvious non-model shards handling
-- attach an mmproj sibling only to vision-capable models
+- attach an unambiguous mmproj sibling (one model family per directory)
 - treat *embed* models as embedding endpoints
 - multi-shard sets (foo-00001-of-00005.gguf) collapse to the first shard
 - disambiguate duplicate names by walking up parent folders until unique
@@ -13,12 +13,6 @@ import os, re
 from collections import defaultdict
 
 import osplat
-
-# Architectures known to use an mmproj sidecar (vision/multimodal).
-_VISION_ARCHES = frozenset({
-    "clip", "mllama", "qwen2_vl", "llava", "moondream", "nanollava",
-    "idefics3", "minicpm_v", "molmo", "pixtral", "granite_vision",
-})
 
 def _windows_drives():
     import string, ctypes
@@ -66,7 +60,8 @@ def find_ggufs(roots, min_mb=50):
                     shard_sets[key].append(full)
                     continue
                 try:
-                    if os.path.getsize(full) >= min_bytes:
+                    size = os.path.getsize(full)
+                    if size >= min_bytes or (_is_mmproj(full) and size > 0):
                         hits.append(full)
                 except OSError:
                     pass
@@ -101,11 +96,11 @@ def _shard(p):
 
 def build_entries(paths):
     """Return list of {id, model, mmproj?, embeddings?, gib, existing_id?}."""
-    mmproj_by_dir = {}
+    mmproj_by_dir = defaultdict(set)
     mtp_by_dir = {}
     for p in paths:
         if _is_mmproj(p):
-            mmproj_by_dir[os.path.dirname(p)] = p
+            mmproj_by_dir[os.path.dirname(p)].add(p)
         elif _is_mtp(p):
             mtp_by_dir[os.path.dirname(p)] = p
 
@@ -180,13 +175,12 @@ def build_entries(paths):
         except OSError:
             gib = 0
         e = {"id": id_map[p], "model": p.replace("\\", "/"), "gib": gib}
-        # Only attach mmproj if the model is vision-capable.
-        mm = mmproj_by_dir.get(os.path.dirname(p))
-        if mm:
-            from gguf import metadata
-            arch = (metadata(p) or {}).get("architecture", "")
-            if arch in _VISION_ARCHES:
-                e["mmproj"] = mm.replace("\\", "/")
+        # A model family and its matching projector live together. The text
+        # GGUF's architecture alone cannot reliably identify vision support.
+        # Do not choose arbitrarily when several projectors share a directory.
+        projectors = mmproj_by_dir.get(os.path.dirname(p), set())
+        if len(projectors) == 1:
+            e["mmproj"] = next(iter(projectors)).replace("\\", "/")
         # Attach an mtp-* sibling as a speculative draft model. Attaching alone
         # is inert; only enable spec-type=draft-mtp when the sidecar actually
         # declares NextN layers, the signal llama.cpp itself gates on.

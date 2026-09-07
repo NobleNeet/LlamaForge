@@ -788,16 +788,24 @@ def _force_max_gpu_layers(clean):
 def _register_ggufs_beside(paths):
     """Add scanner-derived entries to models.ini and reload the router."""
     entries = scanner.build_entries(paths)
+    existing = config.read_sections()
     for e in entries:
         keys = {"model": e["model"]}
-        if e.get("mmproj"):
-            keys["mmproj"] = e["mmproj"]
+        keys.update(_scanned_mmproj_settings(e, existing.get(e["id"], {})))
         if e.get("embeddings"):
             keys["embeddings"] = "true"
         config.set_keys(e["id"], keys)
     config.apply_ctx_defaults()
     router("/models?reload=1")
     return entries
+
+
+def _scanned_mmproj_settings(entry, existing):
+    """Keep an explicit projector for the same model; replace stale bindings
+    when a section is repointed to a different model file."""
+    if existing.get("model") == entry["model"] and existing.get("mmproj"):
+        return {}
+    return {"mmproj": entry.get("mmproj") or None}
 
 
 # =============================================================== GET handlers
@@ -1489,14 +1497,13 @@ def post_scan_apply(req):
     existing = config.read_sections()
     for e in entries:
         keys = {"model": e["model"]}
-        # Always pass mmproj/embeddings so stale values are cleared on re-scan.
-        keys["mmproj"] = e.get("mmproj") or None
+        sect = existing.get(e["id"], {})
+        keys.update(_scanned_mmproj_settings(e, sect))
         keys["embeddings"] = "true" if e.get("embeddings") else None
-        # MTP wiring is ADDITIVE, unlike mmproj: spec-type is also how the user
+        # MTP wiring is ADDITIVE: spec-type is also how the user
         # selects ngram-* speculation, so clearing it on re-scan would wipe a
         # hand-set mode. Only fill these when the section doesn't already carry
         # its own value.
-        sect = existing.get(e["id"], {})
         if e.get("draft_model") and not sect.get("spec-draft-model"):
             keys["spec-draft-model"] = e["draft_model"]
         if e.get("draft_mtp") and not sect.get("spec-type"):
