@@ -38,7 +38,7 @@ The tab also surfaces `hardware.recommend()`'s detected CPU/GPU/backends (shared
 2. Click **Install** next to a missing tool to install it with your OS's package manager (Windows: winget, falling back to choco; macOS: Homebrew). On Linux, copy the shown command into a terminal yourself — the dashboard never runs `sudo`.
 3. Review **Detected Hardware** — your CPU and any GPUs found, shared with the Build tab's flag recommendations.
 4. Under **Scan Drives for Models**, add zero or more explicit directories to search. Leave the list empty to use the platform-default roots.
-5. Click **Scan for GGUF models** to walk those directories for `.gguf` files; review the results and apply the ones you want registered.
+5. Click **Scan for GGUF models** to walk those directories for `.gguf` files. Missing `mmproj` settings for already registered model paths are saved immediately and reported as updated; unload and reload those models if already loaded. Review and apply new models to register them.
 6. Click **Check for deleted models** to find registry entries whose backing file no longer exists on disk, then prune the ones you confirm.
 7. Optionally pick a model under **Startup** to auto-load when LlamaForge launches.
 8. Optionally raise **Models kept loaded at once** (or set `0`) under **Startup** to hold more than one model resident. Confirm the restart when prompted — it unloads whatever is loaded, and per-model usage stats are only exact at `1`.

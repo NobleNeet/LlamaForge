@@ -74,8 +74,12 @@ in separate directories; sharing a directory does not establish compatibility.
 Rescans and download registration preserve an existing `mmproj` setting when
 the model path has not changed.
 
-For models already registered without a projector, rescan and apply the results
-in Setup. Unload and reload any previously loaded model to use the new setting.
+For models already registered without a projector, click **Scan for GGUF models**
+in Setup. The scan saves missing projector settings for existing model paths
+immediately, even when there are no new models to add. The results list the
+updated models. Existing projector and tuning settings are preserved. Unload
+and reload any previously loaded model to use the new setting. New models still
+require the **Add models to config** action.
 
 ## Auto-wired MTP draft models
 

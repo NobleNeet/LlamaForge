@@ -43,7 +43,7 @@ These are the endpoints external coding agents (Claude Code, Codex, etc.) talk t
 | POST | `/api/autotune/recommend` | Recommend knob values for a model given hardware constraints. Body: `{model, intent}` where `intent` is `balanced`, `speed`, `context`, or `coding`. Returns `{knobs, reasons}`. |
 | POST | `/api/autotune/refine` | Auto-generate knob recommendations, benchmark candidates with real completion requests (~200 tokens), and return the fastest config. Body: `{model, intent}` (knobs optional; generated if omitted). Returns `{knobs, measurements: {candidates: [{knobs, tok_s}], chosen_tok_s}}`. |
 | GET | `/api/scan/missing` | List `models.ini` entries whose GGUF file no longer exists on disk. |
-| POST | `/api/scan` | Scan directories (`model_dirs` by default) for GGUF files. |
+| POST | `/api/scan` | Scan directories (`model_dirs` by default) for GGUF files and save missing sibling projector settings for registered model paths. Returns `updated` model IDs alongside `entries`, `roots`, and `removed`. |
 | POST | `/api/scan/apply` | Register scanned entries into `models.ini` and reapply ctx-size defaults. |
 | POST | `/api/scan/prune` | Remove `models.ini` sections whose file is missing (unloading first if loaded). |
 

@@ -1489,7 +1489,33 @@ def post_scan(req):
     roots = _normalized_scan_roots(req.body.get("roots"))
     used = roots or scanner.list_drives()
     removed = _remove_models([row["id"] for row in _scan_prune_candidates(used)], roots=used)
-    return 200, {"entries": scanner.scan(used), "roots": used, "removed": removed}
+    entries = scanner.scan(used)
+    updated = _repair_scanned_projectors(entries)
+    return 200, {"entries": entries, "roots": used, "removed": removed,
+                 "updated": updated}
+
+
+def _repair_scanned_projectors(entries):
+    """Setup only applies NEW entries. Repair missing projectors for existing
+    model paths during the scan itself, without reapplying tuning defaults."""
+    projectors = {
+        os.path.normcase(os.path.abspath(e["model"])): e["mmproj"]
+        for e in entries if e.get("model") and e.get("mmproj")
+    }
+    if not projectors:
+        return []
+    updated = []
+    for mid, settings in config.read_sections().items():
+        model = settings.get("model")
+        if mid == "*" or not model or settings.get("mmproj"):
+            continue
+        projector = projectors.get(os.path.normcase(os.path.abspath(model)))
+        if projector:
+            config.set_keys(mid, {"mmproj": projector})
+            updated.append(mid)
+    if updated:
+        router("/models?reload=1")
+    return updated
 
 
 def post_scan_apply(req):

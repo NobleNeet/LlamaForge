@@ -407,15 +407,16 @@ async function scanDrives() {
   const known = new Set(models().map(m => m.id));
   const fresh = r.entries.filter(e => !known.has(e.id));
   const removed = (r.removed || []).length;
+  const updated = r.updated || [];
   msg.className = "msg ok";
-  msg.textContent = removed
-    ? `${r.entries.length} found, ${fresh.length} new, ${removed} removed`
-    : `${r.entries.length} found, ${fresh.length} new`;
+  msg.textContent = `${r.entries.length} found, ${fresh.length} new, ${updated.length} updated`
+    + (removed ? `, ${removed} removed` : "");
   const scanned = (r.roots || roots).length
     ? `<div class="note">Scanned: ${esc((r.roots || roots).join(", "))}</div>`
     : `<div class="note">Scanned the default system roots.</div>`;
   const pruned = removed ? `<div class="note" style="margin-top:8px">${esc(removed)} configured model(s) outside the current scan scope were removed.</div>` : "";
-  setHTML($("#scan-out"), `${scanned}${pruned}<div class="note" style="margin-top:8px">${esc(fresh.length)} new models not yet in your config:</div>
+  const repaired = updated.length ? `<div class="note" style="margin-top:8px">Vision projectors saved for: ${updated.map(esc).join(", ")}. Unload and reload these models if they are already loaded to enable image input.</div>` : "";
+  setHTML($("#scan-out"), `${scanned}${pruned}${repaired}<div class="note" style="margin-top:8px">${esc(fresh.length)} new models not yet in your config:</div>
     <div class="list" style="margin-top:10px">${fresh.map(e=>`<div class="row"><div class="rhead" style="cursor:default;grid-template-columns:1fr auto">
       <span class="mid">${esc(e.id)}${e.mmproj?'<span class="tag vis">vision</span>':''}${e.embeddings?'<span class="tag">embed</span>':''}</span>
       <span class="ctxpill">${esc(e.gib)} GiB</span></div></div>`).join("")||'<div class="note">nothing new</div>'}</div>
@@ -426,6 +427,7 @@ async function scanDrives() {
     am.className = "msg ok"; am.textContent = `added ${rr.added}`;
     toast("Models added", "ok"); emit("refresh", true);
   };
+  if (updated.length) emit("refresh", true);
 }
 
 async function checkMissing() {

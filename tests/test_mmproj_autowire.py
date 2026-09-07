@@ -124,3 +124,76 @@ class ProjectorRegistrationTest(unittest.TestCase):
         section = self.register("scan", entry)
         self.assertEqual(section["model"], model)
         self.assertEqual(section["mmproj"], projector)
+
+    def make_scan_pair(self):
+        model = os.path.join(self.folder, "gemma-4-31B-it-QAT-Q4_0.gguf")
+        projector = os.path.join(self.folder, "mmproj-gemma-4-31B-it-QAT-BF16.gguf")
+        for path, size in ((model, 50 * 1024 * 1024), (projector, 1024)):
+            with open(path, "wb") as stream:
+                stream.truncate(size)
+        return model, projector
+
+    def rescan(self):
+        # The Setup page calls /api/scan even when it has no new entries to
+        # send to /api/scan/apply. Exercise that actual request boundary.
+        with mock.patch.object(routes, "_scan_prune_candidates", return_value=[]), \
+             mock.patch.object(routes, "_remove_models", return_value=[]):
+            status, out = routes.post_scan(routes.Req(body={"roots": [self.folder]}))
+        self.assertEqual(status, 200)
+        return out
+
+    def test_rescan_repairs_registered_model_without_apply(self):
+        model, projector = self.make_scan_pair()
+        mid = "gemma-4-31b-it-qat-q4-0"
+        settings = {"model": model, "ctx-size": "100000", "temp": "0.7"}
+        config.set_keys(mid, settings)
+        out = self.rescan()
+        self.assertEqual(config.read_sections()[mid], dict(settings, mmproj=projector))
+        self.assertEqual(out["updated"], [mid])
+        routes.router.assert_called_once_with("/models?reload=1")
+        config.apply_ctx_defaults.assert_not_called()
+
+    def test_rescan_matches_custom_model_id_by_file_path(self):
+        model, projector = self.make_scan_pair()
+        config.set_keys("my-vision-model", {"model": model})
+        out = self.rescan()
+        self.assertEqual(out["updated"], ["my-vision-model"])
+        sections = config.read_sections()
+        self.assertEqual(sections["my-vision-model"]["mmproj"], projector)
+        self.assertNotIn(out["entries"][0]["id"], sections)
+
+    def test_rescan_preserves_explicit_projector(self):
+        model, _ = self.make_scan_pair()
+        config.set_keys("custom", {"model": model, "mmproj": "/custom/projector.gguf"})
+        out = self.rescan()
+        self.assertEqual(config.read_sections()["custom"]["mmproj"], "/custom/projector.gguf")
+        self.assertEqual(out["updated"], [])
+        routes.router.assert_not_called()
+
+    def test_repeated_rescan_is_idempotent(self):
+        model, _ = self.make_scan_pair()
+        config.set_keys("custom", {"model": model})
+        self.rescan()
+        routes.router.reset_mock()
+        with mock.patch.object(config, "set_keys", wraps=config.set_keys) as write:
+            self.assertEqual(self.rescan()["updated"], [])
+        write.assert_not_called()
+        routes.router.assert_not_called()
+
+    def test_rescan_does_not_register_new_model_without_apply(self):
+        self.make_scan_pair()
+        out = self.rescan()
+        self.assertEqual(len(out["entries"]), 1)
+        self.assertEqual(out["updated"], [])
+        self.assertFalse(any(s.get("model") for s in config.read_sections().values()))
+        routes.router.assert_not_called()
+
+    def test_rescan_with_multiple_projectors_does_not_guess(self):
+        model, _ = self.make_scan_pair()
+        with open(os.path.join(self.folder, "mmproj-other.gguf"), "wb") as stream:
+            stream.write(b"other")
+        config.set_keys("custom", {"model": model})
+        out = self.rescan()
+        self.assertNotIn("mmproj", config.read_sections()["custom"])
+        self.assertEqual(out["updated"], [])
+        routes.router.assert_not_called()
