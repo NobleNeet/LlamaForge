@@ -27,6 +27,10 @@ order: 1
 | `wsl_distro` | string | `""` | WSL distro that runs vLLM. Empty string auto-picks the default distro. |
 | `vllm_port` | int | `8081` | Port vLLM serves on inside WSL (localhost-forwarded to Windows). |
 | `cmake_flags` | object | `{}` | Persisted CMake build flags, normally seeded from hardware detection. |
+| `build_auto_update_enabled` | bool | `false` | Enable daily idle-only llama.cpp pull and rebuild; configured in Build / Update. |
+| `build_auto_update_time` | string | `"03:00"` | Daily time in strict `HH:MM`, using the server's local timezone. Busy or missed times are skipped until the next day. |
+| `build_auto_update_last_date` | string | `""` | Scheduler-owned date of the last attempt, persisted to prevent repeat execution after restart. |
+| `build_auto_update_status` | string | `"Not run yet"` | Scheduler-owned result or skip reason displayed on the Build card. |
 | `cmake_backend` | string | `""` | Which backend (cuda/hip/vulkan/cpu) those `cmake_flags` were generated for, so stale flags for a different backend are recognised rather than reused. |
 | `git_remote` | string | `"https://github.com/ggml-org/llama.cpp"` | Remote used to clone/update the `llama.cpp` source. |
 | `active_engine` | string | `"llamacpp"` | Which llama-family binary the router uses: `"llamacpp"` or `"ikllama"`. |

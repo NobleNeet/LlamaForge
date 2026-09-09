@@ -132,7 +132,9 @@ def _api_idle_loop(poll_secs=15):
     while True:
         time.sleep(poll_secs)
         try:
-            _reap_api_idle_models()
+            with routes.BUILD_SCHEDULE.activity() as admitted:
+                if admitted:
+                    _reap_api_idle_models()
         except Exception as e:
             routes._dbg("api.idle.error", error=str(e))
 
@@ -207,9 +209,10 @@ def _preset_sync_loop(poll_secs=3):
         with _PRESET_SYNC_LOCK:
             pending = list(_PRESET_SYNC_PENDING)
         for model in pending:
-            if _reload_model_for_preset(model, source="deferred"):
-                with _PRESET_SYNC_LOCK:
-                    _PRESET_SYNC_PENDING.discard(model)
+            with routes.BUILD_SCHEDULE.activity() as admitted:
+                if admitted and _reload_model_for_preset(model, source="deferred"):
+                    with _PRESET_SYNC_LOCK:
+                        _PRESET_SYNC_PENDING.discard(model)
 
 
 def _allowed_hosts(bind_host, lan_ip=""):
@@ -386,6 +389,12 @@ class H(BaseHTTPRequestHandler):
         return self._run(handler, Req(qs=qs, headers=self._headers_lower(), path=p))
 
     def do_POST(self):
+        with routes.BUILD_SCHEDULE.activity() as admitted:
+            if not admitted:
+                return self._send(503, {"error": "Scheduled llama.cpp update in progress; retry after the build"})
+            return self._do_POST()
+
+    def _do_POST(self):
         if self._guard("POST"):
             return
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -541,6 +550,12 @@ def _tray_counts():
 
 
 def _auto_load(model_id):
+    with routes.BUILD_SCHEDULE.activity() as admitted:
+        if admitted:
+            _auto_load_when_ready(model_id)
+
+
+def _auto_load_when_ready(model_id):
     """Load a favourite model once the router answers /models. Runs in the
     background so a slow/absent router never delays the dashboard."""
     import time
@@ -603,7 +618,14 @@ def main():
     threading.Thread(target=_preset_sync_loop,
                      daemon=True, name="preset-sync").start()
     _HTTPD = ThreadingHTTPServer((bind_host, port), H)
-    _HTTPD.serve_forever()
+    schedule_stop = threading.Event()
+    threading.Thread(target=routes.BUILD_SCHEDULE.loop,
+                     args=(schedule_stop, routes._dbg), daemon=True,
+                     name="build-schedule").start()
+    try:
+        _HTTPD.serve_forever()
+    finally:
+        schedule_stop.set()
 
 
 if __name__ == "__main__":

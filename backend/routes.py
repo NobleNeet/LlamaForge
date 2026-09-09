@@ -26,6 +26,7 @@ import autotune_service
 import vram_predict
 import wsl, vllm_ctl, vllm_registry, vllm_setup, vllm_job, vllm_hub, vllm_download
 import gguf, diag, backends
+import build_schedule
 from builder import BuildManager
 
 # vLLM is managed through WSL2, so the whole vLLM surface is Windows-only.
@@ -884,6 +885,10 @@ def get_build_log(req):
     s = dict(builder.state)
     s["log"] = builder.tail(300)
     s["target"] = target
+    c = cfg()
+    s["schedule"] = {"last_date": c.get("build_auto_update_last_date", ""),
+                     "status": c.get("build_auto_update_status", "Not run yet"),
+                     "timezone": time.strftime("%Z (UTC%z)")}
     return 200, s
 
 
@@ -1431,11 +1436,13 @@ def post_presets_apply(req):
     return 200, {"ok": True, "applied": list(clean), "was_running": running}
 
 
-def post_build_start(req):
+def post_build_start(req, *, scheduled=False):
     global _PREBUILD_RUNNING, _PREBUILD_LOADED
     c = cfg()
     target = req.body.get("target", "llamacpp")
     builder = _builder_for(target)
+    if builder.state["running"]:
+        return 200, {"started": False, "target": target, "error": "A build is already running"}
     requested_backend = c.get("llama_backend", "auto")
     rec = hardware.recommend(backend=requested_backend)
     selected_backend = rec.get("selected_backend", "cpu")
@@ -1467,6 +1474,24 @@ def post_build_start(req):
     # the router (and its loaded models) back - otherwise the dashboard is left
     # with a dead port after a rebuild. A router that will not answer, or a hook
     # that raises, must never stop a good build - swallow everything here.
+    if scheduled:
+        # Recheck after hardware/prerequisite probes, immediately before stopping.
+        reason, was_running, loaded = _scheduled_build_idle(c)
+        if reason:
+            return 200, {"started": False, "error": reason}
+        with _state_lock:
+            _PREBUILD_RUNNING, _PREBUILD_LOADED = was_running, loaded
+        try:
+            if was_running and not router_ctl.stop(c.get("router_port", 8080)):
+                with _state_lock:
+                    _PREBUILD_RUNNING, _PREBUILD_LOADED = False, []
+                return 200, {"started": False, "error": "Router could not be stopped"}
+            # Blocking on the scheduler thread keeps request admission closed
+            # through build completion and session restoration, including failure.
+            builder.run_build(src, bdir, flags, pull=True, env=env, strict_pull=True)
+            return 200, {"started": True, "phase": builder.state["phase"]}
+        finally:
+            _bring_router_back(source="scheduled-build")
     if target == "llamacpp":
         try:
             was_running = router_ctl.is_running(c.get("router_port", 8080))
@@ -1478,6 +1503,59 @@ def post_build_start(req):
             _PREBUILD_RUNNING, _PREBUILD_LOADED = was_running, list(unloaded)
     ok = builder.start(src, bdir, flags, pull=req.body.get("pull", True), env=env)
     return 200, {"started": ok, "target": target, "backend": selected_backend}
+
+
+def _scheduled_build_idle(c):
+    """Fresh metrics, never cached token rates. Missing data means do not update."""
+    def skip(reason):
+        return reason, False, []
+    if c.get("active_engine", "llamacpp") != "llamacpp":
+        return skip("llama.cpp is not the active engine")
+    if BUILDER_LLAMA.state["running"] or BUILDER_IKLLAMA.state["running"]:
+        return skip("A build is already running")
+    if _AUTOTUNE_SERVICE is not None:
+        with _AUTOTUNE_SERVICE._registry_lock:
+            if _AUTOTUNE_SERVICE._registry:
+                return skip("Auto Tune is running")
+    # vLLM is independent of the active llama-family engine. Be conservative
+    # while it is up: this update should not compete with its inference work.
+    if VLLM_SUPPORTED and (router_ctl.is_running(c.get("vllm_port", 8081))
+                           or (_VLLM is not None and _VLLM.status())):
+        return skip("vLLM is running")
+    if not router_ctl.is_running(c.get("router_port", 8080)):
+        return "", False, []
+    st, data = router("/models", timeout=3)
+    if st != 200 or not isinstance(data, dict) or not isinstance(data.get("data"), list):
+        return skip("Router state unavailable")
+    loaded = []
+    for row in data["data"]:
+        state = row.get("status", {}).get("value")
+        if state == "unloaded":
+            continue
+        if state != "loaded" or not row.get("id"):
+            return skip("Model loading or state unknown")
+        mid = row["id"]
+        metrics = stats.TRACKER._scrape(mid)
+        if not metrics or any(metrics.get(k) != 0 for k in
+                              (stats.M_REQ_PROCESSING, "llamacpp:requests_deferred")):
+            return skip("Inference active or metrics unavailable")
+        loaded.append(mid)
+    return "", True, loaded
+
+
+def run_scheduled_build():
+    reason, _, _ = _scheduled_build_idle(cfg())
+    if reason:
+        return "Skipped: " + reason
+    config.update({"build_auto_update_status": "Pull latest & rebuild running"})
+    _, result = post_build_start(Req(body={"target": "llamacpp", "pull": True},
+                                     path="scheduled-build"), scheduled=True)
+    if not result.get("started"):
+        return "Skipped: " + result.get("error", "Build unavailable")
+    return "Build " + result["phase"] + " — see llama.cpp Build Log"
+
+
+BUILD_SCHEDULE = build_schedule.BuildSchedule(config.load, config.update, run_scheduled_build)
 
 
 def post_setup_install(req):
@@ -1722,6 +1800,8 @@ CONFIG_WRITABLE = {
     "onboarded":               _v_bool,
     "auto_load_model":         _v_str,
     "api_idle_unload_minutes": _v_nonneg_int,
+    "build_auto_update_enabled": _v_bool,
+    "build_auto_update_time": build_schedule.valid_time,
     # Effective only on a router restart; POST /api/router/restart does that
     # deliberately, since the restart unloads every loaded model.
     "router_models_max":        _v_models_max,

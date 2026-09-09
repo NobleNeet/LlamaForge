@@ -40,6 +40,14 @@ A rebuild (`BuildManager.run_build()`) runs in a background thread: it first val
 5. Click **Pull latest & Rebuild** (or **Rebuild current** if already up to date). The build runs in the background; watch progress and any errors in the Build Log panel below, which polls live until the build finishes or fails.
 6. If vLLM is installed, the same tab shows its installed vs. latest PyPI version, with an **Update vLLM** button when a newer release is available.
 
+## Daily automatic updates
+
+In **Build / Update → Automatic Update · llama.cpp**, enable **Pull latest & rebuild automatically when idle**, choose a daily time, and click **Save schedule**. The default is disabled, with 03:00 preselected. The displayed timezone is the server's local timezone. LlamaForge must be running during the scheduled minute; the browser may be closed. Missed times are not caught up.
+
+The scheduler checks once per local day. Active requests, a build, Auto Tune, another active engine, a running vLLM server, or unavailable activity information skip that day's update. The last check and its reason appear in the card. It checks every loaded model's current processing and queued request counts using the upstream [llama.cpp metrics endpoint](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#get-metrics-prometheus-compatible-metrics-exporter); missing metrics are treated as unknown, not idle.
+
+During an automatic update, new panel API operations return HTTP 503 and the llama.cpp router is stopped, so inference is temporarily unavailable. After the build, LlamaForge attempts to restore the router and previously loaded models, including after build failure. Clients connected directly to the router should retry connections during this maintenance window; their activity is checked immediately before stopping the router, but a direct request can still arrive between that check and the stop. Existing external `server_bin` paths are preserved. Only llama.cpp is updated. A failed git pull cancels the automatic rebuild; inspect **Build Log · llama.cpp** for build results.
+
 ## Screenshot
 
 ![Build tab](docs/img/build.png)

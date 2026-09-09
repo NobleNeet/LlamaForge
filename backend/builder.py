@@ -152,15 +152,21 @@ class BuildManager:
         p.wait()
         return p.returncode
 
-    def run_build(self, src, build_dir, flags, pull=True, jobs=None, env=None):
-        """Blocking build; call inside a thread. flags: {CMAKE_VAR: value}."""
+    def _claim(self):
         with self.lock:
             if self.state["running"]:
-                return
+                return False
             self.state.update(running=True, phase="starting", returncode=None,
                               started=time.time(), finished=None, warning=None)
-        open(self.log_path, "w").close()  # fresh log
+            return True
+
+    def run_build(self, src, build_dir, flags, pull=True, jobs=None, env=None,
+                  strict_pull=False, _claimed=False):
+        """Blocking build; call inside a thread. flags: {CMAKE_VAR: value}."""
+        if not _claimed and not self._claim():
+            return
         try:
+            open(self.log_path, "w").close()  # fresh log
             bad = self.validate_paths(src, build_dir)
             if bad:
                 raise RuntimeError(bad)
@@ -169,6 +175,8 @@ class BuildManager:
                 self._log("=== git pull (origin) ===")
                 rc = self._stream(["git", "-C", src, "pull", "--ff-only", "origin"])
                 if rc != 0:
+                    if strict_pull:
+                        raise RuntimeError("git pull failed; automatic rebuild cancelled")
                     self._log("[warn] git pull failed or non-fast-forward; building current checkout")
 
             self.state["phase"] = "backup"
@@ -250,9 +258,14 @@ class BuildManager:
             self._log(f"[binaries] could not record server_bin: {e}")
 
     def start(self, src, build_dir, flags, pull=True, jobs=None, env=None):
-        if self.state["running"]:
+        if not self._claim():
             return False
         t = threading.Thread(target=self.run_build,
-                             args=(src, build_dir, flags, pull, jobs, env), daemon=True)
-        t.start()
+                             args=(src, build_dir, flags, pull, jobs, env),
+                             kwargs={"_claimed": True}, daemon=True)
+        try:
+            t.start()
+        except Exception:
+            self.state.update(running=False, phase="failed", returncode=1, finished=time.time())
+            raise
         return True

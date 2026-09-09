@@ -47,6 +47,10 @@ DEFAULTS = {
     "vllm_port":   8081,                      # port vLLM serves on (WSL localhost-forwarded to Windows)
     "cmake_flags": {},                       # persisted build flags (from hardware detect)
     "cmake_backend": "",                     # backend those flags were generated for
+    "build_auto_update_enabled": False,
+    "build_auto_update_time": "03:00",       # daily, server local time
+    "build_auto_update_last_date": "",
+    "build_auto_update_status": "Not run yet",
     "git_remote":  "https://github.com/ggml-org/llama.cpp",
     # ik_llama mirrors the llama.cpp path trio and, like it, ships empty: these
     # belong to bootstrap and this machine, not to the defaults every install

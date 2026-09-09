@@ -201,8 +201,10 @@ class BuildUnloadTest(unittest.TestCase):
             return True
 
         self.builder = mock.Mock()
+        self.builder.state = {"running": False}
         self.builder.start.side_effect = record_build
         self.builder_ik = mock.Mock()
+        self.builder_ik.state = {"running": False}
         self.builder_ik.start.side_effect = record_build
 
         self.addCleanup(lambda: (setattr(routes, "_PREBUILD_RUNNING", False),

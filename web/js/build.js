@@ -43,6 +43,7 @@ export async function loadBuild(force) {
   const isActive = _target === activeEngine;
   const reqBackend = ((st.config||{}).llama_backend) || "auto";
   const availBackends = ["auto"].concat(b.available_backends || []).filter((v, i, a) => a.indexOf(v) === i);
+  const schedule = st.config || {};
 
   setHTML(v, `
     <div class="card buildtarget">
@@ -86,6 +87,17 @@ export async function loadBuild(force) {
       </div>
       <div class="note">Rebuilds ${esc(label)} with CMake. Prior binaries are backed up first. Takes several minutes; watch the log below.</div>
     </div>
+    <div class="card"><h3>Automatic Update · llama.cpp</h3>
+      <div class="actions">
+        <label><input type="checkbox" id="build-auto-enabled" ${schedule.build_auto_update_enabled ? "checked" : ""}> Pull latest &amp; rebuild automatically when idle</label>
+        <label for="build-auto-time">Daily time</label>
+        <input type="time" id="build-auto-time" value="${esc(schedule.build_auto_update_time || "03:00")}" required>
+        <button class="primary" id="btn-save-build-schedule">Save schedule</button>
+        <span class="msg" id="build-schedule-msg"></span>
+      </div>
+      <div class="note">Server local time: <span id="build-schedule-timezone"></span>. LlamaForge must be running at this time; the browser may be closed. Busy or unknown state skips that day. Inference is unavailable during the update; the router and loaded models are restored afterward. Applies to llama.cpp only.</div>
+      <div class="kv"><span class="k">last check</span><span class="v" id="build-schedule-status">${esc(schedule.build_auto_update_status || "Not run yet")}</span></div>
+    </div>
     <div class="card"><h3>Build Log · ${esc(label)}</h3><div class="log" id="build-log">idle</div></div>`
     + (vver.error ? "" : `<div class="card"><h3>vLLM (pip package in WSL)</h3>
       <div class="kv"><span class="k">installed</span><span class="v ${vver.installed&&vver.installed.present?'ok':'bad'}">${vver.installed&&vver.installed.present?"v"+esc(vver.installed.version):"not installed (see Setup)"}</span></div>
@@ -115,6 +127,23 @@ export async function loadBuild(force) {
   };
 
   $("#btn-build").onclick = startBuild;
+  $("#btn-save-build-schedule").onclick = async () => {
+    const input = $("#build-auto-time"), btn = $("#btn-save-build-schedule");
+    if (!input.reportValidity()) return;
+    btn.disabled = true;
+    const msg = $("#build-schedule-msg");
+    try {
+      const r = await api("/api/config", {
+        build_auto_update_enabled: $("#build-auto-enabled").checked,
+        build_auto_update_time: input.value,
+      });
+      const ok = r.ok && !(r.rejected || []).length;
+      msg.className = ok ? "msg ok" : "msg err";
+      msg.textContent = ok ? "Schedule saved" : (r.error || "Could not save schedule");
+    } catch (e) {
+      msg.className = "msg err"; msg.textContent = e.message;
+    } finally { btn.disabled = false; }
+  };
   const beSel = $("#build-backend");
   if (beSel) beSel.onchange = async () => {
     await api("/api/config", {llama_backend: beSel.value});
@@ -156,6 +185,10 @@ async function pollBuild() {
   clearInterval(buildPoll);
   const tick = async () => {
     const s = await api("/api/build/log?target=" + _target);
+    const sched = s.schedule || {}, status = $("#build-schedule-status");
+    if (status) status.textContent = [sched.last_date, sched.status].filter(Boolean).join(" · ");
+    const tz = $("#build-schedule-timezone");
+    if (tz) tz.textContent = sched.timezone || "";
     const log = $("#build-log");
     if (log) { log.textContent = s.log||"idle"; log.scrollTop = log.scrollHeight; }
     const msg = $("#build-msg");
@@ -163,15 +196,12 @@ async function pollBuild() {
     else if (msg && s.phase === "done") {
       msg.className = "msg ok";
       msg.textContent = "build OK" + (s.started&&s.finished?` in ${fmtDur(s.finished-s.started)}`:"");
-      clearInterval(buildPoll);
     } else if (msg && s.phase === "done_warnings") {
       // llama-server built, but a non-essential later target (UI assets) failed.
       msg.className = "msg warn";
       msg.textContent = "built with warnings - " + (s.warning || "see log");
-      clearInterval(buildPoll);
     } else if (msg && s.phase === "failed") {
       msg.className = "msg err"; msg.textContent = "build failed - see log";
-      clearInterval(buildPoll);
     }
   };
   await tick();
