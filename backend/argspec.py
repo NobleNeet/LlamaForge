@@ -75,7 +75,10 @@ def _classify(placeholder, default):
     # enum: bracketed [a|b|c] / <0|1> / {none,mean,cls}  OR bare word list a,b,c
     m = re.search(r"[\[<{]([^\]>}]*[|,][^\]>}]*)[\]>}]", p)
     body = m.group(1) if m else (p if ("," in p or "|" in p) else "")
-    if body and "..." not in body:
+    if body:
+        # Ellipses mark open-ended list examples, not finite enum choices.
+        if re.search(r"\.{2,}|…", body):
+            return "str", None
         opts = [o.strip() for o in re.split(r"[|,]", body) if o.strip()]
         # numeric placeholder list (N0,N1,...) is a free string, not an enum
         if opts and not any(re.match(r"^[NM]\d*$", o) for o in opts):
@@ -184,8 +187,6 @@ def parse_help(text):
         default_val = dflt.group(1) if dflt else ""
         dyn_typ, dyn_opts = _classify(placeholder, default_val)
         typ, opts = OVERRIDES.get(key, (dyn_typ, dyn_opts))
-        if dyn_typ == "enum" and dyn_opts:
-            typ, opts = dyn_typ, dyn_opts
         # canonical default: the value before any ", explanation" tail
         clean_default = re.split(r",\s", default_val)[0].strip() if default_val else ""
         pending = {
