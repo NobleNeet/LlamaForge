@@ -27,6 +27,7 @@ import vram_predict
 import wsl, vllm_ctl, vllm_registry, vllm_setup, vllm_job, vllm_hub, vllm_download
 import gguf, diag, backends
 import build_schedule
+import chat_diagnostics
 from builder import BuildManager
 
 # vLLM is managed through WSL2, so the whole vLLM surface is Windows-only.
@@ -810,6 +811,17 @@ def _scanned_mmproj_settings(entry, existing):
 
 
 # =============================================================== GET handlers
+
+def get_chat_diagnostics(req):
+    return 200, chat_diagnostics.snapshot(sys.modules[__name__], req.q("model") or "")
+
+
+def post_chat_render(req):
+    content = req.body.get("content")
+    if not isinstance(content, str) or len(content) > 200000:
+        raise ApiError(400, "content must be a string of at most 200000 characters")
+    return 200, {"html": chat_diagnostics.render_message(content)}
+
 
 def get_state(req):
     c = cfg()
@@ -2147,6 +2159,7 @@ def post_autotune_preview(req):
 # =================================================================== the tables
 
 GET_ROUTES = {
+    "/api/chat/diagnostics":   get_chat_diagnostics,
     "/api/autotune/status":    get_autotune_status,
     "/api/autotune/result":    get_autotune_result,
     "/api/autotune/runs":      get_autotune_runs,
@@ -2181,6 +2194,7 @@ GET_ROUTES = {
 }
 
 POST_ROUTES = {
+    "/api/chat/render":         post_chat_render,
     # engine-agnostic (dispatch on the model's backend)
     "/api/models/load":         post_model_load,
     "/api/models/unload":       post_model_unload,

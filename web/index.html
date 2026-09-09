@@ -16,6 +16,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LLAMAFORGE</title>
 <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="%23080a0b"/><rect x="3.5" y="3.5" width="25" height="25" fill="none" stroke="%23ffb000" stroke-width="2"/><rect x="9" y="10" width="14" height="2.6" fill="%23ffb000"/><rect x="9" y="14.7" width="14" height="2.6" fill="%23ffb000"/><rect x="9" y="19.4" width="14" height="2.6" fill="%23ffb000"/></svg>'>
+<link rel="stylesheet" href="/web/css/test-chat.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -395,6 +396,7 @@ body.mode-lite .advanced-only{display:none !important}
     <div class="tab navitem" data-tab="stats"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="6" y1="20" x2="6" y2="12"/><line x1="12" y1="20" x2="12" y2="6"/><line x1="18" y1="20" x2="18" y2="14"/></svg><span class="label">Stats</span></div>
     <div class="tab navitem" data-tab="discover"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="11" cy="11" r="6"/><line x1="16" y1="16" x2="21" y2="21"/></svg><span class="label">Discover</span></div>
     <div class="tab navitem" data-tab="willrun"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg><span class="label">Will it run?</span></div>
+    <div class="tab navitem" data-tab="testchat"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 8h8M8 12h5"/></svg><span class="label">Test Chat</span></div>
     <div class="tab navitem" data-tab="build"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14 6a4 4 0 0 0-5 5L4 16l4 4 5-5a4 4 0 0 0 5-5l-3 3-2-2 3-3a4 4 0 0 0-2-2z"/></svg><span class="label">Build / Update</span></div>
     <div class="tab navitem" data-tab="setup"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg><span class="label">Setup</span></div>
     <div class="tab navitem" data-tab="context"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M9 12h7M9 16h7"/></svg><span class="label">Context</span></div>
@@ -457,6 +459,7 @@ body.mode-lite .advanced-only{display:none !important}
   <div class="view" id="view-stats"><div class="skel">LOADING STATS...</div></div>
   <div class="view" id="view-discover"><div class="skel">LOADING...</div></div>
   <div class="view" id="view-willrun"><div class="skel">READY</div></div>
+  <div class="view" id="view-testchat"></div>
   <div class="view" id="view-build"><div class="skel">LOADING BUILD STATUS...</div></div>
   <div class="view" id="view-setup"><div class="skel">PROBING SYSTEM...</div></div>
   <div class="view" id="view-context"><div class="skel">LOADING CONTEXT...</div></div>

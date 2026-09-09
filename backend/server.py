@@ -16,6 +16,7 @@ import config, wiki, anthropic_shim, argspec, stats
 import routes
 from routes import ApiError, Req
 import osplat
+import stream_relay
 
 # Everything else is reached as routes.<name> rather than imported by name: a
 # `from routes import cfg` binds the function object here, so a test patching
@@ -523,22 +524,38 @@ class H(BaseHTTPRequestHandler):
     def _openai_proxy_stream(self, body):
         model = body.get("model", "")
         _track_api_model_begin(model)
+        resp = None
         try:
             status, resp = routes._router_openai(body, stream=True)
             self._begin_stream()
-            write = self._writer()
+
+            def write(data):
+                # Unlike the legacy best-effort writer, a disconnect must stop
+                # consuming inference and close the upstream request.
+                self.wfile.write(data)
+                self.wfile.flush()
+
+            if self.headers.get("X-LlamaForge-Diagnostics") == "1":
+                write(("event: llamaforge.diagnostics\ndata: " +
+                       json.dumps({"request": body}) + "\n\n").encode())
             if status >= 400:
                 write(("data: " + json.dumps(resp) + "\n\n").encode())
                 return
-            for line in resp:
-                write(line if line.endswith(b"\n") else line + b"\n")
-            if hasattr(resp, "close"):
-                try:
-                    resp.close()
-                except Exception:
-                    pass
+            stream_relay.relay(resp, self.connection, write)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:
+            try:
+                self.wfile.write(("data: " + json.dumps({"error": str(exc)}) + "\n\n").encode())
+                self.wfile.flush()
+            except Exception:
+                pass
         finally:
-            _track_api_model_end(model)
+            try:
+                if hasattr(resp, "close"):
+                    resp.close()
+            finally:
+                _track_api_model_end(model)
 
 
 def _tray_counts():

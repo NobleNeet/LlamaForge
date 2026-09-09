@@ -1,0 +1,31 @@
+/* Test Chat reuses the panel's card, toolbar, kv, log and theme tokens. */
+.chat-layout{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(300px,1fr);gap:18px;align-items:start}
+.chat-main,.chat-diagnostics{min-width:0}
+.chat-main{position:sticky;top:72px;height:calc(100vh - 90px);overflow:auto;display:flex;flex-direction:column}
+.chat-main > *{flex-shrink:0}
+.chat-main > .chat-messages{flex:1 1 auto}
+.chat-messages{min-height:120px;overflow:auto;border:1px solid var(--hair);background:var(--inset);padding:14px;margin:12px 0}
+.chat-message{padding:12px 0;border-bottom:1px solid var(--hair)}
+.chat-message strong{font-family:var(--disp);color:var(--amber-text)}
+.chat-message[data-role="assistant"] strong{color:var(--cyan-text)}
+.chat-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;margin:8px 0;font-family:var(--mono)}
+.chat-markdown{white-space:normal}
+.chat-markdown pre{white-space:pre-wrap;background:var(--code-bg);padding:10px;overflow-wrap:anywhere}
+.chat-markdown a{color:var(--cyan-text)}
+.chat-markdown table{display:block;overflow:auto}
+.chat-meta{color:var(--dim);font-size:11px;white-space:pre-wrap}
+#view-testchat textarea,#view-testchat select,#view-testchat input[type="number"]{font:inherit;background:var(--inset);color:var(--ink);border:1px solid var(--hair);padding:8px;max-width:100%}
+#view-testchat textarea{width:100%;resize:vertical}
+#chat-model{flex:1;min-width:120px}
+.chat-settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin:12px 0}
+.chat-settings[hidden]{display:none}
+.chat-settings label{display:flex;flex-direction:column;gap:6px;font-size:11px}
+.chat-diagnostics .kv{align-items:start;gap:12px}
+.chat-diagnostics .v{overflow-wrap:anywhere;min-width:0;text-align:right}
+.chat-diagnostics pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto;background:var(--code-bg);color:var(--code-ink);padding:10px;font-size:11px}
+#chat-log{height:240px;white-space:pre-wrap;overflow-wrap:anywhere}
+#chat-error{white-space:pre-wrap;overflow-wrap:anywhere}
+.chat-options{margin:12px 0}
+.chat-options summary,.chat-diagnostics summary{cursor:pointer;color:var(--dim);padding:6px 0}
+@media(max-width:1000px){.chat-layout{grid-template-columns:1fr}.chat-main{position:static;height:auto;overflow:visible}.chat-main > .chat-messages{height:40vh;min-height:220px;flex:none}.chat-diagnostics{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}}
+@media(max-width:400px){.chat-diagnostics{display:block}.chat-messages{padding:8px}}

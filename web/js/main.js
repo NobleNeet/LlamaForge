@@ -12,6 +12,7 @@ import * as models from "./models.js";
 import * as stats from "./stats.js";
 import { loadDiscover } from "./discover.js";
 import { loadWillRun } from "./willrun.js";
+import { loadTestChat, refreshTestChat } from "./test-chat.js";
 import { loadBuild } from "./build.js";
 import { loadSetup } from "./setup.js";
 import { loadContext } from "./context.js";
@@ -20,6 +21,7 @@ import { initWizard } from "./wizard.js";
 import { initOnboarding } from "./onboarding.js";
 
 /* ---------- tab loaders ---------- */
+ui.onTabShown("testchat", loadTestChat);
 ui.onTabShown("build", loadBuild);
 ui.onTabShown("setup", loadSetup);
 ui.onTabShown("discover", loadDiscover);
@@ -96,3 +98,5 @@ setInterval(() => { if (ui.activeTab() === "models") models.refreshVllmLog(); },
 models.refreshRouterLog();
 models.refreshLlamaLog();
 models.refreshVllmLog();
+
+setInterval(() => { if (ui.activeTab() === "testchat") refreshTestChat(); }, 3000);
