@@ -23,6 +23,37 @@ const ENGINE_REPOS = {
 };
 const BACKEND_LABELS = {auto:"Auto", cuda:"CUDA", hip:"ROCm / HIP", vulkan:"Vulkan", cpu:"CPU"};
 
+const logReaders = new WeakMap();
+
+function updateBuildLog(log, text) {
+  if (!log) return;
+  let reader = logReaders.get(log);
+  if (!reader) {
+    reader = {scrollingUntil: 0};
+    logReaders.set(log, reader);
+    // Also pause at the bottom while wheel/touch/keyboard scrolling is active.
+    const scrolling = () => { reader.scrollingUntil = Date.now() + 1000; };
+    log.onscroll = scrolling;
+    log.onwheel = scrolling;
+    log.ontouchmove = scrolling;
+    log.onkeydown = event => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) scrolling();
+    };
+  }
+  const selection = globalThis.getSelection?.();
+  if (selection && !selection.isCollapsed) {
+    for (let i = 0; i < selection.rangeCount; i++) {
+      if (selection.getRangeAt(i).intersectsNode(log)) return;
+    }
+  }
+  if (log.matches?.(":active") || Date.now() < reader.scrollingUntil) return;
+  if (log.scrollTop + log.clientHeight < log.scrollHeight - 2) return;
+  // Replacing an unchanged text node still destroys the browser's selection.
+  if (log.textContent === text) return;
+  log.textContent = text;
+  log.scrollTop = log.scrollHeight;
+}
+
 export async function loadBuild(force) {
   const v = $("#view-build");
   if (force) {
@@ -98,7 +129,7 @@ export async function loadBuild(force) {
       <div class="note">Server local time: <span id="build-schedule-timezone"></span>. LlamaForge must be running at this time; the browser may be closed. Busy or unknown state skips that day. Inference is unavailable during the update; the router and loaded models are restored afterward. Applies to llama.cpp only.</div>
       <div class="kv"><span class="k">last check</span><span class="v" id="build-schedule-status">${esc(schedule.build_auto_update_status || "Not run yet")}</span></div>
     </div>
-    <div class="card"><h3>Build Log · ${esc(label)}</h3><div class="log" id="build-log">idle</div></div>`
+    <div class="card"><h3>Build Log · ${esc(label)}</h3><div class="note">Updates pause while selecting text or reading earlier lines. Clear the selection and scroll to the bottom to resume.</div><div class="log" id="build-log" tabindex="0">idle</div></div>`
     + (vver.error ? "" : `<div class="card"><h3>vLLM (pip package in WSL)</h3>
       <div class="kv"><span class="k">installed</span><span class="v ${vver.installed&&vver.installed.present?'ok':'bad'}">${vver.installed&&vver.installed.present?"v"+esc(vver.installed.version):"not installed (see Setup)"}</span></div>
       <div class="kv"><span class="k">latest on PyPI</span><span class="v">${esc(vver.latest||"?")}</span></div>
@@ -204,7 +235,7 @@ async function pollBuild() {
     const tz = $("#build-schedule-timezone");
     if (tz) tz.textContent = sched.timezone || "";
     const log = $("#build-log");
-    if (log) { log.textContent = s.log||"idle"; log.scrollTop = log.scrollHeight; }
+    updateBuildLog(log, s.log||"idle");
     const msg = $("#build-msg");
     if (msg && s.running) { msg.className = "msg work"; msg.textContent = "building: " + s.phase; }
     else if (msg && s.phase === "done") {
