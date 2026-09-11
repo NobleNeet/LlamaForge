@@ -64,7 +64,7 @@ def _reset_api_idle_state():
 
 
 def _track_api_model_begin(model):
-    if not model or _api_idle_timeout_secs() <= 0:
+    if not model:
         return
     now = time.time()
     with _API_IDLE_LOCK:
@@ -97,6 +97,12 @@ def _forget_api_model(model, source=""):
         routes._dbg("api.idle.clear", model=model, source=source)
 
 
+def _track_loaded_model(model, source="", backend=""):
+    if model and backend == "llamacpp":
+        with _API_IDLE_LOCK:
+            _API_IDLE_LAST[model] = time.time()
+
+
 def _reap_api_idle_models(now=None):
     timeout = _api_idle_timeout_secs()
     if timeout <= 0:
@@ -105,27 +111,45 @@ def _reap_api_idle_models(now=None):
     st, data = routes.router("/models", timeout=3)
     if st != 200:
         return []
-    loaded = {m.get("id") for m in data.get("data", [])
-              if m.get("status", {}).get("value") == "loaded"}
+    statuses = {m.get("id"): (m.get("status") or {}).get("value")
+                for m in data.get("data", []) if m.get("id")}
+    loaded = {mid for mid, status in statuses.items() if status == "loaded"}
     with _API_IDLE_LOCK:
-        tracked = dict(_API_IDLE_LAST)
-        inflight = dict(_API_IDLE_INFLIGHT)
+        # Also cover manual/startup loads and models already resident when the
+        # timer is enabled or the dashboard restarts.
+        for model in loaded:
+            _API_IDLE_LAST.setdefault(model, now)
+        tracked = list(_API_IDLE_LAST)
     unloaded = []
-    for model, last in tracked.items():
-        if model not in loaded:
-            _forget_api_model(model, source="not-loaded")
-            continue
-        if inflight.get(model, 0) > 0:
-            continue
-        idle_for = now - last
-        if idle_for < timeout:
-            continue
-        routes._dbg("api.idle.unload", model=model, idle_seconds=round(idle_for, 1),
-                    timeout_seconds=timeout)
-        code, _res = routes.router("/models/unload", "POST", {"model": model})
-        if code == 200:
-            unloaded.append(model)
-            _forget_api_model(model, source="idle-timeout")
+    for model in tracked:
+        # Recheck current activity and serialize unload with request admission;
+        # a snapshot of the counters can become stale while querying the router.
+        with _API_IDLE_LOCK:
+            if _API_IDLE_INFLIGHT.get(model, 0) > 0:
+                continue
+            if statuses.get(model) == "loading":
+                _API_IDLE_LAST[model] = now
+                continue
+            if model not in loaded:
+                _API_IDLE_LAST.pop(model, None)
+                continue
+            live = getattr(stats.TRACKER, "live", {}) or {}
+            metrics = (live.get("models") or {}).get(model) or {}
+            # Throughput gauges can retain the last request's rate while idle.
+            # Only active request counts are evidence of current router work.
+            if int(metrics.get("requests_processing", 0) or 0) > 0:
+                _API_IDLE_LAST[model] = now
+                continue
+            last = _API_IDLE_LAST.get(model, now)
+            idle_for = now - last
+            if idle_for < timeout:
+                continue
+            routes._dbg("api.idle.unload", model=model, idle_seconds=round(idle_for, 1),
+                        timeout_seconds=timeout)
+            code, _res = routes.router("/models/unload", "POST", {"model": model})
+            if code == 200:
+                unloaded.append(model)
+                _API_IDLE_LAST.pop(model, None)
     return unloaded
 
 
@@ -592,7 +616,7 @@ def main():
     import stats
     config.migrate()
     routes.PANEL_RESTART = request_panel_restart
-    routes.MODEL_LOAD_HOOK = lambda mid, source="", backend="": _forget_api_model(mid, source or "load")
+    routes.MODEL_LOAD_HOOK = _track_loaded_model
     routes.MODEL_UNLOAD_HOOK = lambda mid, source="", backend="": _forget_api_model(mid, source or "unload")
     routes.PRESET_SYNC_HOOK = _schedule_preset_sync
     c = routes.cfg()

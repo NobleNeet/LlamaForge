@@ -155,7 +155,7 @@ export async function loadSetup() {
         <button id="api-idle-save" class="ghost">Save</button>
         <span class="msg" id="api-idle-msg"></span>
       </div>
-      <div class="note"><code>0</code> disables this timer. When set above <code>0</code>, a llama.cpp model that served requests through <code>/v1/chat/completions</code> or <code>/v1/messages</code> is unloaded after that many idle minutes. Active or streaming requests are never interrupted.</div>
+      <div class="note"><code>0</code> disables this timer. When enabled, loaded llama.cpp models, including manual and startup loads, are unloaded after that many idle minutes. Requests through <code>/v1/chat/completions</code> or <code>/v1/messages</code> reset the timer when they finish; active or streaming requests are excluded. The timer is checked every 15 seconds.</div>
       <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:flex-end">
         <div class="fld" style="max-width:240px">
           <label>Models kept loaded at once</label>

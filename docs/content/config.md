@@ -43,7 +43,7 @@ order: 1
 | `ik_llama_cmake_backend` | string | `""` | Which backend those ik_llama flags were generated for. |
 | `llama_backend` | string | `"auto"` | Backend the Setup build targets: `auto`, `cuda`, `hip`, `vulkan` or `cpu`. `auto` lets hardware detection choose. |
 | `auto_load_model` | string | `""` | Model id to load automatically on launch. Empty string disables auto-load. |
-| `api_idle_unload_minutes` | int | `0` | Unload llama.cpp models that were loaded through the API and then sat unused for this many minutes. `0` disables the idle unload. |
+| `api_idle_unload_minutes` | int | `0` | Unload idle llama.cpp models after this many minutes, including manual and startup loads. Requests through the panel API reset the timer when they finish; active requests are excluded. Already resident models are discovered on the next check (every 15 seconds). `0` disables the idle unload. |
 | `presets` | object | `{}` | Legacy global presets from older installs. New saves are model-scoped. |
 | `model_presets` | object | `{}` | Named knob sets per model: `{model_id: {preset_name: {knob: value}}}`. |
 | `preset_bindings` | object | `{}` | Preset bound as each model's default: `{model_id: preset_name}`. |

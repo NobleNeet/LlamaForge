@@ -9,10 +9,97 @@ import routes, server
 class ApiIdleUnloadTest(unittest.TestCase):
     def setUp(self):
         server._reset_api_idle_state()
+        live_patch = mock.patch.object(stats.TRACKER, "live", {})
+        live_patch.start()
+        self.addCleanup(live_patch.stop)
         with server._PRESET_SYNC_LOCK:
             server._PRESET_SYNC_PENDING.clear()
         self.addCleanup(server._reset_api_idle_state)
         self.addCleanup(lambda: server._PRESET_SYNC_PENDING.clear())
+
+    def _router(self, path, method="GET", body=None, timeout=30):
+        if path == "/models":
+            return 200, {"data": [{"id": "m", "status": {"value": "loaded"}}]}
+        return 200, {}
+
+    def test_reaper_discovers_resident_model_and_waits_full_timeout(self):
+        with mock.patch.object(routes, "cfg", return_value={"api_idle_unload_minutes": 1}), \
+             mock.patch.object(routes, "router", side_effect=self._router):
+            self.assertEqual(server._reap_api_idle_models(now=100), [])
+            self.assertEqual(server._reap_api_idle_models(now=159), [])
+            self.assertEqual(server._reap_api_idle_models(now=160), ["m"])
+
+    def test_load_hook_starts_timer_without_inference(self):
+        with mock.patch.object(server.time, "time", return_value=100):
+            server._track_loaded_model("m", source="/api/load", backend="llamacpp")
+            server._track_loaded_model("other", backend="vllm")
+        self.assertEqual(server._API_IDLE_LAST, {"m": 100})
+        with mock.patch.object(routes, "cfg", return_value={"api_idle_unload_minutes": 1}), \
+             mock.patch.object(routes, "router", side_effect=self._router):
+            self.assertEqual(server._reap_api_idle_models(now=160), ["m"])
+
+    def test_enable_timer_during_request_and_loading_preserves_inflight(self):
+        with mock.patch.object(routes, "cfg", return_value={"api_idle_unload_minutes": 0}), \
+             mock.patch.object(server.time, "time", return_value=100):
+            server._track_api_model_begin("m")
+        with mock.patch.object(routes, "cfg", return_value={"api_idle_unload_minutes": 1}), \
+             mock.patch.object(routes, "router", return_value=(200, {"data": []})):
+            self.assertEqual(server._reap_api_idle_models(now=200), [])
+        self.assertEqual(server._API_IDLE_INFLIGHT, {"m": 1})
+        with mock.patch.object(server.time, "time", return_value=210):
+            server._track_loaded_model("m", backend="llamacpp")
+        self.assertEqual(server._API_IDLE_INFLIGHT, {"m": 1})
+        with mock.patch.object(routes, "cfg", return_value={"api_idle_unload_minutes": 1}), \
+             mock.patch.object(routes, "router", side_effect=self._router):
+            self.assertEqual(server._reap_api_idle_models(now=300), [])
+            with mock.patch.object(server.time, "time", return_value=310):
+                server._track_api_model_end("m")
+            self.assertEqual(server._reap_api_idle_models(now=369), [])
+            self.assertEqual(server._reap_api_idle_models(now=370), ["m"])
+
+    def test_disabled_timer_does_not_query_or_unload(self):
+        server._API_IDLE_LAST["m"] = 100
+        with mock.patch.object(routes, "cfg", return_value={"api_idle_unload_minutes": 0}), \
+             mock.patch.object(routes, "router") as router:
+            self.assertEqual(server._reap_api_idle_models(now=1000), [])
+        router.assert_not_called()
+
+    def test_router_activity_resets_timer_but_historical_throughput_does_not(self):
+        server._API_IDLE_LAST["m"] = 100
+        metrics = {"requests_processing": 1, "gen_per_sec": 20}
+        with mock.patch.object(routes, "cfg", return_value={"api_idle_unload_minutes": 1}), \
+             mock.patch.object(routes, "router", side_effect=self._router), \
+             mock.patch.object(stats.TRACKER, "live", {"models": {"m": metrics}}):
+            self.assertEqual(server._reap_api_idle_models(now=200), [])
+            metrics["requests_processing"] = 0
+            self.assertEqual(server._reap_api_idle_models(now=259), [])
+            self.assertEqual(server._reap_api_idle_models(now=260), ["m"])
+
+    def test_request_start_during_router_query_prevents_unload(self):
+        server._API_IDLE_LAST["m"] = 100
+
+        def router(*args, **kwargs):
+            server._track_api_model_begin("m")
+            return self._router(*args, **kwargs)
+
+        with mock.patch.object(routes, "cfg", return_value={"api_idle_unload_minutes": 1}), \
+             mock.patch.object(routes, "router", side_effect=router) as call:
+            self.assertEqual(server._reap_api_idle_models(now=200), [])
+        call.assert_called_once_with("/models", timeout=3)
+
+    def test_failed_unload_is_retried(self):
+        server._API_IDLE_LAST["m"] = 100
+
+        def router(path, *args, **kwargs):
+            return (503, {}) if path == "/models/unload" else self._router(path)
+
+        with mock.patch.object(routes, "cfg", return_value={"api_idle_unload_minutes": 1}), \
+             mock.patch.object(routes, "router", side_effect=router):
+            self.assertEqual(server._reap_api_idle_models(now=200), [])
+        self.assertEqual(server._API_IDLE_LAST, {"m": 100})
+        with mock.patch.object(routes, "cfg", return_value={"api_idle_unload_minutes": 1}), \
+             mock.patch.object(routes, "router", side_effect=self._router):
+            self.assertEqual(server._reap_api_idle_models(now=215), ["m"])
 
     def test_reaper_unloads_loaded_model_after_idle_timeout(self):
         calls = []
