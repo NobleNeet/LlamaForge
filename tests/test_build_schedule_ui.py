@@ -8,13 +8,13 @@ import unittest
 
 @unittest.skipUnless(shutil.which("node"), "Node.js required for Build UI tests")
 class BuildScheduleUiTest(unittest.TestCase):
-    def render_and_save(self, response):
+    def render_and_save(self, response, action="schedule"):
         script = r"""
 const fs = require('node:fs'), vm = require('node:vm');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const source = fs.readFileSync(input.source, 'utf8')
   .replace(/^import .*;\r?$/gm, '').replace(/^export /gm, '');
-const nodes = {}, calls = [];
+const nodes = {}, calls = [], saves = [];
 const context = vm.createContext({
   $: selector => nodes[selector] ||= {style:{}},
   esc: value => String(value),
@@ -25,26 +25,34 @@ const context = vm.createContext({
   api: async (path, body) => {
     calls.push({path, body});
     if (path.startsWith('/api/build/info')) return {};
-    if (path === '/api/state') return {config: {build_auto_update_enabled:true, build_auto_update_time:'04:15'}};
+    if (path === '/api/state') return {config: {llama_backend:'vulkan', build_auto_update_enabled:true, build_auto_update_time:'04:15'}};
     if (path.startsWith('/api/vllm/version')) return {error:'unsupported'};
     if (path.startsWith('/api/build/log')) return {schedule: {last_date:'2026-09-09', status:'Skipped: busy', timezone:'JST (UTC+0900)'}};
-    if (path === '/api/config') return input.response;
+    if (path === '/api/config') {
+      saves.push({buildDisabled:nodes['#btn-build'].disabled, backendDisabled:nodes['#build-backend'].disabled});
+      return input.response;
+    }
     throw Error('Unexpected request: ' + path);
   },
 });
 vm.runInContext(source, context);
 (async () => {
   await vm.runInContext('loadBuild()', context);
-  nodes['#build-auto-time'] = {value: '05:30'};
-  nodes['#build-auto-time'].reportValidity = () => true;
-  nodes['#build-auto-enabled'] = {checked: false};
-  await nodes['#btn-save-build-schedule'].onclick();
-  process.stdout.write(JSON.stringify({nodes, calls}));
+  if (input.action === 'backend') {
+    nodes['#build-backend'].value = 'hip';
+    await nodes['#build-backend'].onchange();
+  } else {
+    nodes['#build-auto-time'] = {value: '05:30'};
+    nodes['#build-auto-time'].reportValidity = () => true;
+    nodes['#build-auto-enabled'] = {checked: false};
+    await nodes['#btn-save-build-schedule'].onclick();
+  }
+  process.stdout.write(JSON.stringify({nodes, calls, saves}));
 })().catch(error => {console.error(error); process.exitCode=1;});
 """
         run = subprocess.run([shutil.which("node"), "-e", script],
                              input=json.dumps({"source": str(Path(__file__).resolve().parents[1] / "web/js/build.js"),
-                                               "response": response}),
+                                               "response": response, "action": action}),
                              capture_output=True, text=True, timeout=10)
         self.assertEqual(run.returncode, 0, run.stderr)
         return json.loads(run.stdout)
@@ -66,3 +74,15 @@ vm.runInContext(source, context);
     def test_partial_rejection_is_not_reported_as_saved(self):
         result = self.render_and_save({"ok": True, "rejected": ["build_auto_update_time"]})
         self.assertEqual(result["nodes"]["#build-schedule-msg"]["className"], 'msg err')
+
+    def test_backend_save_blocks_rebuild_until_selection_is_saved(self):
+        result = self.render_and_save({"ok": True}, action="backend")
+        self.assertEqual(result["saves"], [{"buildDisabled": True, "backendDisabled": True}])
+        self.assertIn({"path": "/api/config", "body": {"llama_backend": "hip"}}, result["calls"])
+        self.assertEqual(sum(call["path"].startswith("/api/build/info") for call in result["calls"]), 2)
+        self.assertFalse(result["nodes"]["#btn-build"]["disabled"])
+
+    def test_rejected_backend_restores_previous_selection(self):
+        result = self.render_and_save({"ok": True, "rejected": ["llama_backend"]}, action="backend")
+        self.assertEqual(result["nodes"]["#build-backend"]["value"], "vulkan")
+        self.assertFalse(result["nodes"]["#btn-build"]["disabled"])

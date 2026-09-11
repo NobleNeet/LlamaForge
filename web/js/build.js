@@ -146,8 +146,22 @@ export async function loadBuild(force) {
   };
   const beSel = $("#build-backend");
   if (beSel) beSel.onchange = async () => {
-    await api("/api/config", {llama_backend: beSel.value});
-    loadBuild();
+    const buildBtn = $("#btn-build");
+    buildBtn.disabled = true;
+    beSel.disabled = true;
+    try {
+      const r = await api("/api/config", {llama_backend: beSel.value});
+      if (!r.ok || (r.rejected || []).length) {
+        throw new Error(r.error || "Could not save acceleration backend");
+      }
+      await loadBuild();
+    } catch (e) {
+      beSel.value = reqBackend;
+      toast(e.message, "err");
+    } finally {
+      buildBtn.disabled = false;
+      beSel.disabled = false;
+    }
   };
   const refBtn = $("#btn-refresh-upstream");
   if (refBtn) refBtn.onclick = () => { refBtn.disabled = true; loadBuild(true); };

@@ -290,6 +290,27 @@ def _build_backend_info(c=None, backend=""):
     }
 
 
+def _resolved_build_flags(c, target, rec):
+    """Keep custom options while making the selected backend authoritative.
+
+    Explicit OFF values also turn off backends left in an existing CMake cache.
+    Backend-specific defaults from a previous selection must not override the
+    new recommendation; unrelated user options survive a backend switch.
+    """
+    prefix = "ik_llama_" if target == "ikllama" else ""
+    selected = rec.get("selected_backend", "cpu")
+    saved = dict(c.get(prefix + "cmake_flags") or {})
+    if c.get(prefix + "cmake_backend") != selected:
+        for key in ("GPU_TARGETS", "CMAKE_CUDA_ARCHITECTURES",
+                    "GGML_CUDA_FA_ALL_QUANTS"):
+            saved.pop(key, None)
+    flags = dict(rec["cmake_flags"])
+    flags.update(saved)
+    for backend in ("cuda", "hip", "vulkan", "metal"):
+        flags["GGML_" + backend.upper()] = "ON" if backend == selected else "OFF"
+    return flags
+
+
 def _hip_env():
     hipcxx = _run_capture(["hipconfig", "-l"]).strip()
     hippath = _run_capture(["hipconfig", "-R"]).strip()
@@ -872,17 +893,15 @@ def get_build_info(req):
     if target == "ikllama":
         src = c.get("ik_llama_src", "")
         remote = c.get("ik_llama_git_remote", "https://github.com/ikawrakow/ik_llama.cpp")
-        saved_flags = c.get("ik_llama_cmake_flags", {}) if c.get("ik_llama_cmake_backend") == rec.get("selected_backend") else {}
     else:
         src = c["llama_src"]
         remote = c.get("git_remote", "https://github.com/ggml-org/llama.cpp")
-        saved_flags = c.get("cmake_flags", {}) if c.get("cmake_backend") == rec.get("selected_backend") else {}
     return 200, {
         "target": target,
         "current": builder.current_commit(src),
         "updates": builder.check_updates(src, force=req.flag("force")),
         "recommended_flags": rec["cmake_flags"],
-        "saved_flags": saved_flags,
+        "saved_flags": _resolved_build_flags(c, target, rec),
         "selected_backend": rec.get("selected_backend", "cpu"),
         "available_backends": rec.get("available_backends", []),
         "backend_notes": rec.get("notes", []),
@@ -1466,12 +1485,12 @@ def post_build_start(req, *, scheduled=False):
     if target == "ikllama":
         src = c.get("ik_llama_src", "")
         bdir = c.get("ik_llama_build_dir", "")
-        flags = req.body.get("flags") or c.get("ik_llama_cmake_flags") or rec["cmake_flags"]
+        flags = req.body.get("flags") or _resolved_build_flags(c, target, rec)
         config.update({"ik_llama_cmake_flags": flags, "ik_llama_cmake_backend": selected_backend})
     else:
         src = c["llama_src"]
         bdir = c["build_dir"]
-        flags = req.body.get("flags") or c.get("cmake_flags") or rec["cmake_flags"]
+        flags = req.body.get("flags") or _resolved_build_flags(c, target, rec)
         config.update({"cmake_flags": flags, "cmake_backend": selected_backend})
     # Answer an unset/bad path here rather than starting a build thread that can
     # only fail: the user gets the reason in the UI instead of a raw cmake error
