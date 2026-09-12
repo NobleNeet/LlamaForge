@@ -22,7 +22,7 @@ import json, os, subprocess, sys, threading, time, urllib.request, urllib.error,
 
 import config, argspec, hardware, osplat, prereqs, scanner, hub, router_ctl, stats
 import autotune, anthropic_shim, agentsetup, wiki, docs, model_settings
-import autotune_service
+import autotune_hardware
 import vram_predict
 import wsl, vllm_ctl, vllm_registry, vllm_setup, vllm_job, vllm_hub, vllm_download
 import gguf, diag, backends
@@ -58,7 +58,6 @@ PANEL_RESTART = None
 MODEL_LOAD_HOOK = None
 MODEL_UNLOAD_HOOK = None
 PRESET_SYNC_HOOK = None
-_AUTOTUNE_SERVICE = None
 
 # Rebuild session restore. A llama.cpp rebuild overwrites the binary the running
 # router launched from, so the post-build cleanup stops the router (freeing the
@@ -70,14 +69,6 @@ _AUTOTUNE_SERVICE = None
 _state_lock = threading.Lock()
 _PREBUILD_RUNNING = False
 _PREBUILD_LOADED = []
-
-
-def autotune_service_instance():
-    """Lazy so importing routes never probes hardware or starts reconciliation."""
-    global _AUTOTUNE_SERVICE
-    if _AUTOTUNE_SERVICE is None:
-        _AUTOTUNE_SERVICE = autotune_service.AutoTuneService(os.path.join(LOGDIR, "autotune"), schema_loader=schema)
-    return _AUTOTUNE_SERVICE
 
 
 def _dbg(event, **fields):
@@ -460,140 +451,21 @@ def _eff(rm, glob, key, flag):
 
 
 # ---------- auto-tune ----------
-def _find_model(model_id):
-    for m in model_state().get("models", []):
-        if m.get("id") == model_id:
-            return m
-    return None
-
-
 def _autotune_recommend(body):
     mid = body.get("model", "")
-    intent = body.get("intent", "balanced")
-    m = _find_model(mid)
-    if not m:
+    section = config.read_sections().get(mid) if isinstance(mid, str) and mid != "*" else None
+    if section is None:
         return {"error": f"unknown model: {mid}"}
-    # model_state() rows normally nest the file path under settings.model;
-    # fall back to a top-level "model" key so callers passing a flatter shape
-    # (e.g. tests) still work.
-    path = m.get("model") or (m.get("settings") or {}).get("model") or ""
-    meta = gguf.metadata(path) or {}
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        size = None
-    hw = {"gpus": hardware.detect_gpus(), "cpu": hardware.detect_cpu()}
-    pred = None
-    try:
-        if cfg().get("vram_predict_enabled", True) and path:
-            pred = vram_predict.predict_local(path, size_bytes=size, cfg=cfg())
-    except Exception:
-        pred = None
-    rec = autotune.recommend(meta, hw, intent, size_bytes=size, prediction=pred)
-    rec.update({"model": mid, "intent": intent})
+    path = section.get("model") or ""
+    meta = gguf.inspect_model(path)
+    rec = autotune.recommend(meta, autotune_hardware.snapshot(cfg()))
+    if meta.get("incomplete_shards"):
+        for name in autotune.PRESETS:
+            rec[name]["applicable"] = False
+            rec[name]["confidence"] = "low"
+            rec[name]["warnings"].append("Split GGUF is incomplete; all shards are required.")
+    rec["model"] = mid
     return rec
-
-
-def _autotune_refine(body):
-    mid = body.get("model", "")
-    intent = body.get("intent", "balanced")
-    current = _clean_settings(body.get("knobs") or {})
-    managed = {
-        "n-gpu-layers", "flash-attn", "threads", "ctx-size",
-        "cache-type-k", "cache-type-v", "batch-size", "ubatch-size",
-        "temp", "top-p", "tensor-split",
-    }
-    m = _find_model(mid)
-    if not m:
-        return {"error": f"unknown model: {mid}"}
-    stored = _clean_settings(config.read_sections().get(mid, {}))
-    merged = dict(stored)
-    merged.update(current)
-    rec = _autotune_recommend({"model": mid, "intent": intent})
-    if "error" in rec:
-        return rec
-    # Intent presets are the point of refine, so use the recommended knobs as
-    # the base. Carry through only unrelated current settings (e.g. MTP /
-    # other manually-set knobs), so a previous "speed" run does not pin
-    # cache/ctx/batch values when the user switches back to "balanced".
-    preserved = {k: v for k, v in merged.items() if k not in managed and v is not None}
-    base = {**preserved, **(rec.get("knobs") or {})}
-    sticky = {k: v for k, v in preserved.items() if k in ("spec-type", "spec-draft-model")}
-    _dbg("autotune.refine.begin",
-         model=mid, intent=intent,
-         received=_knob_snapshot(current),
-         stored=_knob_snapshot(stored),
-         recommended=_knob_snapshot(rec.get("knobs") or {}),
-         preserved=_knob_snapshot(preserved),
-         base=_knob_snapshot(base))
-
-    def load_fn(knobs):
-        raw = dict(knobs or {})
-        clean = _clean_settings(knobs)
-        for key, value in sticky.items():
-            if value is not None and (key not in clean or clean.get(key) is None or str(clean.get(key)).strip() == ""):
-                clean[key] = value
-        for key in managed:
-            if key not in clean:
-                clean[key] = None
-        _dbg("autotune.refine.load_candidate",
-             model=mid, intent=intent,
-             raw=_knob_snapshot(raw),
-             candidate=_knob_snapshot(clean))
-        config.set_keys(mid, clean)
-        _dbg("autotune.refine.persisted",
-             model=mid, intent=intent,
-             settings=_knob_snapshot(config.read_sections().get(mid, {})))
-        router("/models?reload=1")
-        code, res = router("/models/load", "POST", {"model": mid})
-        if code >= 400:
-            _dbg("autotune.refine.load_failed",
-                 model=mid, intent=intent, code=code, response=res or {})
-            raise RuntimeError((res or {}).get("error", "load failed"))
-
-    def measure_fn():
-        """Send a real completion request and measure tok/s (generation only, excludes prompt eval)."""
-        import time
-        prompt = "Write a Python function that computes the Fibonacci sequence iteratively. Explain your approach briefly."
-        payload = {"model": mid, "prompt": prompt, "n_predict": 200, "stream": True}
-        url = router_base() + "/completion"
-        data = json.dumps(payload).encode()
-        req = urllib.request.Request(url, data=data, method="POST",
-                                     headers={"Content-Type": "application/json"})
-        tokens = 0
-        first_tok = None
-        last_tok = None
-        try:
-            with urllib.request.urlopen(req, timeout=120) as r:
-                for line in r:
-                    line = line.decode().strip()
-                    if not line or not line.startswith("data: "):
-                        continue
-                    try:
-                        obj = json.loads(line[6:])
-                    except json.JSONDecodeError:
-                        continue
-                    if obj.get("stop"):
-                        break
-                    content = obj.get("content", "")
-                    if content:
-                        tokens += 1
-                        now = time.monotonic()
-                        if first_tok is None:
-                            first_tok = now
-                        last_tok = now
-        except Exception as e:
-            return 0.0
-        if first_tok is None or last_tok is None or tokens < 10:
-            return 0.0
-        elapsed = last_tok - first_tok
-        if elapsed < 0.01:
-            return 0.0
-        return round(tokens / elapsed, 1)
-
-    out = autotune.refine(base, intent, load_fn, measure_fn)
-    out["model"] = mid
-    return out
 
 
 # ---------- unified model list (llama.cpp + vLLM) ----------
@@ -774,7 +646,7 @@ def _materialize_preset_settings(model_id, settings, extra_clear_keys=None):
     """Write one preset's exact knob set into models.ini without reloading a
     live model. Keys used by this model's other presets are cleared first so
     switching presets does not leave stale knobs behind."""
-    clean = _force_max_gpu_layers(_clean_settings(settings or {}))
+    clean = _clean_settings(settings or {})
     updates = {key: None for key in _preset_scope_keys(model_id)}
     for key in (extra_clear_keys or ()):
         if key is None or str(key).strip() == "":
@@ -802,10 +674,6 @@ def _clean_settings(updates):
         return model_settings.clean_settings(updates, schema())
     except Exception:
         return model_settings.clean_settings(updates)
-
-
-def _force_max_gpu_layers(clean):
-    return model_settings.force_max_gpu_layers(clean)
 
 
 def _register_ggufs_beside(paths):
@@ -1388,14 +1256,6 @@ def post_autotune_recommend(req):
     return 200, _autotune_recommend(req.body)
 
 
-def post_autotune_refine(req):
-    _dbg("autotune.refine.request",
-         model=req.body.get("model", ""),
-         intent=req.body.get("intent", "balanced"),
-         knobs=_knob_snapshot(_clean_settings(req.body.get("knobs") or {})))
-    return 200, _autotune_refine(req.body)
-
-
 def post_presets_save(req):
     mid = req.body.get("model", "")
     name = req.body.get("name", "")
@@ -1405,7 +1265,7 @@ def post_presets_save(req):
         presets = config.save_preset(mid, name, req.body.get("settings", {}))
     except ValueError as e:
         raise ApiError(400, str(e))
-    clean = _force_max_gpu_layers(_clean_settings(presets.get(name, {})))
+    clean = _clean_settings(presets.get(name, {}))
     if config.get_bindings().get(mid) == name:
         clean = _materialize_preset_settings(mid, presets.get(name, {}),
                                              extra_clear_keys=previous_keys)
@@ -1461,7 +1321,7 @@ def post_presets_apply(req):
     if preset is None:
         raise ApiError(400, f"unknown preset: {name}")
     # apply exactly like /api/save so a loaded model reloads with the knobs
-    clean = _force_max_gpu_layers(_clean_settings(preset))
+    clean = _clean_settings(preset)
     _dbg("preset.apply", model=mid, preset=name, settings=_knob_snapshot(clean))
     running = _apply_knobs_and_reload(mid, clean)
     return 200, {"ok": True, "applied": list(clean), "was_running": running}
@@ -1544,10 +1404,6 @@ def _scheduled_build_idle(c):
         return skip("llama.cpp is not the active engine")
     if BUILDER_LLAMA.state["running"] or BUILDER_IKLLAMA.state["running"]:
         return skip("A build is already running")
-    if _AUTOTUNE_SERVICE is not None:
-        with _AUTOTUNE_SERVICE._registry_lock:
-            if _AUTOTUNE_SERVICE._registry:
-                return skip("Auto Tune is running")
     # vLLM is independent of the active llama-family engine. Be conservative
     # while it is up: this update should not compete with its inference work.
     if VLLM_SUPPORTED and (router_ctl.is_running(c.get("vllm_port", 8081))
@@ -2146,42 +2002,10 @@ def post_wiki_export(req):
     return (400 if out.get("error") else 200), out
 
 
-def _autotune_call(method, *args):
-    try:
-        return getattr(autotune_service_instance(), method)(*args)
-    except autotune_service.AutoTuneServiceError as exc:
-        raise ApiError(exc.status, str(exc))
-    except (OSError, ValueError) as exc:
-        raise ApiError(404 if method in ("status", "result") else 400, str(exc))
-
-
-def post_autotune_start(req):
-    path = req.body.get("model_path")
-    if not isinstance(path, str):
-        raise ApiError(400, "model_path is required")
-    try:
-        return 202, autotune_service_instance().start(autotune_service.AutoTuneStartRequest(path))
-    except autotune_service.DuplicateRunError as exc:
-        return 409, {"error": str(exc), "run_id": exc.run_id}
-    except autotune_service.AutoTuneServiceError as exc:
-        raise ApiError(exc.status, str(exc))
-
-
-def get_autotune_status(req): return 200, _autotune_call("status", req.q("run_id"))
-def get_autotune_result(req): return 200, _autotune_call("result", req.q("run_id"))
-def get_autotune_runs(req): return 200, _autotune_call("list_runs", req.q("limit", 20))
-def post_autotune_cancel(req): return 200, _autotune_call("cancel", req.body.get("run_id"))
-def post_autotune_preview(req):
-    return 200, _autotune_call("preview", req.body.get("run_id"), req.body.get("profile"), req.body.get("model"))
-
-
 # =================================================================== the tables
 
 GET_ROUTES = {
     "/api/chat/diagnostics":   get_chat_diagnostics,
-    "/api/autotune/status":    get_autotune_status,
-    "/api/autotune/result":    get_autotune_result,
-    "/api/autotune/runs":      get_autotune_runs,
     "/api/state":             get_state,
     "/api/schema":            get_schema,
     "/api/gpus":              get_gpus,
@@ -2225,10 +2049,6 @@ POST_ROUTES = {
     "/api/unload":              post_unload,
     "/api/unload_all":          post_unload_all,
     "/api/autotune/recommend":  post_autotune_recommend,
-    "/api/autotune/refine":     post_autotune_refine,
-    "/api/autotune/start":      post_autotune_start,
-    "/api/autotune/cancel":     post_autotune_cancel,
-    "/api/autotune/preview":    post_autotune_preview,
     "/api/presets/save":        post_presets_save,
     "/api/presets/bind":        post_presets_bind,
     "/api/presets/delete":      post_presets_delete,

@@ -19,41 +19,6 @@ class TestAutoTuneFrontendBoundary(unittest.TestCase):
         self.assertLess(models.index('class="ed-autotune"'), models.index('class="ed-knobs"'))
         self.assertIn("syncAutoTune(m)", models)
 
-    def test_stage_local_progress_has_no_overall_percentage(self):
-        with open(os.path.join(ROOT, "web", "js", "autotune.js"), encoding="utf-8") as handle: autotune = handle.read()
-        self.assertIn("Stage ${stageNumber} / ${esc(stageCount)}", autotune)
-        self.assertIn("cases in this stage", autotune)
-        self.assertIn("Waiting for benchmark resource...", autotune)
-        self.assertIn("stageHistory(progress)", autotune)
-        self.assertNotIn("overall percentage", autotune)
-
-    def test_stage_counts_use_an_aligned_left_side_grid(self):
-        with open(os.path.join(ROOT, "web", "index.html"), encoding="utf-8") as handle: html = handle.read()
-        stage_css = html[html.index(".at-stage{"):html.index("/* modal", html.index(".at-stage{"))]
-        self.assertIn("display:grid", stage_css)
-        self.assertIn("grid-template-columns:10px minmax(100px,130px)", stage_css)
-        self.assertIn("margin-left:0", stage_css)
-        self.assertNotIn("margin-left:auto", stage_css)
-
-    def test_completed_run_reference_is_restored_until_rerun(self):
-        with open(os.path.join(ROOT, "web", "js", "autotune.js"), encoding="utf-8") as handle: autotune = handle.read()
-        self.assertIn('RUN_STORAGE_KEY = "lf_autotune_runs_v1"', autotune)
-        self.assertIn("saveRun(modelId, s.runId)", autotune)
-        self.assertIn("if (s.runId && !s.restored)", autotune)
-        self.assertIn("data-autotune-rerun", autotune)
-        self.assertIn('"Run again"', autotune)
-
-    def test_strategy_v2_stage_labels_are_present(self):
-        with open(os.path.join(ROOT, "web", "js", "autotune.js"), encoding="utf-8") as handle: autotune = handle.read()
-        for label in ("Batch sizing", "Flash attention", "KV cache", "Final validation"):
-            self.assertIn(label, autotune)
-
-    def test_failed_stage_and_not_run_stages_are_rendered(self):
-        with open(os.path.join(ROOT, "web", "js", "autotune.js"), encoding="utf-8") as handle: autotune = handle.read()
-        self.assertIn('item.status === "failed" ? "✕"', autotune)
-        self.assertIn('item.status === "not_run"', autotune)
-        self.assertIn('terminal.has(status)', autotune)
-
     def test_preset_save_uses_modal_instead_of_native_prompt(self):
         with open(os.path.join(ROOT, "web", "js", "models.js"), encoding="utf-8") as handle: models = handle.read()
         self.assertIn('showModal("Save preset"', models)
@@ -85,3 +50,14 @@ class TestAutoTuneFrontendBoundary(unittest.TestCase):
         self.assertIn('filter(opt => opt.selected)', models)
         self.assertIn('if (!isMultiValueEl(el) || !el?.options)', models)
         self.assertNotIn('el.selectedOptions', models)
+
+
+class StaticPresetBehaviorTests(unittest.TestCase):
+    def test_interactive_preset_flow(self):
+        import shutil
+        import subprocess
+        if not shutil.which('node'):
+            self.skipTest('Node is required')
+        result = subprocess.run(['node', os.path.join(ROOT, 'tests', 'autotune_frontend_checks.mjs')],
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

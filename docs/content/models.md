@@ -30,7 +30,7 @@ Because the flag count is entirely a function of your `llama-server` build, Llam
    - If that model already has a bound default preset, **Overwrite bound** saves the current knob values back into that existing preset name instead of creating a new one.
    - Clicking a preset chip sets it as that model's **default** (`POST /api/presets/bind`) and immediately loads that preset's values into the editor. The bound chip is highlighted; clicking the same chip again clears the default binding and leaves the current knobs in place. Re-saving a bound preset re-syncs that same model.
 5. To compare settings across models, click **Compare** above the model list, tick the checkbox on two or more rows, then open the comparison. The table lists every knob key any selected model has explicitly set and highlights cells that differ between models; a blank cell marked "inherit" means that model falls back to the `[*]` default.
-6. To auto-tune a model's knobs based on your hardware, use the **Refine** bar beside Presets: pick an intent (balanced / speed / context / coding), click **Run**, and it benchmarks candidates with real completion requests (~200 tokens each) and applies the fastest config. A results table shows tok/s per candidate and which was chosen.
+6. Open **Static presets** to review **Safe / Balanced / Aggressive** recommendations, automatically calculated for the selected GGUF. Balanced is selected initially. Choosing a preset or clicking **Apply preset to editor** fills the fields; you can still edit every value before **Save + Reload**. **Recalculate presets** refreshes the current memory estimate. No model is loaded during recommendation.
 
 ## Screenshot
 
@@ -45,7 +45,7 @@ Because the flag count is entirely a function of your `llama-server` build, Llam
 | Hot reload | `POST /api/save` (`backend/server.py`) | Writes knobs via `config.set_keys()`, unloads the model if running, then calls the router's `/models?reload=1` so `models.ini` is re-read live. |
 | Presets | `POST /api/presets/save` / `/apply` / `/delete` / `/bind` | Named knob sets stored per model in `config.json`'s `model_presets` key. The Models UI uses **bind** to make a chip the model's default, record the pairing in `preset_bindings`, materialize those knobs into that same model, and refresh the editor with the preset's values. |
 | Compare | Models tab, Compare toggle (`web/js/models.js` `openCompare()`) | Client-side diff of `settings` across two or more selected models; no separate endpoint. |
-| Refine | Models tab, Refine bar (`POST /api/autotune/refine`) | Auto-generates knob recommendations for the selected intent, benchmarks candidates with real completion requests (~200 tokens), applies the fastest config. Results table shows tok/s per candidate. |
+| Static presets | `POST /api/autotune/recommend` | GGUF tensor/header geometry + hardware memory budget → Safe / Balanced / Aggressive, including settings, rationale, confidence, memory estimates and fit status. |
 | UI density | `ui_mode` in `config.json` (`"lite"` / `"advanced"`) | Lite = curated knob subset; advanced = the full parsed schema. |
 
 ## Troubleshooting
@@ -53,3 +53,5 @@ Because the flag count is entirely a function of your `llama-server` build, Llam
 If the editor shows "Could not read knobs from `llama-server --help`", `server_bin` in `config.json` is missing, wrong, or the binary failed to run (missing DLLs is common on Windows). Fix the path from the Setup tab or `config.json` directly — the schema is retried automatically on the next open, no restart needed. If `--help` runs but returns no arguments, the help text format wasn't recognized; check the binary is actually `llama-server` and not a different tool.
 
 See also [models.ini Format](models-ini.md) for the on-disk file this editor writes to, and [config.json Reference](config.md) for `server_bin` and `ui_mode`.
+
+See [Static AutoTune](autotune.md) for memory assumptions and limitations.

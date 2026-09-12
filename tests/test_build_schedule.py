@@ -2,7 +2,6 @@
 import conftest_paths  # noqa: F401
 from datetime import datetime
 import tempfile
-import threading
 import unittest
 from unittest import mock
 
@@ -81,8 +80,7 @@ class IdleTest(unittest.TestCase):
         self.cfg = {"active_engine": "llamacpp"}
         self.models = [{"id": m, "status": {"value": "loaded"}} for m in ("a", "b")]
         self.metrics = {stats.M_REQ_PROCESSING: 0, "llamacpp:requests_deferred": 0}
-        patches = [mock.patch.object(routes, "_AUTOTUNE_SERVICE", None),
-                   mock.patch.object(routes, "VLLM_SUPPORTED", False),
+        patches = [mock.patch.object(routes, "VLLM_SUPPORTED", False),
                    mock.patch.object(routes.BUILDER_LLAMA, "state", {"running": False}),
                    mock.patch.object(routes.BUILDER_IKLLAMA, "state", {"running": False}),
                    mock.patch.object(routes.router_ctl, "is_running", return_value=True),
@@ -119,10 +117,6 @@ class IdleTest(unittest.TestCase):
         routes.BUILDER_IKLLAMA.state["running"] = True
         self.assertTrue(routes._scheduled_build_idle(self.cfg)[0])
         routes.BUILDER_IKLLAMA.state["running"] = False
-        service = mock.Mock(_registry={"job": object()})
-        service._registry_lock = threading.Lock()
-        with mock.patch.object(routes, "_AUTOTUNE_SERVICE", service):
-            self.assertTrue(routes._scheduled_build_idle(self.cfg)[0])
 
     def test_running_vllm_skips(self):
         with mock.patch.object(routes, "VLLM_SUPPORTED", True):

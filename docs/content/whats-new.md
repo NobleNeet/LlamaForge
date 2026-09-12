@@ -40,7 +40,7 @@ See [First Run](first-run.md), [Setup](setup.md), and [Troubleshooting](troubles
 
 ## Lite and Advanced modes, with a guided first run
 
-A first-run wizard now walks a new install through engine detection, hardware review, model selection, and a recommended tune — then applies it and loads the model. The dashboard runs in one of two modes: **Lite** presents a reduced, task-oriented set of controls; **Advanced** exposes every server flag. A hardware **auto-tune** proposes per-model settings (GPU-layer offload, KV-cache type, context ceiling, and intent presets for balanced / speed / context / coding) sized to the detected VRAM.
+A first-run wizard now walks a new install through engine detection, hardware review, model selection, and a recommended tune — then applies it and loads the model. The dashboard runs in one of two modes: **Lite** presents a reduced, task-oriented set of controls; **Advanced** exposes every server flag. A hardware **auto-tune** proposes per-model settings (GPU-layer offload, KV-cache type, context ceiling, and Safe / Balanced / Aggressive memory headroom presets) sized to the detected VRAM.
 
 See [First Run](first-run.md) and [Models & Tuning](models.md).
 
@@ -78,11 +78,11 @@ Navigation moved from a top tab bar to a left **sidebar** that collapses between
 
 See [Keyboard Shortcuts](keymap.md).
 
-## Refine benchmark in the Models panel
+## Static presets in the Models panel
 
-A **Refine** button now sits inline in each model's editor (beside the Presets bar). Pick an intent (balanced / speed / context / coding), click **Run**, and it auto-generates knob recommendations, benchmarks candidates with real completion requests (~200 tokens each), and applies the fastest config. A results table shows tok/s per candidate and which was chosen. The same autotune engine used in the first-run wizard is now available anytime from the main Models tab.
+**Safe / Balanced / Aggressive** presets are generated automatically from actual GGUF files and available hardware memory. The initial selection is Balanced. Review the values, apply them to the editor and adjust individual fields before saving. Static recommendation only. No model execution or benchmark is performed.
 
-See [Models & Tuning](models.md).
+See [Static AutoTune](autotune.md) and [Models & Tuning](models.md).
 
 ## VRAM "Will-it-run" panel
 

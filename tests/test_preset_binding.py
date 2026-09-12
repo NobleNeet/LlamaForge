@@ -82,11 +82,11 @@ class BindMaterializeRouteTest(_ConfigTempCase):
         status, out = self._post(routes.post_presets_bind, model="qwopus", name="coding")
         self.assertEqual(status, 200)
         self.assertEqual(config.get_bindings(), {"qwopus": "coding"})
-        self.assertEqual(out["settings"], {"temp": "0.2", "top-k": "20", "n-gpu-layers": "99"})
+        self.assertEqual(out["settings"], {"temp": "0.2", "top-k": "20"})
         saved = config.read_sections(self.ini)["qwopus"]
         self.assertEqual(saved["temp"], "0.2")
         self.assertEqual(saved["top-k"], "20")
-        self.assertEqual(saved["n-gpu-layers"], "99")
+        self.assertNotIn("n-gpu-layers", saved)
 
     def test_editing_a_bound_preset_resyncs_models_ini_without_reload(self):
         with mock.patch.object(routes, "router", return_value=(200, {})) as router:
@@ -94,7 +94,7 @@ class BindMaterializeRouteTest(_ConfigTempCase):
             self._post(routes.post_presets_save, model="qwopus", name="coding", settings={"temp": "0.9"})
         saved = config.read_sections(self.ini)["qwopus"]
         self.assertEqual(saved["temp"], "0.9")
-        self.assertEqual(saved["n-gpu-layers"], "99")
+        self.assertNotIn("n-gpu-layers", saved)
         self.assertIn(mock.call("/models?reload=1"), router.mock_calls)
 
     def test_overwriting_a_bound_preset_clears_removed_keys_from_models_ini(self):
@@ -105,7 +105,7 @@ class BindMaterializeRouteTest(_ConfigTempCase):
         self.assertEqual(saved["temp"], "0.9")
         self.assertNotIn("top-k", saved)
         self.assertEqual(config.get_presets("qwopus")["coding"],
-                         {"temp": "0.9", "n-gpu-layers": "99"})
+                         {"temp": "0.9"})
         self.assertIn(mock.call("/models?reload=1"), router.mock_calls)
 
     def test_unbind_leaves_knobs_in_place(self):

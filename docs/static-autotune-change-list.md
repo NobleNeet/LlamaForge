@@ -1,0 +1,85 @@
+# Static AutoTune 変更ファイル一覧
+
+実機ベンチマーク、候補探索、Taguchi実験計画、実測スコア分析、ジョブ・進捗・キャンセル、実測結果保存、Refine API/UIを削除しました。既存の実測ログやユーザー設定データは削除していません。
+
+新しい処理: GGUFヘッダ・テンソル一覧 + ハードウェア → モデルgeometry → KV/compute/headroom見積り → GPU/CPU配置 → パラメータ選択 → Safe / Balanced / Aggressive。推薦処理はモデルをロードせず、推論・ベンチマークを実行しません。
+
+| 区分 | ファイル |
+|---|---|
+| 変更 | `README.md` |
+| 変更 | `backend/autotune.py` |
+| 削除 | `backend/autotune_core/__init__.py` |
+| 削除 | `backend/autotune_core/backends.py` |
+| 削除 | `backend/autotune_core/bench_argv.py` |
+| 削除 | `backend/autotune_core/bench_artifacts.py` |
+| 削除 | `backend/autotune_core/bench_capabilities.py` |
+| 削除 | `backend/autotune_core/bench_knobs.py` |
+| 削除 | `backend/autotune_core/bench_parse.py` |
+| 削除 | `backend/autotune_core/bench_runner.py` |
+| 削除 | `backend/autotune_core/discovery.py` |
+| 削除 | `backend/autotune_core/environment.py` |
+| 削除 | `backend/autotune_core/gguf_normalize.py` |
+| 削除 | `backend/autotune_core/models.py` |
+| 削除 | `backend/autotune_core/orchestrator.py` |
+| 削除 | `backend/autotune_core/planner.py` |
+| 削除 | `backend/autotune_core/profiles.py` |
+| 削除 | `backend/autotune_core/resource_lease.py` |
+| 削除 | `backend/autotune_core/results.py` |
+| 削除 | `backend/autotune_core/rules.py` |
+| 削除 | `backend/autotune_core/run_store.py` |
+| 削除 | `backend/autotune_core/schemas/rules.json` |
+| 削除 | `backend/autotune_core/scoring.py` |
+| 削除 | `backend/autotune_core/staleness.py` |
+| 削除 | `backend/autotune_core/strategy_factory.py` |
+| 新規 | `backend/autotune_hardware.py` |
+| 削除 | `backend/autotune_service.py` |
+| 変更 | `backend/config.py` |
+| 変更 | `backend/gguf.py` |
+| 変更 | `backend/model_settings.py` |
+| 変更 | `backend/routes.py` |
+| 変更 | `docs/content/api.md` |
+| 新規 | `docs/content/autotune.md` |
+| 変更 | `docs/content/build.md` |
+| 変更 | `docs/content/first-run.md` |
+| 変更 | `docs/content/models.md` |
+| 変更 | `docs/content/whats-new.md` |
+| 新規 | `docs/static-autotune-change-list.md` |
+| 新規 | `tests/autotune_frontend_checks.mjs` |
+| 削除 | `tests/test_autotune_core_bench_argv.py` |
+| 削除 | `tests/test_autotune_core_bench_artifacts.py` |
+| 削除 | `tests/test_autotune_core_bench_parse.py` |
+| 削除 | `tests/test_autotune_core_bench_runner.py` |
+| 削除 | `tests/test_autotune_core_capabilities.py` |
+| 削除 | `tests/test_autotune_core_discovery.py` |
+| 削除 | `tests/test_autotune_core_environment.py` |
+| 削除 | `tests/test_autotune_core_gguf.py` |
+| 削除 | `tests/test_autotune_core_orchestrator.py` |
+| 削除 | `tests/test_autotune_core_phase41.py` |
+| 削除 | `tests/test_autotune_core_planner.py` |
+| 削除 | `tests/test_autotune_core_profiles.py` |
+| 削除 | `tests/test_autotune_core_required_workloads.py` |
+| 削除 | `tests/test_autotune_core_resource_lease.py` |
+| 削除 | `tests/test_autotune_core_results.py` |
+| 削除 | `tests/test_autotune_core_rules.py` |
+| 削除 | `tests/test_autotune_core_run_store.py` |
+| 削除 | `tests/test_autotune_core_scoring.py` |
+| 削除 | `tests/test_autotune_core_staleness.py` |
+| 削除 | `tests/test_autotune_core_strategy_factory.py` |
+| 変更 | `tests/test_autotune_frontend.py` |
+| 削除 | `tests/test_autotune_intents.py` |
+| 削除 | `tests/test_autotune_prediction.py` |
+| 削除 | `tests/test_autotune_presentation.py` |
+| 削除 | `tests/test_autotune_recommend.py` |
+| 削除 | `tests/test_autotune_refine.py` |
+| 削除 | `tests/test_autotune_route.py` |
+| 削除 | `tests/test_autotune_routes.py` |
+| 新規 | `tests/test_autotune_static.py` |
+| 変更 | `tests/test_build_schedule.py` |
+| 新規 | `tests/test_gguf_inspection.py` |
+| 変更 | `tests/test_preset_binding.py` |
+| 変更 | `tests/test_presets.py` |
+| 変更 | `tests/test_routes_api.py` |
+| 変更 | `web/index.html` |
+| 変更 | `web/js/autotune.js` |
+| 変更 | `web/js/models.js` |
+| 変更 | `web/js/wizard.js` |

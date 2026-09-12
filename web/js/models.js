@@ -15,12 +15,6 @@ import { initAutoTune, syncAutoTune } from "./autotune.js";
 
 const LITE_KNOBS = new Set(["n-gpu-layers","ctx-size","cache-type-k","cache-type-v",
   "flash-attn","batch-size","ubatch-size","threads","tensor-split","temp","top-p"]);
-const AUTOTUNE_MANAGED_KNOBS = new Set([
-  "n-gpu-layers", "ctx-size", "cache-type-k", "cache-type-v",
-  "flash-attn", "batch-size", "ubatch-size", "threads", "tensor-split",
-  "temp", "top-p",
-]);
-
 /* ---------- view-local state ---------- */
 let openId = localStorage.getItem("lf_openid") || null;   // expanded row, persisted
 let selId = null;                 // keyboard-selected row
@@ -759,81 +753,6 @@ async function fetchMeta(id) {
   if (openId === id) renderModels();
 }
 
-/* ---------- autotune bar ---------- */
-function autoTuneBar(m) {
-  return `<div class="tunebar">
-    <span class="tunebar-label" title="⚠ Benchmarks run a real completion request (~200 tokens) per candidate. Results depend on your hardware and current system load.">⚙ Refine</span>
-    <select data-tune-intent>
-      <option value="balanced">Balanced</option>
-      <option value="speed">Max speed</option>
-      <option value="context">Max context</option>
-      <option value="coding">Coding</option>
-    </select>
-    <button class="qbtn" data-tune-refine="${esc(m.id)}">Run (~1 min)</button>
-  </div>
-  <div class="tunebar-results" data-tune-results hidden></div>`;
-}
-function applyTuneResult(row, rec) {
-  const knobs = rec.knobs || {}, changed = [];
-  $$("[data-k]", row).forEach(el => {
-    const next = knobPayloadValue(el, knobs);
-    if (next == null && AUTOTUNE_MANAGED_KNOBS.has(el.dataset.k) && knobValue(el) !== "") {
-      setKnobValue(el, "");
-      syncKnobSetState(el);
-      changed.push(el.dataset.k);
-      return;
-    }
-    if (next != null && next !== knobValue(el)) {
-      setKnobValue(el, next);
-      syncKnobSetState(el);
-      changed.push(el.dataset.k);
-    }
-  });
-  const msg = $("[data-msg]", row);
-  if (msg && changed.length) {
-    msg.className = "msg work";
-    msg.textContent = `${changed.length} knobs updated — unsaved changes`;
-  }
-  const refineBtn = row.querySelector("[data-tune-refine]");
-  if (refineBtn) refineBtn.hidden = false;
-  row._tuneRec = rec;
-}
-function renderTuneResults(row, measurements) {
-  const el = $("[data-tune-results]", row);
-  if (!el) return;
-  const cands = measurements?.candidates || [];
-  if (!cands.length) { el.hidden = true; return; }
-  const bestTok = measurements?.chosen_tok_s || 0;
-  const rows = cands.map(c => {
-    const tok = (c.tok_s || 0).toFixed(1);
-    const isBest = Math.abs(c.tok_s - bestTok) < 0.01;
-    const diff = Object.entries(c.knobs).filter(([k,v]) => {
-      const base = cands[0]?.knobs?.[k];
-      return base != null && base !== v;
-    }).map(([k,v]) => `${k}=${v}`).join(", ");
-    const label = diff ? diff : "base";
-    return `<div class="tunebar-cand${isBest?" best":""}"><span class="tunebar-cand-label">${esc(label)}</span><span class="tunebar-cand-tok">${tok} tok/s</span>${isBest?'<span class="tunebar-cand-best">← chosen</span>':''}</div>`;
-  }).join("");
-  el.innerHTML = `<div class="tunebar-cand-header"><span>candidate</span><span>speed</span></div>${rows}`;
-  el.hidden = false;
-}
-async function handleTuneRefine(modelId) {
-  const row = $(`.row[data-id="${CSS.escape(modelId)}"]`); if (!row) return;
-  const intent = $("[data-tune-intent]", row)?.value || "balanced";
-  const btn = $("[data-tune-refine]", row);
-  btn.disabled = true; btn.textContent = "benchmarking...";
-  try {
-    const r = await api("/api/autotune/refine", {model: modelId, intent,
-      knobs: rowSettings(row, {dropBlank: true})});
-    if (r.error) { toast(r.error, "err"); return; }
-    const tok = (r.measurements?.chosen_tok_s || 0).toFixed(1);
-    applyTuneResult(row, {knobs: r.knobs, intent});
-    renderTuneResults(row, r.measurements);
-    toast(`Refined — ${tok} tok/s`, "ok");
-  } catch (e) { toast("Refine failed: " + e, "err"); }
-  btn.disabled = false; btn.textContent = "Run (~1 min)";
-}
-
 /* ---------- inline load-failure diagnosis ---------- */
 function diagBlock(m) {
   if (!m.failed) return "";
@@ -923,17 +842,21 @@ function refreshTextLog(el, nextText) {
 /* ---------- event wiring ---------- */
 export function initModels() {
   initAutoTune({
-    model: id => modelRows().find(model => model.id === id),
-    modal: showModal,
-    closeModal,
-    unsaved: id => {
-      const row = $(`.row[data-id="${CSS.escape(id)}"]`), model = modelRows().find(item => item.id === id);
-      return !!row && !!model && $$('[data-k]', row).some(el => String(knobValue(el)) !== String(knobPayloadValue(el, model.settings) ?? ""));
-    },
     stage: (id, settings) => {
-      const row = $(`.row[data-id="${CSS.escape(id)}"]`); if (!row) return;
+      const row = $(`.row[data-id="${CSS.escape(id)}"]`); if (!row) return false;
+      const fields = $$('[data-k]', row);
+      const unsupported = Object.keys(settings).filter(key => !fields.some(el =>
+        [el.dataset.k, ...(el.dataset.aliases || "").split(",")].includes(key)));
+      const invalid = fields.filter(el => {
+        const value = knobPayloadValue(el, settings);
+        return value != null && el.options && ![...el.options].some(o => o.value === String(value));
+      }).map(el => el.dataset.k);
+      if (unsupported.length || invalid.length) {
+        toast(`This server's editor cannot apply: ${[...unsupported, ...invalid].join(", ")}. Review the displayed preset values.`, "err");
+        return false;
+      }
       let count = 0;
-      $$('[data-k]', row).forEach(el => {
+      fields.forEach(el => {
         const value = knobPayloadValue(el, settings); if (value == null || knobValue(el) === String(value)) return;
         setKnobValue(el, String(value)); syncKnobSetState(el); count += 1;
       });
@@ -1047,9 +970,6 @@ export function initModels() {
       if (pdel) { await api("/api/presets/delete", {model: pBind.dataset.presetBindModel, name: pdel.dataset.presetDel}); toast("Preset deleted","ok"); await refresh(true); return; }
       await bindPreset(pBind.dataset.presetBindModel, pBind.dataset.presetBind); return;
     }
-    // autotune
-    const tRef = e.target.closest("[data-tune-refine]");
-    if (tRef) { e.stopPropagation(); await handleTuneRefine(tRef.dataset.tuneRefine); return; }
     const head = e.target.closest("#view-models .rhead");
     if (head && !e.target.closest("button,input")) {
       const id = head.parentElement.dataset.id;

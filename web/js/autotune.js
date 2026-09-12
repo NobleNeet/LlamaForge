@@ -1,135 +1,82 @@
-/* New benchmark-core Auto Tune UI. It deliberately does not import models.js. */
+// Static, automatically generated presets. Staging only changes editable fields.
 import { api, esc, setHTML, toast } from "./core.js";
 
-const sessions = new Map();
-let bridge = null;
-const terminal = new Set(["completed", "failed", "cancelled", "interrupted"]);
-const stageLabel = {coarse: "Initial search", batch_probe: "Batch sizing", flash_probe: "Flash attention", kv_probe: "KV cache", validate: "Final validation"};
-const RUN_STORAGE_KEY = "lf_autotune_runs_v1";
+let bridge;
+const states = new Map();
+const names = ["safe", "balanced", "aggressive"];
+const labels = {"n-gpu-layers": "GPU Layers", "ctx-size": "Context",
+  "batch-size": "Batch", "ubatch-size": "uBatch", "threads": "Threads",
+  "threads-batch": "Threads batch", "flash-attn": "Flash Attention",
+  "cache-type-k": "KV Cache K", "cache-type-v": "KV Cache V",
+  "split-mode": "GPU split", "main-gpu": "GPU device"};
+const panel = id => document.querySelector(`[data-autotune-panel="${CSS.escape(id)}"]`);
 
-function savedRuns() {
-  try { return JSON.parse(localStorage.getItem(RUN_STORAGE_KEY) || "{}"); }
-  catch (_) { return {}; }
-}
-function saveRun(modelId, runId) {
-  const runs = savedRuns();
-  if (runId) runs[modelId] = runId; else delete runs[modelId];
-  try { localStorage.setItem(RUN_STORAGE_KEY, JSON.stringify(runs)); } catch (_) { /* browser storage is optional */ }
-}
-function stateFor(modelId) {
-  if (!sessions.has(modelId)) sessions.set(modelId, {runId: savedRuns()[modelId] || null, restored: false});
-  return sessions.get(modelId);
-}
-function panel(modelId) { return document.querySelector(`[data-autotune-panel="${CSS.escape(modelId)}"]`); }
-function profileCard(profile, result) {
-  const settings = Object.entries(profile.settings || {}).map(([k,v]) => `<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join("");
-  const latency = (result.derived_request_latencies || []).filter(x => x.candidate_id === profile.candidate_id)
-    .map(x => `<span>${esc(x.request_workload_id)}: ${(Number(x.latency_seconds)||0).toFixed(2)} s</span>`).join(" ");
-  const provenance = profile.provenance || {};
-  const binary = provenance.bench_binary_identity || {};
-  const identity = [provenance.model_fingerprint && `model ${String(provenance.model_fingerprint).slice(0, 12)}`,
-    provenance.hardware_fingerprint && `hardware ${String(provenance.hardware_fingerprint).slice(0, 12)}`,
-    binary.build_id && `build ${binary.build_id}`, provenance.scoring_schema_version].filter(Boolean).join(" · ");
-  return `<section class="at-profile"><h4>${esc(profile.name.replace("_", " "))}</h4><div class="at-meta">${esc(provenance.backend || "unknown")} · ${esc(profile.evidence || "measured")}</div><div class="at-settings">${settings}</div>${latency ? `<div class="at-latency">${latency}</div>` : ""}${identity ? `<div class="at-meta">${esc(identity)}</div>` : ""}<button class="qbtn" data-autotune-preview="${esc(profile.name)}">Preview</button></section>`;
-}
-function stageProgress(item) {
-  if (item.status === "not_run") return "not run";
-  const counts = item.counts || {};
-  const done = Number(counts.succeeded || 0) + Number(counts.failed || 0) + Number(counts.skipped || 0);
-  const extras = [counts.failed && `${counts.failed} failed`, counts.skipped && `${counts.skipped} skipped`].filter(Boolean);
-  return `${done} / ${item.cases || 0} cases${extras.length ? ` · ${extras.join(" · ")}` : ""}`;
-}
-function stageHistory(progress) {
-  return (progress.stages || []).map(item => {
-    const current = item.stage_index === progress.stage_index;
-    const marker = current ? "›" : item.status === "completed" ? "✓" : item.status === "partial" ? "!" : item.status === "failed" ? "✕" : "·";
-    return `<div class="at-stage${current ? " current" : ""}"><b>${marker}</b><span>${esc(stageLabel[item.stage_id] || item.stage_id)}</span><small>${esc(stageProgress(item))}</small></div>`;
-  }).join("");
-}
-function render(modelId) {
-  const el = panel(modelId); if (!el) return;
-  const s = stateFor(modelId);
-  if (!s.runId) { setHTML(el, `<div class="autotune"><span class="tunebar-label">Auto Tune</span><button class="qbtn" data-autotune-start ${s.starting ? "disabled" : ""}>${s.starting ? "Starting..." : "Run Auto Tune"}</button></div>`); return; }
-  const status = s.status || "planned", progress = s.progress || {}, counts = progress.counts || {};
-  let body = `<div class="autotune"><span class="tunebar-label">Auto Tune</span><b>${esc(status)}</b>`;
-  if (!terminal.has(status)) {
-    if (progress.stage_id) {
-      const stageNumber = Number(progress.stage_index || 0) + 1, stageCount = progress.stage_count || "?";
-      const waiting = progress.status === "waiting_for_resource" ? "Waiting for benchmark resource..." : "";
-      body += `<div class="at-stage-title">Stage ${stageNumber} / ${esc(stageCount)} · ${esc(stageLabel[progress.stage_id] || progress.stage_id)}</div><div class="at-progress">${waiting || `${Number(counts.succeeded||0) + Number(counts.failed||0) + Number(counts.skipped||0)} / ${esc(progress.cases || "?")} cases in this stage`}</div>${waiting ? `<div class="at-progress">${Number(counts.succeeded||0) + Number(counts.failed||0) + Number(counts.skipped||0)} / ${esc(progress.cases || "?")} cases in this stage</div>` : ""}<div class="at-stages">${stageHistory(progress)}</div>`;
-    } else body += `<div class="at-progress">Preparing benchmark...</div>`;
-    body += `<button class="qbtn stop" data-autotune-cancel ${s.cancelling ? "disabled" : ""}>${s.cancelling ? "Cancelling..." : "Cancel"}</button>`;
+function render(id) {
+  const el = panel(id), s = states.get(id);
+  if (!el || !s) return;
+  if (s.pending) { setHTML(el, '<div class="autotune">Calculating static presets…</div>'); return; }
+  if (s.error) {
+    setHTML(el, `<div class="autotune">${esc(s.error)} <button type="button" class="qbtn" data-preset-recalculate>Recalculate presets</button></div>`);
+    return;
   }
-  if (status === "failed" && s.error) body += `<div class="msg err">${esc(s.error.message || "Auto Tune stopped because all candidates failed.")}</div>`;
-  if (terminal.has(status)) {
-    body += `<button class="qbtn" data-autotune-rerun ${s.starting ? "disabled" : ""}>${s.starting ? "Starting..." : "Run again"}</button>`;
-    body += `<div class="at-stages">${stageHistory(progress)}</div>`;
-  }
-  if (status === "completed" && s.result) {
-    body += `<div class="at-progress">Completed · ${esc(progress.stage_count || (progress.stages || []).length)} stages</div><div class="at-profiles">${(s.result.profiles || []).map(profile => profileCard(profile, s.result)).join("")}</div>`;
-  }
-  setHTML(el, body + "</div>");
+  const rec = s.result[s.selected];
+  const rows = Object.entries(rec.knobs).map(([k,v]) =>
+    `<div title="${esc(rec.rationale[k] || '')}"><span>${esc(labels[k] || k)}</span><b>${esc(v)}</b></div>`).join('');
+  setHTML(el, `<div class="autotune"><label>Static presets
+    <select data-static-preset>${names.map(n => `<option value="${n}" ${n === s.selected ? 'selected' : ''}>${n[0].toUpperCase() + n.slice(1)}</option>`).join('')}</select></label>
+    <button type="button" class="qbtn" data-static-apply ${rec.applicable ? '' : 'disabled'}>Apply preset to editor</button>
+    <button type="button" class="qbtn" data-preset-recalculate>Recalculate presets</button>
+    <div class="at-profile"><div class="at-settings">${rows}</div>
+    <div class="at-meta">${Math.round(rec.memory.headroom * 100)}% memory reserve · ${esc(rec.confidence)} confidence</div>
+    ${(rec.warnings || []).map(w => `<div class="note">${esc(w)}</div>`).join('')}
+    <div class="at-meta">Static estimate only. No model execution or benchmark. Review and edit before saving.</div></div></div>`);
 }
-async function poll(modelId) {
-  const s = stateFor(modelId); if (!s.runId || s.polling) return;
-  s.polling = true;
+
+async function calculate(id) {
+  const s = states.get(id);
+  if (!s || s.pending) return;
+  s.pending = true; s.error = null; render(id);
   try {
-    const response = await api(`/api/autotune/status?run_id=${encodeURIComponent(s.runId)}`);
-    if (response.error && !response.status) {
-      if (String(response.error).includes("unknown")) { saveRun(modelId); sessions.set(modelId, {restored: true}); }
-      else { s.status = "failed"; s.error = {message: "Auto Tune status is unavailable."}; }
-      render(modelId); return;
-    }
-    Object.assign(s, response); render(modelId);
-    if (terminal.has(s.status)) {
-      if (s.status === "completed") s.result = await api(`/api/autotune/result?run_id=${encodeURIComponent(s.runId)}`);
-      render(modelId); return;
-    }
-    s.timer = setTimeout(() => poll(modelId), 1500);
-  } finally { s.polling = false; }
+    const result = await api('/api/autotune/recommend', {model: id});
+    if (states.get(id) !== s) return; // discard response after model path changed
+    if (result.error) throw new Error(result.error);
+    s.result = result;
+  } catch (e) { s.error = `Presets unavailable: ${e.message || e}`; }
+  s.pending = false; render(id);
 }
-async function start(modelId, rerun = false) {
-  const model = bridge.model(modelId), path = model?.settings?.model, s = stateFor(modelId);
-  if (!path) { toast("This model has no GGUF path", "err"); return; }
-  if (s.starting || (s.runId && !rerun)) return;
-  s.starting = true; render(modelId);
-  const response = await api("/api/autotune/start", {model_path: path}); s.starting = false;
-  if (response.run_id) { s.runId = response.run_id; s.status = response.status || "planned"; s.result = null; saveRun(modelId, s.runId); poll(modelId); return; }
-  toast(response.error || "Auto Tune could not start", "err"); render(modelId);
-}
-async function preview(modelId, name) {
-  const s = stateFor(modelId), response = await api("/api/autotune/preview", {run_id: s.runId, profile: name, model: modelId});
-  if (!response.settings) { toast(response.error || "Profile preview is unavailable", "err"); return; }
-  s.preview = response;
-  const rows = (response.changes || []).map(change => `<tr class="${String(change.current ?? "") === String(change.recommended) ? "" : "diff"}"><td>${esc(change.key)}</td><td>${esc(change.current ?? "inherit")}</td><td>${esc(change.recommended)}</td></tr>`).join("");
-  const warning = (response.warnings || []).map(x => `<div class="msg err">${esc(x.message)}</div>`).join("");
-  bridge.modal(`Auto Tune - ${name}`, `<table class="cmptbl"><tr><th>knob</th><th>Current</th><th>Recommended</th></tr>${rows}</table>${warning}<div class="actions"><button class="primary" data-autotune-load="${esc(modelId)}" ${response.applicable ? "" : "disabled"}>Load into editor</button><button class="ghost" data-mclose>Cancel</button></div>`);
-}
-function requestLoad(modelId) {
-  const s = stateFor(modelId); if (!s.preview) return;
-  if (bridge.unsaved(modelId)) { bridge.modal("Replace unsaved edits?", `<div class="note">You have unsaved knob changes. Loading this Auto Tune profile will replace edited fields.</div><div class="actions"><button class="primary" data-autotune-confirm="${esc(modelId)}">Replace edits</button><button class="ghost" data-mclose>Cancel</button></div>`); return; }
-  bridge.stage(modelId, s.preview.settings); bridge.closeModal();
-}
-function confirmLoad(modelId) { const s = stateFor(modelId); bridge.stage(modelId, s.preview.settings); bridge.closeModal(); }
 
 export function syncAutoTune(model) {
-  const s = stateFor(model.id); render(model.id);
-  if (s.runId && !s.restored) { s.restored = true; poll(model.id); }
+  if (!panel(model.id)) return;
+  const path = model.model || model.settings?.model || '';
+  const old = states.get(model.id);
+  if (!old || old.path !== path) {
+    states.set(model.id, {path, selected: 'balanced', pending: false});
+    calculate(model.id);
+  } else if (!panel(model.id).firstElementChild) render(model.id);
 }
-export function initAutoTune(interface_) {
-  bridge = interface_;
-  document.addEventListener("click", async event => {
-    const startButton = event.target.closest("[data-autotune-start]");
-    if (startButton) { event.preventDefault(); start(startButton.closest("[data-autotune-panel]").dataset.autotunePanel); return; }
-    const rerunButton = event.target.closest("[data-autotune-rerun]");
-    if (rerunButton) { event.preventDefault(); start(rerunButton.closest("[data-autotune-panel]").dataset.autotunePanel, true); return; }
-    const cancelButton = event.target.closest("[data-autotune-cancel]");
-    if (cancelButton) { const modelId = cancelButton.closest("[data-autotune-panel]").dataset.autotunePanel, s = stateFor(modelId); s.cancelling = true; render(modelId); await api("/api/autotune/cancel", {run_id: s.runId}); poll(modelId); return; }
-    const previewButton = event.target.closest("[data-autotune-preview]");
-    if (previewButton) { preview(previewButton.closest("[data-autotune-panel]").dataset.autotunePanel, previewButton.dataset.autotunePreview); return; }
-    const loadButton = event.target.closest("[data-autotune-load]");
-    if (loadButton) { requestLoad(loadButton.dataset.autotuneLoad); return; }
-    const confirmButton = event.target.closest("[data-autotune-confirm]");
-    if (confirmButton) confirmLoad(confirmButton.dataset.autotuneConfirm);
+
+function apply(id) {
+  const s = states.get(id), rec = s?.result?.[s.selected];
+  if (!rec?.applicable) return;
+  if (bridge.stage(id, rec.knobs) === false) return;
+  toast(`${s.selected[0].toUpperCase() + s.selected.slice(1)} preset loaded into editor`, 'ok');
+}
+
+export function initAutoTune(callbacks) {
+  bridge = callbacks;
+  document.addEventListener('change', event => {
+    const select = event.target.closest('[data-static-preset]');
+    if (!select) return;
+    const id = select.closest('[data-autotune-panel]').dataset.autotunePanel;
+    states.get(id).selected = select.value;
+    render(id); apply(id);
+  });
+  document.addEventListener('click', event => {
+    const el = event.target.closest('[data-static-apply], [data-preset-recalculate]');
+    if (!el) return;
+    event.preventDefault();
+    const id = el.closest('[data-autotune-panel]').dataset.autotunePanel;
+    if (el.hasAttribute('data-preset-recalculate')) calculate(id);
+    else apply(id);
   });
 }

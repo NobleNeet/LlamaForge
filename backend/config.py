@@ -176,8 +176,8 @@ def migrate():
 # ---------------- models.ini (BOM-free, comment-preserving) ----------------
 
 # models.ini is edited the same read-modify-write way as config.json (set_keys,
-# remove_section, apply_ctx_defaults) from request threads and from autotune's
-# refine loop. Separate lock from _LOCK: the two files are independent, and
+# remove_section, apply_ctx_defaults) from request threads and background
+# model settings updates. Separate lock from _LOCK: the two files are independent, and
 # apply_ctx_defaults holds this one across many set_keys calls.
 _INI_LOCK = threading.RLock()
 
@@ -376,7 +376,6 @@ def get_presets(model_id=""):
 def _normalize_preset_settings(settings):
     clean = {k: str(v).strip() for k, v in (settings or {}).items()
              if str(v).strip() != ""}
-    clean["n-gpu-layers"] = "99"
     return clean
 
 def _model_preset_bucket(cfg, model_id, create=False, migrate_legacy=False):

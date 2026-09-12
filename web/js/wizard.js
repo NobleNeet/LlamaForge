@@ -59,38 +59,43 @@ function wizModel(body) {
   const sel = $("#wiz-model"); if (sel) WIZ.model = sel.value;
 }
 
-function wizTune(body) {
-  setHTML(body, `<div class="wizard-step"><h2>Tune for your goal</h2>
-    <select id="wiz-intent">
-      <option value="balanced">Balanced</option>
-      <option value="speed">Max speed</option>
-      <option value="context">Max context</option>
-      <option value="coding">Coding</option>
-    </select>
-    <button id="wiz-tune-run">Auto-tune</button>
-    <button id="wiz-tune-refine" hidden>Refine by benchmarking (~1 min)</button>
-    <div id="wiz-tune-out"></div></div>`);
-  $("#wiz-tune-run").onclick = async () => {
-    WIZ.intent = $("#wiz-intent").value;
-    const r = await api("/api/autotune/recommend", {model: WIZ.model, intent: WIZ.intent});
-    WIZ.rec = r; wizRenderRec(r); $("#wiz-tune-refine").hidden = false;
-  };
-  $("#wiz-tune-refine").onclick = async () => {
-    const r = await api("/api/autotune/refine",
-      {model: WIZ.model, intent: WIZ.intent, knobs: WIZ.rec.knobs});
-    WIZ.rec = {...WIZ.rec, knobs: r.knobs}; wizRenderRec(WIZ.rec);
-  };
+async function wizTune(body) {
+  const model = WIZ.model;
+  WIZ.rec = null;
+  setHTML(body, `<div class="wizard-step"><h2>Static presets</h2>
+    <p>No model execution or benchmark. Choose memory headroom, then review the settings.</p>
+    <select id="wiz-intent" disabled>
+      <option value="safe">Safe</option>
+      <option value="balanced" selected>Balanced</option>
+      <option value="aggressive">Aggressive</option>
+    </select><div id="wiz-tune-out">Calculating presets…</div></div>`);
+  try {
+    const r = await api("/api/autotune/recommend", {model});
+    if (WIZ.model !== model || WIZ.steps[WIZ.step] !== "tune") return;
+    if (r.error) throw new Error(r.error);
+    const sel = $("#wiz-intent");
+    sel.disabled = false;
+    const choose = () => {
+      WIZ.intent = sel.value;
+      const rec = r[sel.value];
+      WIZ.rec = rec.applicable ? rec : null;
+      wizRenderRec(rec);
+    };
+    sel.onchange = choose; choose();
+  } catch (e) {
+    if (WIZ.steps[WIZ.step] === "tune") setHTML($("#wiz-tune-out"), `<p>${esc(String(e))}</p>`);
+  }
 }
 
 function wizRenderRec(r) {
   const rows = Object.entries(r.knobs||{}).map(([k,v]) =>
     `<tr><td>${esc(k)}</td><td>${esc(v)}</td><td class="wizard-rationale">${esc((r.rationale||{})[k]||"")}</td></tr>`).join("");
-  setHTML($("#wiz-tune-out"), `<table>${rows}</table>`);
+  setHTML($("#wiz-tune-out"), `${(r.warnings || []).map(w => `<p>${esc(w)}</p>`).join('')}<table>${rows}</table>`);
 }
 
 function wizLoad(body) {
   setHTML(body, `<div class="wizard-step"><h2>Ready</h2>
-    <p>Apply these settings to <b>${esc(WIZ.model)}</b> and load it now.</p></div>`);
+    <p>${WIZ.rec ? "Apply the reviewed preset to" : "Use existing settings for"} <b>${esc(WIZ.model)}</b> and load it now. You can edit individual values in the Models tab.</p></div>`);
 }
 
 async function wizNext() {

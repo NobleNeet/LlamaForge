@@ -1,4 +1,4 @@
-"""Shared llama-server knob normalization with an Auto Tune-specific adapter."""
+"""Shared llama-server knob normalization."""
 
 
 def _aliases(knob_schema):
@@ -37,29 +37,3 @@ def clean_settings(updates, knob_schema=None):
                 if alias != key and alias not in clean:
                     clean[alias] = None
     return clean
-
-
-def force_max_gpu_layers(clean):
-    """Legacy save-path compatibility: preserve the historic all-or-nothing rule."""
-    out = dict(clean or {})
-    if out.get("n-gpu-layers") != "0":
-        out["n-gpu-layers"] = "99"
-    return out
-
-
-def materialize_autotune_settings(settings, knob_schema=None):
-    """Convert profile values to llama-server editor values without legacy coercion."""
-    alias_to_key, known_aliases, _ = _aliases(knob_schema)
-    known = set(known_aliases) if known_aliases else None
-    values, warnings = {}, []
-    for raw_key, raw_value in (settings or {}).items():
-        key = alias_to_key.get(raw_key, raw_key)
-        if known is not None and key not in known:
-            warnings.append({"key": str(raw_key), "code": "unsupported_knob",
-                             "message": "This llama-server build does not support the recommended knob."})
-            continue
-        value = str(raw_value).strip()
-        if key == "n-gpu-layers" and value.lower() == "all":
-            value = "99"
-        values[key] = value
-    return {"settings": values, "warnings": warnings, "applicable": not warnings}

@@ -208,3 +208,90 @@ def default_ctx(path):
     if n >= CTX_FULL:
         return 0
     return min(CTX_FALLBACK, n)   # cap at trained length; never over-extend
+
+
+def inspect_model(path):
+    """Static geometry from headers and tensor directories, never tensor payloads.
+
+    Offset spans include alignment padding, making byte counts conservative even
+    for new quantization types. All shards must be present for a split GGUF.
+    """
+    import math
+    import os
+    import re
+
+    public = metadata(path) or {}
+    try:
+        split = re.match(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", str(path), re.I)
+        paths = [path]
+        if split:
+            count = int(split[3])
+            if not 1 <= count <= 1024:
+                raise ValueError("unreasonable shard count")
+            paths = [f"{split[1]}-{i:05d}-of-{count:05d}.gguf" for i in range(1, count + 1)]
+        tensors, file_size, scalars = [], 0, {}
+        for shard in paths:
+            size = os.path.getsize(shard)
+            file_size += size
+            with open(shard, "rb") as f:
+                if _rd(f, 4) != b"GGUF" or _u32(f) not in (2, 3):
+                    raise ValueError("unsupported GGUF")
+                nt, nk = _u64(f), _u64(f)
+                if nt > 1_000_000 or nk > 1_000_000:
+                    raise ValueError("unreasonable directory size")
+                kv = _read_header_kv(f, nk)
+                scalars.update(kv)
+                if kv.get("split.count", 1) > 1 and not split:
+                    raise ValueError("unrecognized split GGUF naming")
+                entries = []
+                for _ in range(nt):
+                    name, nd = _read_str(f), _u32(f)
+                    if not 1 <= nd <= 4:
+                        raise ValueError("invalid tensor rank")
+                    dims = [_u64(f) for _ in range(nd)]
+                    if not all(0 < d <= 2**40 for d in dims):
+                        raise ValueError("invalid tensor dimensions")
+                    kind, offset = _u32(f), _u64(f)
+                    entries.append((offset, name, math.prod(dims), kind))
+                alignment = int(kv.get("general.alignment", 32))
+                if alignment <= 0 or alignment > 1024 * 1024:
+                    raise ValueError("invalid alignment")
+                start = ((f.tell() + alignment - 1) // alignment) * alignment
+                entries.sort()
+                for i, (offset, name, params, kind) in enumerate(entries):
+                    end = entries[i + 1][0] if i + 1 < len(entries) else size - start
+                    if offset < 0 or end <= offset or start + end > size:
+                        raise ValueError("invalid tensor offset")
+                    tensors.append({"name": name, "bytes": end - offset,
+                                    "parameters": params, "type": kind})
+        arch = public.get("architecture") or scalars.get("general.architecture")
+        for key, suffix in (("head_count_kv", "attention.head_count_kv"),
+                            ("key_length", "attention.key_length"),
+                            ("value_length", "attention.value_length")):
+            value = scalars.get(f"{arch}.{suffix}")
+            if isinstance(value, (int, float)) and value > 0:
+                public[key] = value
+        layers = int(public.get("block_count") or 0)
+        layer_bytes = [0] * layers if 0 < layers <= 4096 else []
+        non_layer = 0
+        for tensor in tensors:
+            match = re.match(r"^blk\.(\d+)\.", tensor["name"])
+            if match and int(match[1]) < len(layer_bytes):
+                layer_bytes[int(match[1])] += tensor["bytes"]
+            else:
+                non_layer += tensor["bytes"]
+        public.update(file_size_bytes=file_size, tensors=tensors,
+                      weight_bytes=sum(t["bytes"] for t in tensors) or file_size,
+                      parameter_count=sum(t["parameters"] for t in tensors),
+                      layer_weight_bytes=layer_bytes, non_layer_weight_bytes=non_layer)
+    except (OSError, ValueError, EOFError, TypeError, OverflowError, struct.error):
+        public["inspection_incomplete"] = True
+        # Never size a multi-shard model from only its first shard.
+        if re.search(r"-\d{5}-of-\d{5}\.gguf$", str(path), re.I):
+            public["incomplete_shards"] = True
+        else:
+            try:
+                public["file_size_bytes"] = os.path.getsize(path)
+            except (OSError, TypeError):
+                pass
+    return public
