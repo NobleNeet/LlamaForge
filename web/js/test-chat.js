@@ -201,7 +201,9 @@ async function sendMessage() {
   } catch (e) { setError(e.message); return; }
   const own = new AbortController(); controller = own; controls(); setError();
   history.push({role:'user', content}); const assistant = {role:'assistant', content:''}; history.push(assistant);
-  input.value = ''; last = null; rawRequest = body; requestNumber++;
+  // Keep the sent text in the input on purpose: Test Chat is used to re-send the
+  // same prompt repeatedly, so only the captured `content` is consumed here.
+  last = null; rawRequest = body; requestNumber++;
   renderMessages(); renderRequest();
   try {
     // Capture the shared log tail at send time. Failure must not block inference.
