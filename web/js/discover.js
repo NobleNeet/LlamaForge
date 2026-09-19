@@ -123,7 +123,7 @@ export function loadDiscover() {
         <button class="ghost" id="dl-cancel">Cancel download</button>
       </div>
       <div class="actions" id="dl-done" style="display:none">
-        <button class="primary" id="dl-add">Add to my models</button><span class="msg" id="dl-msg"></span>
+        <span class="msg" id="dl-msg"></span>
       </div>
     </div>
     <div id="hub-results"></div>`);
@@ -180,7 +180,7 @@ function hubDirNote(d) {
   const isDefault = d.custom ? "" : ` <span style="color:var(--dim)">- the default</span>`;
   const reach = d.scanned
     ? `<span style="color:var(--dim)">Under a scan folder, so the Setup scan sees these files too.</span>`
-    : `<span style="color:var(--amber)">Not under a scan folder: finish a download with Add to my models, or list the folder under Setup.</span>`;
+    : `<span style="color:var(--amber)">Not under a scan folder: the Setup scan won't see these files, but finished downloads still register themselves.</span>`;
   setHTML(el, `saves to <code>${esc(d.dir)}</code>${isDefault}<br>${reach}`);
 }
 
@@ -274,12 +274,12 @@ function ggufDlPoll() {
     if (s.phase === "cancelled") { clearInterval(dlPoll); toast("Download cancelled", "ok"); }
     if (s.phase === "done") {
       clearInterval(dlPoll); $("#dl-done").style.display = "";
-      $("#dl-add").onclick = async () => {
-        const m = $("#dl-msg"); m.className = "msg work"; m.textContent = "registering...";
-        const rr = await api("/api/hub/add", {path: s.finished_path});
-        if (rr.ok) { m.className = "msg ok"; m.textContent = "added: " + rr.added.join(", "); toast("Model added to registry","ok"); emit("refresh", true); }
-        else { m.className = "msg err"; m.textContent = rr.error || "failed"; }
-      };
+      // Finished downloads register themselves: the old "Add to my models"
+      // button is gone, so the card just reports the registration result.
+      const m = $("#dl-msg"); m.className = "msg work"; m.textContent = "registering...";
+      const rr = await api("/api/hub/add", {path: s.finished_path});
+      if (rr.ok) { m.className = "msg ok"; m.textContent = "added: " + rr.added.join(", "); toast("Model added to registry","ok"); emit("refresh", true); }
+      else { m.className = "msg err"; m.textContent = rr.error || "registration failed"; }
     }
     if (s.phase === "failed") clearInterval(dlPoll);
   }, 1000);
@@ -338,12 +338,11 @@ async function vllmHubDownload(repo, sizeBytes, quant) {
       : `${(s.downloaded/1e9).toFixed(2)} / ${(s.total/1e9).toFixed(2)} GB (${pct}%)${dlSpeed(s)}`;
     if (s.phase === "done") {
       clearInterval(dlPoll); $("#dl-done").style.display = "";
-      $("#dl-add").onclick = async () => {
-        const m = $("#dl-msg"); m.className = "msg work"; m.textContent = "registering...";
-        const rr = await api("/api/vllm/hub/register", {repo, size_bytes: sizeBytes, quant});
-        if (rr.ok) { m.className = "msg ok"; m.textContent = "added: " + rr.added; toast("vLLM model registered","ok"); emit("refresh", true); }
-        else { m.className = "msg err"; m.textContent = rr.error || "failed"; }
-      };
+      // Same auto-registration as the GGUF flow, against the vLLM registry.
+      const m = $("#dl-msg"); m.className = "msg work"; m.textContent = "registering...";
+      const rr = await api("/api/vllm/hub/register", {repo, size_bytes: sizeBytes, quant});
+      if (rr.ok) { m.className = "msg ok"; m.textContent = "added: " + rr.added; toast("vLLM model registered","ok"); emit("refresh", true); }
+      else { m.className = "msg err"; m.textContent = rr.error || "registration failed"; }
     }
     if (s.phase === "failed") clearInterval(dlPoll);
   }, 1000);

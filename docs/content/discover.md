@@ -27,7 +27,7 @@ Each result also carries platform tags (Windows/Linux/macOS) — GGUF runs on al
 
 ## Where the files land
 
-The **Save downloads to** box under the search bar names the folder GGUF files are written into. Each repo gets its own subfolder inside it (`acme--model/`), which is what **Add to my models** later registers.
+The **Save downloads to** box under the search bar names the folder GGUF files are written into. Each repo gets its own subfolder inside it (`acme--model/`), which is what the automatic registration after a download registers.
 
 Leave the box blank to follow the default: the first Setup scan root's `LlamaForge-downloads` folder, or `<repo root>/models` when no scan roots are configured. **Use default** clears whatever you typed. The line under the box always states the folder the *backend* resolved — read back from the server after every save, so it can never show a folder the next download will not use — and warns in amber when that folder is **not** under a scan root, in which case the Setup scan will not find the files either. A `~` prefix is expanded and a relative path is anchored to the folder the dashboard was launched from.
 
@@ -40,7 +40,7 @@ The setting is `download_dir` in `config.json`: `routes.download_dir()` resolves
 3. Click a repo row to expand its file list. Each file shows its size and a fit badge (FITS VRAM / TIGHT / CPU OFFLOAD).
 4. Click **Download** on the file you want. Progress, current file (for multi-file/shard downloads), speed, and ETA appear in the Download card, under a **saved to** row naming the folder the backend is writing into.
 5. Use **Pause** to suspend a running download (the partial file is kept) and **Resume** to continue it later. **Cancel download** stops it and discards the partial file.
-6. Once a download finishes, click **Add to my models** to register it as a new section in `models.ini`, ready to tune and load from the Models tab.
+6. When a download finishes it is registered automatically as a new section in `models.ini`, ready to tune and load from the Models tab — the Download card shows the registered model ids (or an error if registration failed).
 
 ## Screenshot
 
@@ -65,6 +65,6 @@ The setting is `download_dir` in `config.json`: `routes.download_dir()` resolves
 
 If a search returns an error message instead of results, the request to `huggingface.co` failed (network issue, or Hugging Face is unreachable) — the error text is shown truncated in the search bar's message area. A `GATED` tag on a repo means it requires accepting terms and an HF token on huggingface.co first; downloads of gated repos fail without that. Only one download runs at a time — starting a second while one is active is rejected with "A download is already running."
 
-A download that finished but never appears in the Setup scan is nearly always a save folder sitting outside every scan root — the amber note under the **Save downloads to** box says exactly that. List the folder under Setup, or register the finished model with **Add to my models**; the **saved to** row in the Download card tells you which folder to look in.
+A download that finished but never appears in the Setup scan is nearly always a save folder sitting outside every scan root — the amber note under the **Save downloads to** box says exactly that. Finished downloads still register themselves via `/api/hub/add`, but list the folder under Setup if you want the scan to see it too; the **saved to** row in the Download card tells you which folder to look in.
 
 See also [Models & Tuning](models.md) for tuning a model once it's downloaded and added, and [models.ini Format](models-ini.md) for how downloaded models are registered.
