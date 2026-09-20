@@ -306,7 +306,7 @@ function editTarget(target = {}) {
   const dialog = document.createElement("dialog");
   const fields = {name:"Name", repository:"Repository", branch:"Branch", source:"Source", build:"Build", server_binary:"Server Binary", build_command:"Build Command"};
   const defaults = {branch:"master", server_binary:"{build}/bin/llama-server"};
-  const placeholders = {repository:"https://github.com/halo-box/strix-llama.cpp.git", source:"/home/ubnadmin/LlamaForge-autotune/strix-llama.cpp", build:"/home/ubnadmin/LlamaForge-autotune/strix-llama.cpp"};
+  const placeholders = {repository:"https://github.com/halo-box/strix-llama.cpp.git", source:"/home/ubnadmin/LlamaForge-autotune/strix-llama.cpp", build:"/home/ubnadmin/LlamaForge-autotune/strix-llama.cpp/build"};
   setHTML(dialog, `<form style="min-width:320px;max-width:760px">
     <h3>${target.id ? "Edit" : "Add"} Custom Build Target</h3>
     ${Object.entries(fields).map(([k,label]) => `<label style="display:block;margin:10px 0">${label}
