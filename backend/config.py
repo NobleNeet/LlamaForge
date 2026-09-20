@@ -22,6 +22,8 @@ _LOCK = threading.RLock()
 LOAD_ERROR = None
 
 DEFAULTS = {
+    "llama_builtin_server_bin": "",          # saved default binary before explicit custom activation
+    "active_llamacpp_build_target": "",       # build identity only; never a runtime backend
     "custom_build_targets": {},              # user-saved shell recipes; built-ins stay separate
     "llama_src":   "",                       # git checkout of llama.cpp
     "build_dir":   "",                       # cmake build dir (usually <src>/build)

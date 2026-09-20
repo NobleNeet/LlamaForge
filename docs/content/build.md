@@ -78,14 +78,46 @@ and the specified existing server binary are copied to timestamped backups.
 
 Commands run with the LlamaForge process's permissions. Save only commands you
 have reviewed; LlamaForge does not extract commands from repository documentation.
-Use the resulting binary through Setup's external `server_bin` setting. Custom
-builds do not change the active engine or overwrite its explicit binary path.
+**Pull & Build** never changes the active binary. After building, click
+**Use this build** to activate it explicitly as a llama.cpp-compatible build.
 
 **Check Update** compares HEAD with `origin/<branch>` using the existing cache;
 it never executes the recipe. **Edit** keeps the target ID stable and does not
 move or delete old directories. **Remove** removes registration only: source,
 build, binaries, and Git files remain on disk. Editing/removing a running target
 is rejected. Custom targets are not part of the llama.cpp automatic update schedule.
+
+### Use this build
+
+Select a Custom Target and click **Use this build**. The file must exist, be
+executable, and pass the existing `--models-preset` router compatibility probe.
+Missing binaries produce “Server Binary does not exist. Build this target first.”
+Validation failures leave the current runtime and configuration unchanged.
+
+Activation keeps `active_engine = "llamacpp"` and changes `server_bin` to the
+resolved target binary. A running router's loaded model IDs are captured before
+stopping it. LlamaForge starts the new binary, waits for router readiness, then
+attempts to restore the previous llama.cpp models using the existing model reload
+helper. Switching from ik_llama does not copy its separate model registry.
+A stopped router is started by activation. Builds must finish before activation.
+
+If startup fails or readiness times out, the previous configuration is restored.
+Any partially started new router is stopped, and the old router is restarted if
+it was previously running; its models are reloaded on a best-effort basis.
+Recovery failures are reported separately, so a failed rollback is never presented
+as a successful activation. Model reload itself is best-effort, not transactional.
+
+The UI shows **Active runtime**, **Active build**, and the configured binary path.
+A Custom Target whose resolved binary is already active displays **Active**.
+Editing or removing a target does not change the active binary; if no registered
+target matches it afterward, the UI shows **External / unregistered build**.
+
+To return, select the built-in **llama.cpp** target and click **Switch to llama.cpp**.
+LlamaForge preserves the previously selected default binary (including an explicit
+external `server_bin`) for this operation. Subsequent built-in builds update that
+saved build path without replacing an active Custom Target. Automatic llama.cpp
+updates skip while a Custom Target is selected; they resume under the existing
+schedule after switching back. ik_llama remains a separate, unchanged runtime.
 
 ### Configuration and API
 
@@ -109,7 +141,21 @@ object maps generated stable IDs to target records:
 }
 ```
 
-- `GET /api/build/targets`: built-in and custom target records (`builtin` flag).
+Two optional configuration keys default to empty strings for older installations:
+
+- `llama_builtin_server_bin`: saved default llama.cpp binary for switching back.
+- `active_llamacpp_build_target`: selected custom ID, `llamacpp` after switching
+  back, or empty for legacy/default selection. This never participates in runtime
+  backend dispatch; `active_engine` remains `llamacpp` or `ikllama`.
+
+- `GET /api/build/targets`: built-in and custom target records (`builtin` flag),
+  plus `active_build` with `id`, `name`, and `server_bin`.
+- `POST /api/build/activate`: `{ "target": "custom-ID" }`; validates and activates
+  a saved Custom Target. Unknown IDs and built-in IDs return HTTP 400; running
+  builds or unsafe current-router state return 409. Startup failure returns 500
+  with `rollback_ok` and `rollback_error`. Success returns `active_engine` and
+  `active_build`. Returning to built-in uses the existing
+  `POST /api/engine/switch` with `{ "engine": "llamacpp" }`.
 - `POST /api/build/targets/validate`: target fields; returns normalized fields and
   resolved binary path without saving.
 - `POST /api/build/targets/save`: target fields; omit `id` to create, include an

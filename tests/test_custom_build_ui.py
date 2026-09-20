@@ -15,6 +15,7 @@ const source = fs.readFileSync(JSON.parse(fs.readFileSync(0, 'utf8')), 'utf8')
  .replace(/^import .*;\r?$/gm, '').replace(/^export /gm, '');
 const nodes = {}, calls = [], dialogs = [], confirmations = [];
 let selected = 'custom-one';
+let activeBuild = {id:'llamacpp',name:'llama.cpp',server_bin:'/old/server'};
 let custom = {id:selected,name:'My fork',repository:'https://example.com/fork',branch:'main',source:'/src',build:'/build',server_binary:'{build}/server',build_command:'echo hello'};
 const builtins = [{id:'llamacpp',name:'llama.cpp',builtin:true},{id:'ikllama',name:'ik_llama',builtin:true}];
 function dialog() {
@@ -24,13 +25,13 @@ function dialog() {
 const context = vm.createContext({
  $: s => nodes[s] ||= {style:{}}, esc: s=>String(s), setHTML:(n,h)=>n.innerHTML=h,
  localStorage:{getItem:()=>selected,setItem:(k,v)=>selected=v},
- setInterval:()=>1, clearInterval:()=>{}, toast:()=>{}, agoText:()=>'', fmtDur:()=>'',
+ setInterval:()=>1, clearInterval:()=>{}, setTimeout:()=>{}, toast:()=>{}, agoText:()=>'', fmtDur:()=>'',
  confirm: text=>{confirmations.push(text);return true;},
  document:{createElement:()=>{const d=dialog();dialogs.push(d);return d;},body:{appendChild(){}}},
  FormData: class { constructor(form){ return Object.entries({...custom,id:undefined}).filter(([k])=>k!=='id')[Symbol.iterator](); } },
  api:async(path,body)=>{
   calls.push({path,body});
-  if(path==='/api/build/targets')return {targets:custom?[...builtins,{...custom,builtin:false}]:builtins};
+  if(path==='/api/build/targets')return {targets:custom?[...builtins,{...custom,builtin:false}]:builtins,active_build:activeBuild};
   if(path.startsWith('/api/build/info'))return {};
   if(path==='/api/state')return {active_engine:'llamacpp',config:{}};
   if(path.startsWith('/api/vllm/version'))return {error:'unsupported'};
@@ -39,6 +40,8 @@ const context = vm.createContext({
   if(path==='/api/build/targets/save'){ custom={...body,id:body.id||'custom-new'};return {ok:true,target:custom}; }
   if(path==='/api/build/targets/remove'){custom=null;return {ok:true};}
   if(path==='/api/build/start')return {started:true};
+  if(path==='/api/build/activate'){activeBuild={id:custom.id,name:custom.name,server_bin:'/build/server'};return {ok:true};}
+  if(path==='/api/engine/switch'){activeBuild={id:'llamacpp',name:'llama.cpp',server_bin:'/old/server'};return {ok:true};}
   throw Error(path);
  }
 });
@@ -53,6 +56,19 @@ vm.runInContext(source,context);
  const select=context.$;context.$=s=>s==='#opt-pull'?null:select(s);
  await nodes['#btn-build'].onclick();
  assert.equal(JSON.stringify(calls.find(x=>x.path==='/api/build/start').body),JSON.stringify({pull:true,target:'custom-one'}));
+ assert.match(html,/Use this build/);
+ assert.equal(calls.filter(x=>x.path==='/api/build/activate').length,0,'building never activates');
+ await nodes['#btn-use-build'].onclick();
+ assert.equal(calls.find(x=>x.path==='/api/build/activate').body.target,'custom-one');
+ html=nodes['#view-build'].innerHTML;
+ assert.match(html,/Active build: <strong>My fork/);
+ assert.match(html,/>Active<\/span>/);
+ assert.doesNotMatch(html,/id="btn-use-build"/);
+ await vm.runInContext('setTarget("llamacpp");loadBuild()',context);
+ assert.match(nodes['#view-build'].innerHTML,/id="btn-switch-engine"/);
+ await nodes['#btn-switch-engine'].onclick();
+ assert.equal(calls.find(x=>x.path==='/api/engine/switch').body.engine,'llamacpp');
+ await vm.runInContext('setTarget("custom-one");loadBuild()',context);
  nodes['#btn-edit-target'].onclick();
  let d=dialogs.at(-1);assert.match(d.innerHTML,/textarea/);assert.match(d.innerHTML,/echo hello/);
  await d.children['[data-action="validate"]'].onclick();

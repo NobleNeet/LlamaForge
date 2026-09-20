@@ -83,7 +83,8 @@ export async function loadBuild(force) {
   const checked = up.cached ? `checked ${agoText(up.checked_secs_ago)}` : "checked just now";
   const remoteUrl = b.remote || ENGINE_REPOS[_target] || "";
   const label = selected?.name || ENGINE_LABELS[_target] || _target;
-  const isActive = _target === activeEngine;
+  const activeBuild = listed.active_build || {id: activeEngine, name: ENGINE_LABELS[activeEngine] || activeEngine};
+  const isActive = _target === activeBuild.id;
   const reqBackend = ((st.config||{}).llama_backend) || "auto";
   const availBackends = ["auto"].concat(b.available_backends || []).filter((v, i, a) => a.indexOf(v) === i);
   const schedule = st.config || {};
@@ -95,7 +96,11 @@ export async function loadBuild(force) {
       <button class="ghost" id="btn-add-target">+ Add Target</button>
       ${custom ? '<button class="ghost" id="btn-edit-target">Edit</button><button class="ghost" id="btn-remove-target">Remove</button>' : ''}
       <span class="buildtarget-active">
-        Active engine: <strong class="${isActive?'ok':'dim'}">${esc(ENGINE_LABELS[activeEngine]||activeEngine)}</strong>
+        Active runtime: <strong class="${isActive?'ok':'dim'}">${esc(ENGINE_LABELS[activeEngine]||activeEngine)}</strong>
+        <span>Active build: <strong>${esc(activeBuild.name)}</strong></span>
+        ${activeBuild.server_bin ? `<div class="note">${esc(activeBuild.server_bin)}</div>` : ""}
+        ${isActive ? '<span class="ok">Active</span>' : ''}
+        ${custom && !isActive ? '<button class="primary" id="btn-use-build">Use this build</button>' : ''}
         ${!isActive && !custom?`<button class="ghost" id="btn-switch-engine">Switch to ${esc(label)}</button>`:''}
       </span>
     </div>
@@ -117,7 +122,7 @@ export async function loadBuild(force) {
       ${["repository", "branch", "source", "build", "server_binary"].map(k => `<div class="kv"><span class="k">${esc(k)}</span><span class="v">${esc(selected[k])}</span></div>`).join("")}
       <h3>Build Command</h3><pre>${esc(selected.build_command)}</pre>
       <div class="actions"><button class="primary" id="btn-build">Pull &amp; Build</button><span class="msg" id="build-msg"></span></div>
-      <div class="note">Runs your saved command in the Build directory. Use the resulting Server Binary through Setup's external server path.</div>
+      <div class="note">Runs your saved command in the Build directory. After building, select Use this build to activate it as the llama.cpp runtime.</div>
     </div>` : `<div class="card"><h3>Acceleration Backend</h3>
       <div class="kv"><span class="k">selected</span><span class="v">
         <select id="build-backend" style="background:var(--inset);border:1px solid var(--hair);color:var(--ink);font-family:var(--mono);font-size:12px;padding:6px">
@@ -168,6 +173,19 @@ export async function loadBuild(force) {
     };
   }
 
+  const useBtn = $("#btn-use-build");
+  if (custom && !isActive && useBtn) useBtn.onclick = async () => {
+    useBtn.disabled = true;
+    useBtn.textContent = "activating...";
+    try {
+      const result = await api("/api/build/activate", {target: selected.id});
+      if (result.ok) toast(`Using ${label}`, "ok");
+      else toast([result.error || "Activation failed", result.rollback_error ? `Recovery failed: ${result.rollback_error}` : ""].filter(Boolean).join(" · "), "err");
+      await loadBuild();
+    } catch (error) { toast(error.message, "err"); }
+    finally { useBtn.disabled = false; useBtn.textContent = "Use this build"; }
+  };
+
   // Engine switch
   const switchBtn = $("#btn-switch-engine");
   if (switchBtn) switchBtn.onclick = async () => {
@@ -178,7 +196,7 @@ export async function loadBuild(force) {
       toast(`Switched to ${label}`, "ok");
       setTimeout(loadBuild, 1500);
     } else {
-      toast(r.error || "switch failed", "err");
+      toast([r.error || "switch failed", r.rollback_error].filter(Boolean).join(" · "), "err");
       switchBtn.disabled = false;
       switchBtn.textContent = `Switch to ${label}`;
     }

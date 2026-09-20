@@ -28,6 +28,7 @@ import wsl, vllm_ctl, vllm_registry, vllm_setup, vllm_job, vllm_hub, vllm_downlo
 import gguf, diag, backends
 import build_schedule
 import custom_build
+import build_activation
 import uuid
 import chat_diagnostics
 from builder import BuildManager
@@ -62,10 +63,29 @@ def _builder_for(target):
         return _CUSTOM_BUILDERS[target]
 
 
+def post_build_activate(req):
+    tid = req.body.get("target")
+    with _CUSTOM_TARGET_LOCK:
+        c = cfg()
+        if not isinstance(tid, str) or tid in custom_build.BUILTINS or tid not in c.get("custom_build_targets", {}):
+            raise ApiError(400, f"Unknown custom build target: {tid}")
+        _check_activation_idle()
+        try:
+            binary = custom_build.binary_path(c["custom_build_targets"][tid])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ApiError(400, f"Cannot resolve Server Binary: {exc}")
+        return build_activation.activate(sys.modules[__name__], binary, tid)
+
+
+def _check_activation_idle():
+    if any(b.state["running"] for b in [BUILDER_LLAMA, BUILDER_IKLLAMA, *_CUSTOM_BUILDERS.values()]):
+        raise ApiError(409, "A build is running; wait before activating a binary")
+
+
 def get_build_targets(req):
     targets = [dict(id=k, name=v, builtin=True) for k, v in custom_build.BUILTINS.items()]
     targets.extend(dict(t, id=k, builtin=False) for k, t in cfg().get("custom_build_targets", {}).items())
-    return 200, {"targets": targets}
+    return 200, {"targets": targets, "active_build": build_activation.active_build(cfg())}
 
 
 def _validated_target(body):
@@ -1238,6 +1258,8 @@ def _on_built_llamacpp(key, path):
     back up so the API keeps answering after a rebuild instead of leaving the
     dashboard with a dead port and a lost session."""
     changed = _record_server_bin(key, path)
+    if cfg().get("active_llamacpp_build_target") not in (None, "", "llamacpp"):
+        return changed
     try:
         _stop_router_after_build(source="/api/build/start")
         _bring_router_back()
@@ -1401,6 +1423,11 @@ def post_presets_apply(req):
 
 
 def post_build_start(req, *, scheduled=False):
+    with _CUSTOM_TARGET_LOCK:
+        return _post_build_start(req, scheduled=scheduled)
+
+
+def _post_build_start(req, *, scheduled=False):
     global _PREBUILD_RUNNING, _PREBUILD_LOADED
     c = cfg()
     target = req.body.get("target", "llamacpp")
@@ -1464,7 +1491,7 @@ def post_build_start(req, *, scheduled=False):
             return 200, {"started": True, "phase": builder.state["phase"]}
         finally:
             _bring_router_back(source="scheduled-build")
-    if target == "llamacpp":
+    if target == "llamacpp" and c.get("active_llamacpp_build_target") in (None, "", "llamacpp"):
         try:
             was_running = router_ctl.is_running(c.get("router_port", 8080))
             unloaded = _unload_all_models(source=req.path or "/api/build/start")
@@ -1481,6 +1508,8 @@ def _scheduled_build_idle(c):
     """Fresh metrics, never cached token rates. Missing data means do not update."""
     def skip(reason):
         return reason, False, []
+    if c.get("active_llamacpp_build_target") not in (None, "", "llamacpp"):
+        return skip("A custom llama.cpp build is selected")
     if c.get("active_engine", "llamacpp") != "llamacpp":
         return skip("llama.cpp is not the active engine")
     if BUILDER_LLAMA.state["running"] or BUILDER_IKLLAMA.state["running"]:
@@ -1822,7 +1851,8 @@ def _active_server_bin(c=None):
 
 def _record_server_bin(key, path):
     """Point `key` at the binary a finished build produced. Returns True if
-    config.json changed.
+    the active binary path changed. Built-in build output is also remembered
+    separately for returning from a custom build.
 
     Only fills a gap or repairs a path that isn't there: bootstrap's pre-build
     guess (`bin/llama-server`) never exists on MSVC, so it gets corrected, while
@@ -1830,7 +1860,12 @@ def _record_server_bin(key, path):
     runs on a build thread, so it goes through config.update()'s lock rather
     than load/mutate/save.
     """
-    current = (cfg().get(key) or "").strip()
+    c = cfg()
+    if key == "server_bin":
+        config.update({"llama_builtin_server_bin": path})
+        if c.get("active_llamacpp_build_target") not in (None, "", "llamacpp"):
+            return False
+    current = (c.get(key) or "").strip()
     if current and os.path.exists(current):
         return False
     config.update({key: path})
@@ -1912,6 +1947,16 @@ def post_router_restart(req):
 
 
 def post_engine_switch(req):
+    with _CUSTOM_TARGET_LOCK:
+        c = cfg()
+        if req.body.get("engine", "llamacpp") == "llamacpp" and c.get("active_llamacpp_build_target") not in (None, "", "llamacpp"):
+            _check_activation_idle()
+            binary = c.get("llama_builtin_server_bin") or BuildManager.locate_server_bin(c.get("build_dir")) or ""
+            return build_activation.activate(sys.modules[__name__], binary, "llamacpp")
+        return _post_engine_switch(req)
+
+
+def _post_engine_switch(req):
     """Switch the active engine (llamacpp / ikllama) and restart the router.
 
     Validate the binary BEFORE persisting. `active_engine` steers ini_path(),
@@ -2138,6 +2183,7 @@ POST_ROUTES = {
     "/api/build/targets/validate": post_build_target_validate,
     "/api/build/targets/save": post_build_target_save,
     "/api/build/targets/remove": post_build_target_remove,
+    "/api/build/activate":      post_build_activate,
     "/api/build/start":         post_build_start,
     "/api/setup/install":       post_setup_install,
     "/api/scan":                post_scan,
