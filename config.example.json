@@ -1,4 +1,5 @@
 {
+  "custom_build_targets": {},
   "llama_src": "C:/path/to/llama.cpp",
   "build_dir": "C:/path/to/llama.cpp/build",
   "server_bin": "C:/path/to/llama.cpp/build/bin/Release/llama-server.exe",

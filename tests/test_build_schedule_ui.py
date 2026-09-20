@@ -24,6 +24,7 @@ const context = vm.createContext({
   toast: () => {}, agoText: () => '', fmtDur: () => '',
   api: async (path, body) => {
     calls.push({path, body});
+    if (path === '/api/build/targets') return {targets:[{id:'llamacpp',name:'llama.cpp',builtin:true},{id:'ikllama',name:'ik_llama',builtin:true}]};
     if (path.startsWith('/api/build/info')) return {};
     if (path === '/api/state') return {config: {llama_backend:'vulkan', build_auto_update_enabled:true, build_auto_update_time:'04:15'}};
     if (path.startsWith('/api/vllm/version')) return {error:'unsupported'};

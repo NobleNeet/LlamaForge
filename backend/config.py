@@ -22,6 +22,7 @@ _LOCK = threading.RLock()
 LOAD_ERROR = None
 
 DEFAULTS = {
+    "custom_build_targets": {},              # user-saved shell recipes; built-ins stay separate
     "llama_src":   "",                       # git checkout of llama.cpp
     "build_dir":   "",                       # cmake build dir (usually <src>/build)
     "server_bin":  "",                       # path to llama-server(.exe)

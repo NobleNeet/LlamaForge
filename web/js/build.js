@@ -1,10 +1,12 @@
 // Build tab: current commit vs upstream, CMake flags, rebuild, log.
-// Supports both llama.cpp and ik_llama build targets via a toggle.
+// Built-in engines and user-saved custom build recipes.
 // Also surfaces the vLLM pip package version, since updating it is a build-ish
 // concern rather than a setup one.
 import { $, esc, setHTML, api, toast, agoText, fmtDur } from "./core.js";
 
 let buildPoll = null;
+let buildViewVersion = 0;
+let buildPollVersion = 0;
 let _target = localStorage.getItem("build_target") || "llamacpp";
 
 function setTarget(t) {
@@ -55,22 +57,32 @@ function updateBuildLog(log, text) {
 }
 
 export async function loadBuild(force) {
+  const viewVersion = ++buildViewVersion;
+  ++buildPollVersion;
   const v = $("#view-build");
   if (force) {
     const s = $("#upstream-status");
     if (s) { s.textContent = "checking github..."; s.className = "v work"; }
   } else setHTML(v, `<div class="skel">QUERYING GIT + GITHUB...</div>`);
-  const q = (force ? "?force=1&" : "?") + `target=${_target}`;
+  clearInterval(buildPoll);
+  const listed = await api("/api/build/targets");
+  if (viewVersion !== buildViewVersion) return;
+  const targets = listed.targets || [];
+  if (!targets.some(t => t.id === _target)) setTarget("llamacpp");
+  const selected = targets.find(t => t.id === _target);
+  const custom = selected && !selected.builtin;
+  const q = (force ? "?force=1&" : "?") + `target=${encodeURIComponent(_target)}`;
   const b = await api("/api/build/info" + q);
   const st = await api("/api/state");
   const activeEngine = st.active_engine || "llamacpp";
   const vver = await api("/api/vllm/version" + (force ? "?force=1" : ""));
+  if (viewVersion !== buildViewVersion) return;
   const cur = b.current||{}, up = b.updates||{};
   const flags = b.saved_flags && Object.keys(b.saved_flags).length ? b.saved_flags : b.recommended_flags||{};
   const behind = up.ok ? up.behind : 0;
   const checked = up.cached ? `checked ${agoText(up.checked_secs_ago)}` : "checked just now";
   const remoteUrl = b.remote || ENGINE_REPOS[_target] || "";
-  const label = ENGINE_LABELS[_target] || _target;
+  const label = selected?.name || ENGINE_LABELS[_target] || _target;
   const isActive = _target === activeEngine;
   const reqBackend = ((st.config||{}).llama_backend) || "auto";
   const availBackends = ["auto"].concat(b.available_backends || []).filter((v, i, a) => a.indexOf(v) === i);
@@ -79,13 +91,12 @@ export async function loadBuild(force) {
   setHTML(v, `
     <div class="card buildtarget">
       <span class="k">Build Target</span>
-      <span class="mode-toggle">
-        <button class="${_target==='llamacpp'?'active':''}" id="btn-tgt-llamacpp">llama.cpp</button>
-        <button class="${_target==='ikllama'?'active':''}" id="btn-tgt-ikllama">ik_llama</button>
-      </span>
+      <select id="build-target" aria-label="Build Target">${targets.map(t => `<option value="${esc(t.id)}" ${t.id===_target?'selected':''}>${esc(t.name)}</option>`).join("")}</select>
+      <button class="ghost" id="btn-add-target">+ Add Target</button>
+      ${custom ? '<button class="ghost" id="btn-edit-target">Edit</button><button class="ghost" id="btn-remove-target">Remove</button>' : ''}
       <span class="buildtarget-active">
         Active engine: <strong class="${isActive?'ok':'dim'}">${esc(ENGINE_LABELS[activeEngine]||activeEngine)}</strong>
-        ${!isActive?`<button class="ghost" id="btn-switch-engine">Switch to ${esc(label)}</button>`:''}
+        ${!isActive && !custom?`<button class="ghost" id="btn-switch-engine">Switch to ${esc(label)}</button>`:''}
       </span>
     </div>
     <div class="card"><h3>Current Build · ${esc(label)}</h3>
@@ -95,13 +106,19 @@ export async function loadBuild(force) {
     </div>
     <div class="card"><h3>Upstream (${esc(remoteUrl)})</h3>
       <div class="kv"><span class="k">status</span><span class="v ${behind>0?'bad':'ok'}" id="upstream-status">${up.ok?(behind>0?behind+" commits behind":"up to date"):"check failed"}</span></div>
+      ${up.error ? `<div class="note">${esc(up.error)}</div>` : ""}
       ${up.latest?`<div class="kv"><span class="k">latest</span><span class="v">${esc(up.latest.hash)} &middot; ${esc((up.latest.subject||"").slice(0,60))}</span></div>`:""}
       <div class="actions" style="margin-top:6px">
-        <button class="ghost" id="btn-refresh-upstream">Check GitHub now</button>
+        <button class="ghost" id="btn-refresh-upstream">Check Update</button>
         <span class="note" style="margin:0">${esc(checked)} &middot; auto-checks at most every 15 min</span>
       </div>
     </div>
-    <div class="card"><h3>Acceleration Backend</h3>
+    ${custom ? `<div class="card"><h3>Custom Build Target</h3>
+      ${["repository", "branch", "source", "build", "server_binary"].map(k => `<div class="kv"><span class="k">${esc(k)}</span><span class="v">${esc(selected[k])}</span></div>`).join("")}
+      <h3>Build Command</h3><pre>${esc(selected.build_command)}</pre>
+      <div class="actions"><button class="primary" id="btn-build">Pull &amp; Build</button><span class="msg" id="build-msg"></span></div>
+      <div class="note">Runs your saved command in the Build directory. Use the resulting Server Binary through Setup's external server path.</div>
+    </div>` : `<div class="card"><h3>Acceleration Backend</h3>
       <div class="kv"><span class="k">selected</span><span class="v">
         <select id="build-backend" style="background:var(--inset);border:1px solid var(--hair);color:var(--ink);font-family:var(--mono);font-size:12px;padding:6px">
           ${["auto","cuda","hip","vulkan","cpu"].map(k => `<option value="${esc(k)}" ${reqBackend===k?"selected":""} ${availBackends.includes(k)||k==="auto"||k==="cpu"?"":"disabled"}>${esc(BACKEND_LABELS[k]||k)}${availBackends.includes(k)||k==="auto"||k==="cpu"?"":" (unavailable)"}</option>`).join("")}
@@ -118,6 +135,7 @@ export async function loadBuild(force) {
       </div>
       <div class="note">Rebuilds ${esc(label)} with CMake. Prior binaries are backed up first. Takes several minutes; watch the log below.</div>
     </div>
+    `}
     <div class="card"><h3>Automatic Update · llama.cpp</h3>
       <div class="actions">
         <label><input type="checkbox" id="build-auto-enabled" ${schedule.build_auto_update_enabled ? "checked" : ""}> Pull latest &amp; rebuild automatically when idle</label>
@@ -137,9 +155,18 @@ export async function loadBuild(force) {
       <div class="log" id="vllm-update-log" style="display:none">idle</div>
     </div>`));
 
-  // Target toggle
-  $("#btn-tgt-llamacpp").onclick = () => { setTarget("llamacpp"); loadBuild(); };
-  $("#btn-tgt-ikllama").onclick = () => { setTarget("ikllama"); loadBuild(); };
+  $("#build-target").onchange = event => { setTarget(event.target.value); loadBuild(); };
+  $("#btn-add-target").onclick = () => editTarget();
+  if (custom) {
+    $("#btn-edit-target").onclick = () => editTarget(selected);
+    $("#btn-remove-target").onclick = async () => {
+      if (!confirm(`Remove ${label} from LlamaForge? Source, Build, binaries and Git repository will remain on disk.`)) return;
+      const result = await api("/api/build/targets/remove", {id: selected.id});
+      if (!result.ok) return toast(result.error || "Remove failed", "err");
+      setTarget("llamacpp");
+      loadBuild();
+    };
+  }
 
   // Engine switch
   const switchBtn = $("#btn-switch-engine");
@@ -218,18 +245,21 @@ export async function loadBuild(force) {
 }
 
 async function startBuild() {
-  const pull = $("#opt-pull").checked, msg = $("#build-msg");
+  const pull = $("#opt-pull")?.checked ?? true, msg = $("#build-msg");
   msg.className = "msg work"; msg.textContent = "starting build...";
   const r = await api("/api/build/start", {pull, target: _target});
-  if (r.started) toast(`Build started (${ENGINE_LABELS[_target]})`, "ok");
+  if (r.started) toast(`Build started (${ENGINE_LABELS[_target] || _target})`, "ok");
   else msg.textContent = r.error || "a build is already running";
   pollBuild();
 }
 
 async function pollBuild() {
   clearInterval(buildPoll);
+  const pollVersion = ++buildPollVersion;
   const tick = async () => {
-    const s = await api("/api/build/log?target=" + _target);
+    const target = _target;
+    const s = await api("/api/build/log?target=" + encodeURIComponent(target));
+    if (target !== _target || pollVersion !== buildPollVersion) return;
     const sched = s.schedule || {}, status = $("#build-schedule-status");
     if (status) status.textContent = [sched.last_date, sched.status].filter(Boolean).join(" · ");
     const tz = $("#build-schedule-timezone");
@@ -250,5 +280,42 @@ async function pollBuild() {
     }
   };
   await tick();
-  buildPoll = setInterval(tick, 2000);
+  if (pollVersion === buildPollVersion) buildPoll = setInterval(tick, 2000);
+}
+
+
+function editTarget(target = {}) {
+  const dialog = document.createElement("dialog");
+  const fields = {name:"Name", repository:"Repository", branch:"Branch", source:"Source", build:"Build", server_binary:"Server Binary", build_command:"Build Command"};
+  const defaults = {branch:"master", server_binary:"{build}/bin/llama-server"};
+  setHTML(dialog, `<form style="min-width:320px;max-width:760px">
+    <h3>${target.id ? "Edit" : "Add"} Custom Build Target</h3>
+    ${Object.entries(fields).map(([k,label]) => `<label style="display:block;margin:10px 0">${label}
+      ${k === "build_command" ? `<textarea name="${k}" rows="8" style="width:100%" required>${esc(target[k] || "")}</textarea>` : `<input name="${k}" style="display:block;width:100%" value="${esc(target[k] || defaults[k] || "")}" required>`}</label>`).join("")}
+    <p class="note">Save and Validate do not clone or execute commands. Pull &amp; Build runs this command with your account's permissions. Use only commands you trust. Bash is required (Git Bash on Windows). The working directory is Build; placeholders: {source}, {build}, {jobs}. Quote paths where needed. Existing checkouts must match Repository and Branch.</p>
+    <div class="actions"><button type="button" data-action="validate">Validate</button><button type="submit">Save Target</button><button type="button" data-action="cancel">Cancel</button></div>
+    <p data-status role="status"></p>
+  </form>`);
+  document.body.appendChild(dialog);
+  dialog.onclose = () => dialog.remove();
+  dialog.querySelector('[data-action="cancel"]').onclick = () => dialog.close();
+  const form = dialog.querySelector("form"), status = dialog.querySelector("[data-status]");
+  const submit = async save => {
+    if (!form.reportValidity()) return;
+    const body = Object.fromEntries(new FormData(form));
+    if (target.id) body.id = target.id;
+    const buttons = [...dialog.querySelectorAll("button")];
+    buttons.forEach(b => b.disabled = true);
+    try {
+      const result = await api(`/api/build/targets/${save ? "save" : "validate"}`, body);
+      if (!result.ok) { status.textContent = result.error || "Validation failed"; return; }
+      if (save) {
+        setTarget(result.target.id); dialog.close(); await loadBuild();
+      } else status.textContent = `Valid. Server Binary: ${result.server_binary}`;
+    } catch (error) { status.textContent = error.message; }
+    finally { buttons.forEach(b => b.disabled = false); }
+  };
+  dialog.querySelector('[data-action="validate"]').onclick = () => submit(false);
+  form.onsubmit = event => { event.preventDefault(); submit(true); };
+  dialog.showModal();
 }

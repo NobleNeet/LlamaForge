@@ -27,6 +27,8 @@ import vram_predict
 import wsl, vllm_ctl, vllm_registry, vllm_setup, vllm_job, vllm_hub, vllm_download
 import gguf, diag, backends
 import build_schedule
+import custom_build
+import uuid
 import chat_diagnostics
 from builder import BuildManager
 
@@ -43,8 +45,74 @@ BUILDER_LLAMA   = BuildManager(LOGDIR, "build",
 BUILDER_IKLLAMA = BuildManager(LOGDIR, "build-ikllama",
                                on_built=lambda p: _record_server_bin("ik_llama_server_bin", p))
 
+_CUSTOM_BUILDERS = {}
+_CUSTOM_TARGET_LOCK = threading.RLock()
+
+
 def _builder_for(target):
-    return BUILDER_IKLLAMA if target == "ikllama" else BUILDER_LLAMA
+    if target == "llamacpp":
+        return BUILDER_LLAMA
+    if target == "ikllama":
+        return BUILDER_IKLLAMA
+    with _CUSTOM_TARGET_LOCK:
+        if not isinstance(target, str) or target not in cfg().get("custom_build_targets", {}):
+            raise ApiError(400, f"Unknown build target: {target}")
+        if target not in _CUSTOM_BUILDERS:
+            _CUSTOM_BUILDERS[target] = custom_build.CustomBuildManager(LOGDIR, "build-custom-" + uuid.uuid5(uuid.NAMESPACE_URL, target).hex)
+        return _CUSTOM_BUILDERS[target]
+
+
+def get_build_targets(req):
+    targets = [dict(id=k, name=v, builtin=True) for k, v in custom_build.BUILTINS.items()]
+    targets.extend(dict(t, id=k, builtin=False) for k, t in cfg().get("custom_build_targets", {}).items())
+    return 200, {"targets": targets}
+
+
+def _validated_target(body):
+    try:
+        return custom_build.validate(body)
+    except (ValueError, OSError) as exc:
+        raise ApiError(400, str(exc))
+
+
+def post_build_target_validate(req):
+    target = _validated_target(req.body)
+    return 200, {"ok": True, "target": target, "server_binary": custom_build.binary_path(target)}
+
+
+def post_build_target_save(req):
+    target = _validated_target(req.body)
+    tid = req.body.get("id") or "custom-" + uuid.uuid4().hex
+    if not isinstance(tid, str) or tid in custom_build.BUILTINS:
+        raise ApiError(400, "Invalid custom build target ID")
+    with _CUSTOM_TARGET_LOCK:
+        def save(c):
+            targets = c.setdefault("custom_build_targets", {})
+            if req.body.get("id") and tid not in targets:
+                raise ApiError(400, f"Unknown custom build target: {tid}")
+            manager = _CUSTOM_BUILDERS.get(tid)
+            if manager and manager.state["running"]:
+                raise ApiError(409, "Cannot edit a running build target")
+            target["id"] = tid
+            targets[tid] = target
+        config.mutate(save)
+    return 200, {"ok": True, "target": target}
+
+
+def post_build_target_remove(req):
+    tid = req.body.get("id")
+    with _CUSTOM_TARGET_LOCK:
+        def remove(c):
+            targets = c.get("custom_build_targets", {})
+            if not isinstance(tid, str) or tid not in targets:
+                raise ApiError(400, f"Unknown custom build target: {tid}")
+            manager = _CUSTOM_BUILDERS.get(tid)
+            if manager and manager.state["running"]:
+                raise ApiError(409, "Cannot remove a running build target")
+            del targets[tid]
+        config.mutate(remove)
+        _CUSTOM_BUILDERS.pop(tid, None)
+    return 200, {"ok": True}
 DOWNLOADS = hub.DownloadManager()
 
 VLLM_SETUP_JOB = vllm_job.WslJob(LOGDIR, "vllm-setup.log")
@@ -756,6 +824,11 @@ def get_build_info(req):
     c = cfg()
     target = req.q("target") or "llamacpp"
     builder = _builder_for(target)
+    if target not in custom_build.BUILTINS:
+        t = c["custom_build_targets"][target]
+        return 200, {"target": target, "custom": t, "remote": t["repository"],
+                     "current": builder.current_commit(t["source"]),
+                     "updates": builder.check_updates(t["source"], "origin/" + t["branch"], force=req.flag("force"))}
     build_backend = c.get("llama_backend", "auto")
     rec = hardware.recommend(backend=build_backend)
     if target == "ikllama":
@@ -1334,6 +1407,14 @@ def post_build_start(req, *, scheduled=False):
     builder = _builder_for(target)
     if builder.state["running"]:
         return 200, {"started": False, "target": target, "error": "A build is already running"}
+    if target not in custom_build.BUILTINS:
+        with _CUSTOM_TARGET_LOCK:
+            # Reload under the edit/remove lock; run only the saved recipe.
+            t = cfg().get("custom_build_targets", {}).get(target)
+            if t is None:
+                raise ApiError(400, f"Unknown build target: {target}")
+            validated = _validated_target(t)
+            return 200, {"started": builder.start_custom(validated), "target": target}
     requested_backend = c.get("llama_backend", "auto")
     rec = hardware.recommend(backend=requested_backend)
     selected_backend = rec.get("selected_backend", "cpu")
@@ -2010,6 +2091,7 @@ GET_ROUTES = {
     "/api/schema":            get_schema,
     "/api/gpus":              get_gpus,
     "/api/setup":             get_setup,
+    "/api/build/targets":     get_build_targets,
     "/api/build/info":        get_build_info,
     "/api/build/log":         get_build_log,
     "/api/hub/progress":      get_hub_progress,
@@ -2053,6 +2135,9 @@ POST_ROUTES = {
     "/api/presets/bind":        post_presets_bind,
     "/api/presets/delete":      post_presets_delete,
     "/api/presets/apply":       post_presets_apply,
+    "/api/build/targets/validate": post_build_target_validate,
+    "/api/build/targets/save": post_build_target_save,
+    "/api/build/targets/remove": post_build_target_remove,
     "/api/build/start":         post_build_start,
     "/api/setup/install":       post_setup_install,
     "/api/scan":                post_scan,

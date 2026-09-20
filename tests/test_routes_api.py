@@ -247,12 +247,12 @@ class BuildUnloadTest(unittest.TestCase):
         # the only event is the build itself - nothing to unload
         self.assertEqual(self.timeline, ["build"])
 
-    def test_ikkllama_build_does_not_unload_models(self):
+    def test_ikllama_build_does_not_unload_models(self):
         # ikllama predates router mode, so its rebuild must not touch models.
         self._loaded = ["m1"]
         with mock.patch.object(routes.BuildManager, "validate_paths", return_value=""), \
              self._recommend_cpu():
-            status, out = routes.post_build_start(Req(body={"target": "ikkllama"}))
+            status, out = routes.post_build_start(Req(body={"target": "ikllama"}))
         self.assertTrue(out["started"])
         self.assertEqual(self.timeline, ["build"])
 

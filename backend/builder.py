@@ -29,7 +29,7 @@ class BuildManager:
                               capture_output=True, text=True, timeout=timeout)
 
     def current_commit(self, src):
-        if not src or not os.path.isdir(os.path.join(src, ".git")):
+        if not src or not os.path.exists(os.path.join(src, ".git")):
             return {"ok": False, "error": "not a git checkout"}
         r = self._git(src, "log", "-1", "--pretty=%h|%s|%ci")
         if r.returncode != 0:
@@ -57,10 +57,15 @@ class BuildManager:
 
     def _check_updates_fresh(self, src, remote_branch):
         try:
-            self._git(src, "fetch", "--quiet", "origin", timeout=120)
+            fetched = self._git(src, "fetch", "--quiet", "origin", timeout=120)
+            if fetched.returncode:
+                return {"ok": False, "error": f"fetch failed: {fetched.stderr.strip()}"}
         except Exception as e:
             return {"ok": False, "error": f"fetch failed: {e}"}
-        cnt = self._git(src, "rev-list", "--count", f"HEAD..{remote_branch}").stdout.strip()
+        count = self._git(src, "rev-list", "--count", f"HEAD..{remote_branch}")
+        if count.returncode:
+            return {"ok": False, "error": count.stderr.strip()}
+        cnt = count.stdout.strip()
         latest = self._git(src, "log", "-1", "--pretty=%h|%s", remote_branch).stdout.strip()
         lh, ls = (latest.split("|", 1) + ["", ""])[:2]
         try: behind = int(cnt)
@@ -149,6 +154,7 @@ class BuildManager:
                              env=env)
         for line in p.stdout:
             self._log(line.rstrip("\n"))
+        p.stdout.close()
         p.wait()
         return p.returncode
 
