@@ -306,10 +306,11 @@ function editTarget(target = {}) {
   const dialog = document.createElement("dialog");
   const fields = {name:"Name", repository:"Repository", branch:"Branch", source:"Source", build:"Build", server_binary:"Server Binary", build_command:"Build Command"};
   const defaults = {branch:"master", server_binary:"{build}/bin/llama-server"};
+  const placeholders = {repository:"https://github.com/halo-box/strix-llama.cpp.git", source:"/home/ubnadmin/LlamaForge-autotune/strix-llama.cpp", build:"/home/ubnadmin/LlamaForge-autotune/strix-llama.cpp"};
   setHTML(dialog, `<form style="min-width:320px;max-width:760px">
     <h3>${target.id ? "Edit" : "Add"} Custom Build Target</h3>
     ${Object.entries(fields).map(([k,label]) => `<label style="display:block;margin:10px 0">${label}
-      ${k === "build_command" ? `<textarea name="${k}" rows="8" style="width:100%" required>${esc(target[k] || "")}</textarea>` : `<input name="${k}" style="display:block;width:100%" value="${esc(target[k] || defaults[k] || "")}" required>`}</label>`).join("")}
+      ${k === "build_command" ? `<textarea name="${k}" rows="8" style="width:100%" required>${esc(target[k] || "")}</textarea>` : `<input name="${k}" style="display:block;width:100%" value="${esc(target[k] || defaults[k] || "")}" placeholder="${esc(placeholders[k] || "")}" required>`}</label>`).join("")}
     <p class="note">Save and Validate do not clone or execute commands. Pull &amp; Build runs this command with your account's permissions. Use only commands you trust. Bash is required (Git Bash on Windows). The working directory is Build; placeholders: {source}, {build}, {jobs}. Quote paths where needed. Existing checkouts must match Repository and Branch.</p>
     <div class="actions"><button type="button" data-action="validate">Validate</button><button type="submit">Save Target</button><button type="button" data-action="cancel">Cancel</button></div>
     <p data-status role="status"></p>
