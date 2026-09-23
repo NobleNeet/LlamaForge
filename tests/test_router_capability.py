@@ -78,6 +78,8 @@ class EngineSwitchRefusesNonRouterBinaryTest(unittest.TestCase):
         self.restart = mock.patch.object(routes.router_ctl, "restart",
                                          return_value=(True, "")).start()
         mock.patch.object(routes.os.path, "exists", return_value=True).start()
+        # Idle maintenance would probe the real router port; irrelevant here.
+        mock.patch.object(routes, "maybe_run_idle_maintenance").start()
         self.addCleanup(mock.patch.stopall)
 
     def test_refuses_and_keeps_the_current_engine(self):

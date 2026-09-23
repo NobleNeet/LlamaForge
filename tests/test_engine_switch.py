@@ -35,6 +35,9 @@ class EngineSwitchRouteTest(unittest.TestCase):
 
         self.restart = mock.patch.object(
             routes.router_ctl, "restart", return_value=(True, "")).start()
+        # Idle maintenance would probe the real router port; this test only
+        # cares about switch persistence and restart plumbing.
+        mock.patch.object(routes, "maybe_run_idle_maintenance").start()
         self.addCleanup(mock.patch.stopall)
 
     def test_rejects_an_unknown_engine(self):

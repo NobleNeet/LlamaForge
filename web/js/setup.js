@@ -84,6 +84,7 @@ export async function loadSetup() {
   setHTML(v, `<div class="skel">PROBING SYSTEM...</div>`);
   const [s, net, vs] = await Promise.all([api("/api/setup"), api("/api/network"), api("/api/vllm/setup")]);
   const p = s.prereqs, hw = s.hardware;
+  const logs = s.logs || {log_dir: "", effective_dir: "", limits_mb: {}};
   const toolRow = (name, t) => `<div class="kv"><span class="k">${esc(name)}</span>
     <span class="v ${t.present?'ok':'bad'}">${t.present?esc(t.version||"present"):"MISSING"}
     ${!t.present&&t.installable?` <button data-install="${esc(name)}" style="padding:3px 8px;margin-left:8px">Install</button>`:""}
@@ -127,6 +128,32 @@ export async function loadSetup() {
         <div class="fld"><label>Disk GB/s</label><input id="bw-disk" type="number" min="0" step="any" placeholder="5.7" value="${esc(String(bw.disk_bw ?? ""))}" style="width:110px"></div>
         <button id="bw-save">Save</button>
         <span class="msg" id="bw-msg"></span>
+      </div>
+    </div>
+    <div class="card"><h3>Log Management</h3>
+      <div class="note">LlamaForge keeps one file per log and shrinks oversized ones <b>in place</b> &mdash; no <code>.1</code> / <code>.old</code> / backup generations. Log files are checked when all inference models are unloaded. If a file exceeds its configured limit, the oldest complete lines are removed first.</div>
+      <div class="fld" style="margin-top:10px">
+        <label>Log directory</label>
+        <input id="log-dir" type="text" placeholder="${esc(logs.effective_dir)}" value="${esc(logs.log_dir)}" style="width:100%">
+      </div>
+      <div class="note">Empty = <code>${esc(logs.effective_dir)}</code>. <b>Changing the log directory takes effect after restarting LlamaForge.</b> Size limits below apply immediately after saving.</div>
+      <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:flex-end">
+        <div class="fld"><label>Router stdout</label><input id="log-limit-router_stdout" type="number" min="0" step="1" value="${esc(String(logs.limits_mb.router_stdout ?? 0))}" style="width:90px"></div>
+        <div class="fld"><label>Router stderr</label><input id="log-limit-router_stderr" type="number" min="0" step="1" value="${esc(String(logs.limits_mb.router_stderr ?? 0))}" style="width:90px"></div>
+        <div class="fld"><label>Panel stdout</label><input id="log-limit-panel_stdout" type="number" min="0" step="1" value="${esc(String(logs.limits_mb.panel_stdout ?? 0))}" style="width:90px"></div>
+        <div class="fld"><label>Panel stderr</label><input id="log-limit-panel_stderr" type="number" min="0" step="1" value="${esc(String(logs.limits_mb.panel_stderr ?? 0))}" style="width:90px"></div>
+        <div class="fld"><label>vLLM stdout</label><input id="log-limit-vllm_stdout" type="number" min="0" step="1" value="${esc(String(logs.limits_mb.vllm_stdout ?? 0))}" style="width:90px"></div>
+        <div class="fld"><label>vLLM stderr</label><input id="log-limit-vllm_stderr" type="number" min="0" step="1" value="${esc(String(logs.limits_mb.vllm_stderr ?? 0))}" style="width:90px"></div>
+        <div class="fld"><label>vLLM setup</label><input id="log-limit-vllm_setup" type="number" min="0" step="1" value="${esc(String(logs.limits_mb.vllm_setup ?? 0))}" style="width:90px"></div>
+        <div class="fld"><label>vLLM download</label><input id="log-limit-vllm_download" type="number" min="0" step="1" value="${esc(String(logs.limits_mb.vllm_download ?? 0))}" style="width:90px"></div>
+        <div class="fld"><label>llama.cpp build</label><input id="log-limit-build_llamacpp" type="number" min="0" step="1" value="${esc(String(logs.limits_mb.build_llamacpp ?? 0))}" style="width:90px"></div>
+        <div class="fld"><label>ik_llama build</label><input id="log-limit-build_ikllama" type="number" min="0" step="1" value="${esc(String(logs.limits_mb.build_ikllama ?? 0))}" style="width:90px"></div>
+        <div class="fld"><label>Custom build logs</label><input id="log-limit-build_custom" type="number" min="0" step="1" value="${esc(String(logs.limits_mb.build_custom ?? 0))}" style="width:90px"></div>
+      </div>
+      <div class="note">Sizes are in MB. <code>0</code> = unlimited. All <code>build-custom-*.log</code> files share the single Custom build limit.</div>
+      <div class="actions" style="margin-top:10px">
+        <button id="log-mgmt-save" class="ghost">Save</button>
+        <span class="msg" id="log-mgmt-msg"></span>
       </div>
     </div>
     <div class="card"><h3>Scan Drives for Models</h3>
@@ -294,6 +321,33 @@ export async function loadSetup() {
     if (disk !== undefined && !Number.isNaN(disk)) ov.disk_bw = disk;
     await api("/api/config", {vram_bandwidths: ov});
     const m = $("#bw-msg"); m.className = "msg ok"; m.textContent = Object.keys(ov).length ? "saved" : "cleared (using defaults)";
+  };
+  const logMgmtSave = $("#log-mgmt-save");
+  if (logMgmtSave) logMgmtSave.onclick = async () => {
+    const msg = $("#log-mgmt-msg");
+    const limits = {};
+    for (const kind of Object.keys(logs.limits_mb || {})) {
+      const el = $("#log-limit-" + kind);
+      if (!el) continue;
+      const n = Number(el.value);
+      if (!Number.isInteger(n) || n < 0) {
+        msg.className = "msg err";
+        msg.textContent = `${kind}: whole number of MB, 0 for unlimited`;
+        return;
+      }
+      limits[kind] = n;
+    }
+    const body = {log_limits_mb: limits};
+    const dirEl = $("#log-dir");
+    if (dirEl) body.log_dir = dirEl.value.trim();
+    const r = await api("/api/config", body);
+    if (r.ok) {
+      msg.className = "msg ok";
+      msg.textContent = "saved (log directory applies after restart)";
+    } else {
+      msg.className = "msg err";
+      msg.textContent = r.error || "rejected";
+    }
   };
   $("#net-lan").onchange = e => {
     $("#net-keyrow").style.display = e.target.checked ? "" : "none";

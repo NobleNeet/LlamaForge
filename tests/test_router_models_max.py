@@ -89,6 +89,9 @@ class RestartUsesConfigTest(unittest.TestCase):
                                          return_value=(True, "")).start()
         mock.patch.object(routes.router_ctl, "supports_router_mode", return_value=True).start()
         mock.patch.object(routes.os.path, "exists", return_value=True).start()
+        # Idle maintenance would probe the real router port and trim the real
+        # logs/ dir; this test only cares about models_max plumbing.
+        mock.patch.object(routes, "maybe_run_idle_maintenance").start()
         self.addCleanup(mock.patch.stopall)
 
     def test_network_apply_keeps_the_configured_limit(self):

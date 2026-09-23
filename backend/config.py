@@ -84,6 +84,14 @@ DEFAULTS = {
     "vram_bandwidths":      {},   # optional {vram_bw,ram_bw,disk_bw} GB/s overrides (empty = presets/defaults)
     "vram_predict_enabled": True, # compute vramwise placement/tok-s estimates (offline; Discover only on expand)
     "docs_dir":      "",                        # "" = <ROOT>/docs/content
+    # Log storage. "" = <ROOT>/logs, the historical location, so a config
+    # that predates these keys keeps behaving exactly as before. See
+    # log_manager.py for the trim semantics (in-place shrink, never rotation).
+    "log_dir":       "",
+    # Per-kind caps in MB; 0 = unlimited. Only overrides live here: any kind
+    # absent from this dict uses log_manager.DEFAULT_LIMITS_MB, so a new kind
+    # added later is capped by default rather than left unbounded.
+    "log_limits_mb": {},
 }
 
 def load():

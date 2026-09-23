@@ -31,6 +31,7 @@ import custom_build
 import build_activation
 import uuid
 import chat_diagnostics
+import log_manager
 from builder import BuildManager
 
 # vLLM is managed through WSL2, so the whole vLLM surface is Windows-only.
@@ -38,7 +39,11 @@ VLLM_SUPPORTED = osplat.IS_WIN
 
 ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB     = os.path.join(ROOT, "web")
-LOGDIR  = os.path.join(ROOT, "logs")
+# Resolved once at import from config's `log_dir` ("" -> <ROOT>/logs, the
+# historical location). Every writer and the trim sweep read this one value,
+# so the whole install agrees on one directory; changing `log_dir` takes
+# effect on the next LlamaForge restart, which is the documented behaviour.
+LOGDIR  = log_manager.effective_log_dir()
 # Each engine records the binary its own build produced (see _record_server_bin).
 # Resolved at call time, so the helper can live further down with its siblings.
 BUILDER_LLAMA   = BuildManager(LOGDIR, "build",
@@ -162,10 +167,57 @@ _PREBUILD_LOADED = []
 def _dbg(event, **fields):
     """Lightweight structured debug logging to the panel/backend log."""
     try:
-        payload = json.dumps(fields, ensure_ascii=False, sort_keys=True)
+        payload = json.dumps(fields, sort_keys=True, ensure_ascii=False)
     except Exception:
         payload = str(fields)
     print(f"DBG {event}: {payload}", flush=True)
+
+
+def maybe_run_idle_maintenance(source=""):
+    """Trim oversized logs, but only on the resident -> fully-idle transition.
+
+    The intent is `one or more inference models resident -> all unloaded ->
+    sweep`, not a sweep on every single unload: a router holding three models
+    that loses one is not idle. The check covers every inference backend
+    LlamaForge manages - the llama-family router (llama.cpp or ik_llama, one
+    process, whichever engine is active) and vLLM - by asking each what it
+    still holds. Any model loaded or loading anywhere skips the sweep.
+
+    Every unload path (single unload, unload-all, the API idle reaper, router
+    restart, engine switch, build stop, vLLM unload) calls this instead of
+    duplicating the check, and MODEL_UNLOAD_HOOK stays what it always was:
+    idle-timer bookkeeping, not maintenance dispatch.
+
+    Best-effort by contract: never raises, so a log problem cannot fail the
+    unload that triggered it. The sweep itself is lock-guarded, so several
+    triggers at once collapse into one run.
+    """
+    try:
+        # The llama-family router: llama.cpp and ik_llama share it, so one
+        # /models query covers both engines. A router that will not answer
+        # holds nothing we manage (its process is down or unreachable).
+        st, data = router("/models", timeout=3)
+        resident = []
+        if st == 200:
+            resident = [m.get("id") for m in data.get("data", [])
+                        if m.get("id") and m.get("id") != "default"
+                        and m.get("status", {}).get("value") in ("loaded", "loading")]
+        if resident:
+            _dbg("log.maintenance.skip", source=source, resident=resident)
+            return
+        # vLLM lives outside the router; ask its manager directly. Only use
+        # an already-built manager - never spin one up just to ask a question.
+        if VLLM_SUPPORTED and _VLLM is not None:
+            live = [i.get("model_id") for i in _VLLM.status()
+                    if i.get("state") in ("starting", "loading", "ready")]
+            if live:
+                _dbg("log.maintenance.skip", source=source, vllm=live)
+                return
+        res = log_manager.maybe_trim_all(log=lambda msg: _dbg("log.maintenance.error", error=msg))
+        if res.get("trimmed"):
+            _dbg("log.maintenance.trimmed", source=source, files=res["trimmed"])
+    except Exception as e:
+        _dbg("log.maintenance.error", source=source, error=str(e))
 
 
 def _knob_snapshot(knobs, limit=24):
@@ -837,7 +889,8 @@ def get_gpus(req):
 def get_setup(req):
     c = cfg()
     return 200, {"prereqs": prereqs.status(),
-                 "hardware": hardware.recommend(backend=c.get("llama_backend", "auto"))}
+                 "hardware": hardware.recommend(backend=c.get("llama_backend", "auto")),
+                 "logs": log_manager.summary(c)}
 
 
 def get_build_info(req):
@@ -1129,6 +1182,8 @@ def post_model_unload(req):
             MODEL_UNLOAD_HOOK(mid, source=req.path or "/api/models/unload", backend=backend.name)
         except Exception:
             pass
+    if ok:
+        maybe_run_idle_maintenance(source=req.path or "/api/models/unload")
     return (200 if ok else 400), {"ok": ok, "error": err, "backend": backend.name}
 
 
@@ -1191,6 +1246,8 @@ def post_unload(req):
             MODEL_UNLOAD_HOOK(mid, source=req.path or "/api/unload", backend="llamacpp")
         except Exception:
             pass
+    if code == 200:
+        maybe_run_idle_maintenance(source=req.path or "/api/unload")
     return (200 if code == 200 else 400), res
 
 
@@ -1215,6 +1272,7 @@ def _unload_all_models(source=""):
                 MODEL_UNLOAD_HOOK(mid, source=source, backend="llamacpp")
             except Exception:
                 pass
+    maybe_run_idle_maintenance(source=source or "unload_all")
     return loaded
 
 
@@ -1249,6 +1307,7 @@ def _stop_router_after_build(source=""):
                 MODEL_UNLOAD_HOOK(mid, source=source, backend="llamacpp")
             except Exception:
                 pass
+    maybe_run_idle_maintenance(source=source or "stop_router_after_build")
     return loaded
 
 
@@ -1790,6 +1849,24 @@ def _v_bandwidths(v):
     return out
 
 
+def _v_log_limits(v):
+    """log_limits_mb: {kind: non-negative int MB}. Only kinds log_manager
+    knows about are accepted; anything else rejects the whole value rather
+    than storing a key no trim target will ever read. 0 = unlimited.
+    An empty dict clears all overrides (every kind back to its default)."""
+    if not isinstance(v, dict):
+        return None
+    known = set(log_manager.DEFAULT_LIMITS_MB)
+    out = {}
+    for k, n in v.items():
+        if k not in known:
+            return None
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+            return None
+        out[k] = n
+    return out
+
+
 CONFIG_WRITABLE = {
     "ui_mode":                 _v_mode,
     "theme":                   _v_theme,
@@ -1809,6 +1886,12 @@ CONFIG_WRITABLE = {
     # even though it is a path: it only names a folder the backend writes to,
     # never a program it executes or a file it reads.
     "download_dir":            _v_str,
+    # Log storage. Same path rationale as download_dir: log_dir only names a
+    # directory we write logs into. The size caps are plain non-negative ints.
+    # log_dir takes full effect after a LlamaForge restart (log file handles
+    # are bound at startup); the caps apply to the next trim immediately.
+    "log_dir":                 _v_str,
+    "log_limits_mb":           _v_log_limits,
     "anthropic_default_model": _v_str,
     "anthropic_shim_enabled":  _v_bool,
     "vram_bandwidths":         _v_bandwidths,
@@ -1892,6 +1975,8 @@ def post_network(req):
     ok, err = router_ctl.restart(sbin, ini, port,
                                  host, api_key, LOGDIR,
                                  models_max=router_ctl.resolve_models_max(c))
+    if ok:
+        maybe_run_idle_maintenance(source=req.path or "/api/network")
     if ok and panel_restart_required and callable(PANEL_RESTART):
         try:
             PANEL_RESTART(panel_host, c["panel_port"])
@@ -1942,6 +2027,8 @@ def post_router_restart(req):
                                   backend="llamacpp")
             except Exception:
                 pass
+    if ok:
+        maybe_run_idle_maintenance(source=req.path or "/api/router/restart")
     return (200 if ok else 500), {"ok": ok, "error": err, "models_max": models_max,
                                   "router_port": port, "unloaded": loaded}
 
@@ -1984,6 +2071,8 @@ def _post_engine_switch(req):
                                  c.get("router_host", "127.0.0.1"),
                                  c.get("router_api_key", ""), LOGDIR,
                                  models_max=router_ctl.resolve_models_max(c))
+    if ok:
+        maybe_run_idle_maintenance(source=req.path or "/api/engine/switch")
     return 200, {"ok": ok, "active_engine": engine, "error": err}
 
 
@@ -1995,6 +2084,7 @@ def post_vllm_load(req):
 
 def post_vllm_unload(req):
     REGISTRY.get("vllm").unload(req.body.get("model", ""))
+    maybe_run_idle_maintenance(source=req.path or "/api/vllm/unload")
     return 200, {"ok": True}
 
 

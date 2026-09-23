@@ -421,6 +421,7 @@ class ModelLifecycleHookTest(unittest.TestCase):
             return 200, {}
 
         with mock.patch.object(routes, "router", side_effect=fake_router), \
+             mock.patch.object(routes, "maybe_run_idle_maintenance"), \
              mock.patch.object(routes, "MODEL_LOAD_HOOK",
                                side_effect=lambda mid, source="", backend="": seen.append(("load", mid, source, backend))), \
              mock.patch.object(routes, "MODEL_UNLOAD_HOOK",

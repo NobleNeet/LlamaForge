@@ -79,8 +79,9 @@ class Manager:
 
     def _run(self, repo):
         import os
+        import log_manager
         try:
-            logdir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+            logdir = log_manager.effective_log_dir()
             os.makedirs(logdir, exist_ok=True)
             with open(os.path.join(logdir, "vllm-download.log"), "w",
                       encoding="utf-8", errors="replace") as log:

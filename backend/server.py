@@ -150,6 +150,11 @@ def _reap_api_idle_models(now=None):
             if code == 200:
                 unloaded.append(model)
                 _API_IDLE_LAST.pop(model, None)
+    if unloaded:
+        # The reaper is one of the "all inference models unloaded" paths, so
+        # it asks for the idle log sweep too. The helper re-checks residency
+        # across every backend, so unloading one of several models is a no-op.
+        routes.maybe_run_idle_maintenance(source="api-idle-reaper")
     return unloaded
 
 
