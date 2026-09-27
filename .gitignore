@@ -17,11 +17,17 @@ llama.cpp/
 .claude/
 .codex/
 .agents/
+.vscode/mcp.json
 CLAUDE.md
 AGENTS.md
 venvLlamaForge/
 .venv/
 venv/
+
+# local metrics / runtime logs
+tools/*.log
+tools/metrics-*.jsonl
+tools/metrics.state.json
 
 # agent design/plan artifacts (superpowers) - keep internal, don't publish
 docs/superpowers/
