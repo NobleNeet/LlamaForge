@@ -138,14 +138,34 @@ class BuildManager:
 
     def backup_binaries(self, build_dir):
         src = self.binaries_dir(build_dir)
-        if src:
-            stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            dst = src.rstrip("/\\") + f"-backup-{stamp}"
-            try:
-                shutil.copytree(src, dst)
-                self._log(f"[backup] prior binaries -> {dst}")
-            except Exception as e:
-                self._log(f"[backup] skipped: {e}")
+        if not src:
+            return
+
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        base = src.rstrip("/\\")
+        dst = base + f"-backup-{stamp}"
+        try:
+            shutil.copytree(src, dst)
+            self._log(f"[backup] prior binaries -> {dst}")
+        except Exception as e:
+            self._log(f"[backup] skipped: {e}")
+            return
+
+        # Keep exactly one generation.  Prune only after the new backup exists,
+        # so a failed copy can never destroy the last usable rollback copy.
+        parent = os.path.dirname(base)
+        prefix = os.path.basename(base) + "-backup-"
+        try:
+            for name in os.listdir(parent):
+                old = os.path.join(parent, name)
+                if name.startswith(prefix) and old != dst and os.path.isdir(old):
+                    try:
+                        shutil.rmtree(old)
+                        self._log(f"[backup] removed old backup -> {old}")
+                    except Exception as e:
+                        self._log(f"[backup] could not remove old backup {old}: {e}")
+        except Exception as e:
+            self._log(f"[backup] could not scan old backups: {e}")
 
     def _stream(self, cmd, cwd=None, env=None):
         self._log(f"\n$ {' '.join(cmd)}")
