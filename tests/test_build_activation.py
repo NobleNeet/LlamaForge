@@ -165,7 +165,7 @@ class BuildActivationTests(unittest.TestCase):
         routes.post_engine_switch(routes.Req(body={'engine': 'llamacpp'}))
         self.assertEqual(config.load()['server_bin'], str(self.old))
 
-    def test_builtin_callback_and_schedule_preserve_custom_even_if_binary_missing(self):
+    def test_builtin_callback_preserves_custom_and_schedule_follows_it(self):
         self.activate()
         exists = routes.os.path.exists
         with mock.patch.object(routes.os.path, 'exists', side_effect=lambda p: False if p == str(self.new) else exists(p)):
@@ -173,7 +173,10 @@ class BuildActivationTests(unittest.TestCase):
         self.assertEqual(config.load()['server_bin'], str(self.new))
         self.assertEqual(config.load()['llama_builtin_server_bin'], str(self.old))
         self.assertEqual(self.restart.call_count, 1)
-        self.assertIn('custom', routes._scheduled_build_idle(config.load())[0])
+        # The idle gate no longer skips just because a Custom Target is active;
+        # the schedule follows it. Here the unmocked metrics scrape is the only
+        # (unrelated) skip reason left.
+        self.assertNotIn('custom', routes._scheduled_build_idle(config.load())[0])
 
     def test_running_build_blocks_activation(self):
         with mock.patch.dict(routes.BUILDER_LLAMA.state, running=True), self.assertRaises(routes.ApiError) as caught:

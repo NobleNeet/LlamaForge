@@ -1493,38 +1493,43 @@ def _post_build_start(req, *, scheduled=False):
     builder = _builder_for(target)
     if builder.state["running"]:
         return 200, {"started": False, "target": target, "error": "A build is already running"}
+    custom = None
+    src = bdir = flags = env = None
+    selected_backend = None
     if target not in custom_build.BUILTINS:
         with _CUSTOM_TARGET_LOCK:
             # Reload under the edit/remove lock; run only the saved recipe.
             t = cfg().get("custom_build_targets", {}).get(target)
             if t is None:
                 raise ApiError(400, f"Unknown build target: {target}")
-            validated = _validated_target(t)
-            return 200, {"started": builder.start_custom(validated), "target": target}
-    requested_backend = c.get("llama_backend", "auto")
-    rec = hardware.recommend(backend=requested_backend)
-    selected_backend = rec.get("selected_backend", "cpu")
-    bad_backend = _validate_build_backend(selected_backend, prereqs.status())
-    if bad_backend:
-        return 200, {"started": False, "target": target, "error": bad_backend,
-                     "backend": selected_backend}
-    env = _hip_env() if selected_backend == "hip" else None
-    if target == "ikllama":
-        src = c.get("ik_llama_src", "")
-        bdir = c.get("ik_llama_build_dir", "")
-        flags = req.body.get("flags") or _resolved_build_flags(c, target, rec)
-        config.update({"ik_llama_cmake_flags": flags, "ik_llama_cmake_backend": selected_backend})
+            custom = _validated_target(t)
+        if not scheduled:
+            return 200, {"started": builder.start_custom(custom), "target": target}
     else:
-        src = c["llama_src"]
-        bdir = c["build_dir"]
-        flags = req.body.get("flags") or _resolved_build_flags(c, target, rec)
-        config.update({"cmake_flags": flags, "cmake_backend": selected_backend})
-    # Answer an unset/bad path here rather than starting a build thread that can
-    # only fail: the user gets the reason in the UI instead of a raw cmake error
-    # in the build log ("No build directory specified for -B").
-    bad = BuildManager.validate_paths(src, bdir)
-    if bad:
-        return 200, {"started": False, "target": target, "error": bad}
+        requested_backend = c.get("llama_backend", "auto")
+        rec = hardware.recommend(backend=requested_backend)
+        selected_backend = rec.get("selected_backend", "cpu")
+        bad_backend = _validate_build_backend(selected_backend, prereqs.status())
+        if bad_backend:
+            return 200, {"started": False, "target": target, "error": bad_backend,
+                         "backend": selected_backend}
+        env = _hip_env() if selected_backend == "hip" else None
+        if target == "ikllama":
+            src = c.get("ik_llama_src", "")
+            bdir = c.get("ik_llama_build_dir", "")
+            flags = req.body.get("flags") or _resolved_build_flags(c, target, rec)
+            config.update({"ik_llama_cmake_flags": flags, "ik_llama_cmake_backend": selected_backend})
+        else:
+            src = c["llama_src"]
+            bdir = c["build_dir"]
+            flags = req.body.get("flags") or _resolved_build_flags(c, target, rec)
+            config.update({"cmake_flags": flags, "cmake_backend": selected_backend})
+        # Answer an unset/bad path here rather than starting a build thread that can
+        # only fail: the user gets the reason in the UI instead of a raw cmake error
+        # in the build log ("No build directory specified for -B").
+        bad = BuildManager.validate_paths(src, bdir)
+        if bad:
+            return 200, {"started": False, "target": target, "error": bad}
     # Preload: free the running process of any loaded weights before its binary
     # is replaced by the rebuild. Only the llamacpp engine holds models through
     # this router (ikkllama predates router mode), so it is a no-op otherwise.
@@ -1546,7 +1551,15 @@ def _post_build_start(req, *, scheduled=False):
                 return 200, {"started": False, "error": "Router could not be stopped"}
             # Blocking on the scheduler thread keeps request admission closed
             # through build completion and session restoration, including failure.
-            builder.run_build(src, bdir, flags, pull=True, env=env, strict_pull=True)
+            if custom is not None:
+                # Same saved recipe as manual Pull & Build. Claim explicitly so a
+                # concurrent build is reported instead of silently ignored.
+                if not builder._claim():
+                    return 200, {"started": False, "target": target,
+                                 "error": "A build is already running"}
+                builder.run_custom(custom, _claimed=True)
+            else:
+                builder.run_build(src, bdir, flags, pull=True, env=env, strict_pull=True)
             return 200, {"started": True, "phase": builder.state["phase"]}
         finally:
             _bring_router_back(source="scheduled-build")
@@ -1567,8 +1580,6 @@ def _scheduled_build_idle(c):
     """Fresh metrics, never cached token rates. Missing data means do not update."""
     def skip(reason):
         return reason, False, []
-    if c.get("active_llamacpp_build_target") not in (None, "", "llamacpp"):
-        return skip("A custom llama.cpp build is selected")
     if c.get("active_engine", "llamacpp") != "llamacpp":
         return skip("llama.cpp is not the active engine")
     if BUILDER_LLAMA.state["running"] or BUILDER_IKLLAMA.state["running"]:
@@ -1599,12 +1610,40 @@ def _scheduled_build_idle(c):
     return "", True, loaded
 
 
+def _auto_update_target(c):
+    """Resolve the Build Target the daily automatic update must follow.
+
+    Returns (target_id, skip_reason). The active llama.cpp-compatible target
+    decides: unset/empty/"llamacpp" is the built-in checkout; any other id is
+    that registered Custom Target, whose saved recipe the build path re-reads
+    under the target lock. Never falls back to the built-in: a stale, removed,
+    or invalid active target must not rebuild a binary the user is not running,
+    so it is skipped with the reason recorded instead."""
+    tid = c.get("active_llamacpp_build_target")
+    if tid in (None, "", "llamacpp"):
+        return "llamacpp", ""
+    if not isinstance(tid, str):
+        return None, f"active_llamacpp_build_target is not a target id: {tid!r}"
+    with _CUSTOM_TARGET_LOCK:
+        registered = cfg().get("custom_build_targets", {}).get(tid)
+    if registered is None:
+        return None, f"Custom build target '{tid}' is no longer registered"
+    try:
+        custom_build.validate(registered)
+    except (ValueError, OSError) as exc:
+        return None, f"Custom build target '{tid}' cannot be resolved: {exc}"
+    return tid, ""
+
+
 def run_scheduled_build():
+    target, skip = _auto_update_target(cfg())
+    if skip:
+        return "Skipped: " + skip
     reason, _, _ = _scheduled_build_idle(cfg())
     if reason:
         return "Skipped: " + reason
     config.update({"build_auto_update_status": "Pull latest & rebuild running"})
-    _, result = post_build_start(Req(body={"target": "llamacpp", "pull": True},
+    _, result = post_build_start(Req(body={"target": target, "pull": True},
                                      path="scheduled-build"), scheduled=True)
     if not result.get("started"):
         return "Skipped: " + result.get("error", "Build unavailable")

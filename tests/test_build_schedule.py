@@ -184,6 +184,167 @@ class ScheduledBuildTest(unittest.TestCase):
         handler._do_POST.assert_not_called()
 
 
+class AutoUpdateTargetTest(unittest.TestCase):
+    """The daily update follows active_llamacpp_build_target at run time."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.target_a = {"name": "A", "repository": "https://example.invalid/a.git",
+                        "branch": "main", "source": self.tmp.name + "/src-a",
+                        "build": self.tmp.name + "/build-a",
+                        "server_binary": "bin/llama-server",
+                        "build_command": "make"}
+        self.target_b = dict(self.target_a, name="B",
+                            repository="https://example.invalid/b.git",
+                            source=self.tmp.name + "/src-b", build=self.tmp.name + "/build-b")
+        self.cfg = {"active_engine": "llamacpp", "active_llamacpp_build_target": "llamacpp",
+                   "custom_build_targets": {"custom-a": dict(self.target_a, id="custom-a"),
+                                          "custom-b": dict(self.target_b, id="custom-b")}}
+        self.patches = [mock.patch.object(routes, "cfg", side_effect=lambda: dict(self.cfg)),
+                       mock.patch.object(routes.custom_build, "validate",
+                                        side_effect=lambda t: dict(t))]
+        self.mocks = [p.start() for p in self.patches]
+        for p in self.patches:
+            self.addCleanup(p.stop)
+
+    def test_builtin_selection_resolves_builtin(self):
+        for value in (None, "", "llamacpp"):
+            self.cfg["active_llamacpp_build_target"] = value
+            self.assertEqual(routes._auto_update_target(self.cfg), ("llamacpp", ""))
+
+    def test_custom_target_a_resolves_to_a(self):
+        self.cfg["active_llamacpp_build_target"] = "custom-a"
+        self.assertEqual(routes._auto_update_target(self.cfg), ("custom-a", ""))
+
+    def test_switch_a_to_b_needs_no_schedule_resave(self):
+        self.cfg["active_llamacpp_build_target"] = "custom-a"
+        self.assertEqual(routes._auto_update_target(self.cfg), ("custom-a", ""))
+        self.cfg["active_llamacpp_build_target"] = "custom-b"
+        self.assertEqual(routes._auto_update_target(self.cfg), ("custom-b", ""))
+
+    def test_switch_back_to_builtin_resolves_builtin(self):
+        self.cfg["active_llamacpp_build_target"] = "custom-a"
+        self.cfg["active_llamacpp_build_target"] = "llamacpp"
+        self.assertEqual(routes._auto_update_target(self.cfg), ("llamacpp", ""))
+
+    def test_removed_custom_target_skips_without_builtin_fallback(self):
+        self.cfg["active_llamacpp_build_target"] = "custom-gone"
+        target, reason = routes._auto_update_target(self.cfg)
+        self.assertIsNone(target)
+        self.assertIn("custom-gone", reason)
+        self.assertIn("no longer registered", reason)
+
+    def test_invalid_custom_target_skips_without_builtin_fallback(self):
+        self.cfg["active_llamacpp_build_target"] = "custom-a"
+        self.mocks[1].side_effect = ValueError("Source must be the root of a Git checkout")
+        target, reason = routes._auto_update_target(self.cfg)
+        self.assertIsNone(target)
+        self.assertIn("cannot be resolved", reason)
+
+    def test_non_string_target_id_skips(self):
+        self.cfg["active_llamacpp_build_target"] = 42
+        target, reason = routes._auto_update_target(self.cfg)
+        self.assertIsNone(target)
+        self.assertTrue(reason)
+
+
+class AutoUpdateRunTest(unittest.TestCase):
+    """run_scheduled_build dispatches to the resolved target through the
+    existing Pull & Build code path."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.saved_target = {"name": "A", "repository": "https://example.invalid/a.git",
+                            "branch": "main", "source": self.tmp.name + "/src",
+                            "build": self.tmp.name + "/build",
+                            "server_binary": "bin/llama-server",
+                            "build_command": "make", "id": "custom-a"}
+        self.cfg = {"active_engine": "llamacpp", "active_llamacpp_build_target": "custom-a",
+                   "custom_build_targets": {"custom-a": dict(self.saved_target),
+                                          "custom-b": dict(self.saved_target, name="B", id="custom-b")},
+                   "llama_src": self.tmp.name, "build_dir": self.tmp.name + "/builtin-build"}
+        self.custom_builder = mock.Mock()
+        self.custom_builder.state = {"running": False, "phase": "done"}
+        self.custom_builder._claim.return_value = True
+        self.real_idle = routes._scheduled_build_idle
+        self.patches = [mock.patch.object(routes, "cfg", side_effect=lambda: dict(self.cfg)),
+                       mock.patch.object(routes.custom_build, "validate", side_effect=lambda t: dict(t)),
+                       mock.patch.object(routes, "_builder_for", return_value=self.custom_builder),
+                       mock.patch.object(routes, "_scheduled_build_idle", return_value=("", True, ["a"])),
+                       mock.patch.object(routes.router_ctl, "stop", return_value=True),
+                       mock.patch.object(config, "update"),
+                       mock.patch.object(routes, "_bring_router_back")]
+        self.mocks = [p.start() for p in self.patches]
+        for p in self.patches:
+            self.addCleanup(p.stop)
+        self.addCleanup(self.reset_restore)
+
+    def reset_restore(self):
+        routes._PREBUILD_RUNNING, routes._PREBUILD_LOADED = False, []
+
+    def test_custom_target_a_is_auto_updated_with_saved_recipe(self):
+        result = routes.run_scheduled_build()
+        self.assertIn("Build done", result)
+        self.custom_builder.run_custom.assert_called_once()
+        self.assertEqual(self.custom_builder.run_custom.call_args.args[0], self.saved_target)
+        self.assertTrue(self.custom_builder.run_custom.call_args.kwargs["_claimed"])
+        self.custom_builder.start_custom.assert_not_called()
+        self.custom_builder.run_build.assert_not_called()
+        self.mocks[6].assert_called_once()
+
+    def test_switch_to_b_targets_b_without_resaving_schedule(self):
+        self.cfg["active_llamacpp_build_target"] = "custom-b"
+        result = routes.run_scheduled_build()
+        self.assertIn("Build done", result)
+        self.assertEqual(self.custom_builder.run_custom.call_args.args[0]["name"], "B")
+
+    def test_removed_custom_target_skips_and_never_builds_builtin(self):
+        self.cfg["active_llamacpp_build_target"] = "custom-gone"
+        result = routes.run_scheduled_build()
+        self.assertIn("Skipped", result)
+        self.assertIn("custom-gone", result)
+        self.custom_builder.run_custom.assert_not_called()
+        self.custom_builder.run_build.assert_not_called()
+
+    def test_ikllama_engine_skips(self):
+        self.cfg["active_engine"] = "ikllama"
+        # Use the real idle gate so the engine rule itself is exercised.
+        self.mocks[3].side_effect = self.real_idle
+        result = routes.run_scheduled_build()
+        self.assertEqual(result, "Skipped: llama.cpp is not the active engine")
+        self.custom_builder.run_custom.assert_not_called()
+
+    def test_build_failure_still_restores_router(self):
+        self.custom_builder.run_custom.side_effect = RuntimeError("recipe exploded")
+        with self.assertRaises(RuntimeError):
+            routes.post_build_start(routes.Req(body={"target": "custom-a", "pull": True},
+                                              path="scheduled-build"), scheduled=True)
+        self.mocks[6].assert_called_once()
+
+    def test_custom_recipe_failure_state_does_not_raise_but_recovers(self):
+        # run_custom swallows build failures internally; the scheduled call must
+        # still report the phase and restore the router.
+        def fake_run(target, _claimed=False):
+            self.custom_builder.state["phase"] = "failed"
+        self.custom_builder.run_custom.side_effect = fake_run
+        _, result = routes.post_build_start(routes.Req(body={"target": "custom-a", "pull": True},
+                                                      path="scheduled-build"), scheduled=True)
+        self.assertTrue(result["started"])
+        self.assertEqual(result["phase"], "failed")
+        self.mocks[6].assert_called_once()
+
+    def test_busy_custom_builder_claim_reports_not_started(self):
+        self.custom_builder._claim.return_value = False
+        _, result = routes.post_build_start(routes.Req(body={"target": "custom-a", "pull": True},
+                                                      path="scheduled-build"), scheduled=True)
+        self.assertFalse(result["started"])
+        self.assertIn("already running", result["error"])
+        self.custom_builder.run_custom.assert_not_called()
+        self.mocks[6].assert_called_once()
+
+
 class BuilderTest(unittest.TestCase):
     def test_failed_pull_aborts_only_automatic_build(self):
         with tempfile.TemporaryDirectory() as tmp:
