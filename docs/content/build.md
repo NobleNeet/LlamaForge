@@ -85,7 +85,9 @@ have reviewed; LlamaForge does not extract commands from repository documentatio
 it never executes the recipe. **Edit** keeps the target ID stable and does not
 move or delete old directories. **Remove** removes registration only: source,
 build, binaries, and Git files remain on disk. Editing/removing a running target
-is rejected. Custom targets are not part of the llama.cpp automatic update schedule.
+is rejected. When a Custom Target is the active llama.cpp-compatible build, the
+daily automatic update schedule follows that target and runs its saved Pull & Build
+workflow instead of updating the built-in llama.cpp checkout.
 
 ### Use this build
 
@@ -115,9 +117,11 @@ target matches it afterward, the UI shows **External / unregistered build**.
 To return, select the built-in **llama.cpp** target and click **Switch to llama.cpp**.
 LlamaForge preserves the previously selected default binary (including an explicit
 external `server_bin`) for this operation. Subsequent built-in builds update that
-saved build path without replacing an active Custom Target. Automatic llama.cpp
-updates skip while a Custom Target is selected; they resume under the existing
-schedule after switching back. ik_llama remains a separate, unchanged runtime.
+saved build path without replacing an active Custom Target. The automatic update
+schedule follows whichever registered llama.cpp-compatible Build Target is active:
+a Custom Target uses its own saved repository/branch/recipe, while switching back
+to built-in `llama.cpp` makes subsequent automatic updates use the built-in checkout.
+`ik_llama` remains a separate runtime and is not included in this schedule.
 
 ### Configuration and API
 
@@ -146,7 +150,9 @@ Two optional configuration keys default to empty strings for older installations
 - `llama_builtin_server_bin`: saved default llama.cpp binary for switching back.
 - `active_llamacpp_build_target`: selected custom ID, `llamacpp` after switching
   back, or empty for legacy/default selection. This never participates in runtime
-  backend dispatch; `active_engine` remains `llamacpp` or `ikllama`.
+  backend dispatch; `active_engine` remains `llamacpp` or `ikllama`. The automatic
+  update scheduler does use this build identity to resolve which registered
+  llama.cpp-compatible Build Target should be pulled and rebuilt.
 
 - `GET /api/build/targets`: built-in and custom target records (`builtin` flag),
   plus `active_build` with `id`, `name`, and `server_bin`.
@@ -167,11 +173,15 @@ Two optional configuration keys default to empty strings for older installations
 
 ## Daily automatic updates
 
-In **Build / Update → Automatic Update · llama.cpp**, enable **Pull latest & rebuild automatically when idle**, choose a daily time, and click **Save schedule**. The default is disabled, with 03:00 preselected. The displayed timezone is the server's local timezone. LlamaForge must be running during the scheduled minute; the browser may be closed. Missed times are not caught up.
+In **Build / Update → Automatic Update · Active Build Target**, enable **Pull latest & rebuild automatically when idle**, choose a daily time, and click **Save schedule**. The default is disabled, with 03:00 preselected. The displayed timezone is the server's local timezone. LlamaForge must be running during the scheduled minute; the browser may be closed. Missed times are not caught up.
 
-The scheduler checks once per local day. Active requests, a build, another active engine, a running vLLM server, or unavailable activity information skip that day's update. The last check and its reason appear in the card. It checks every loaded model's current processing and queued request counts using the upstream [llama.cpp metrics endpoint](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#get-metrics-prometheus-compatible-metrics-exporter); missing metrics are treated as unknown, not idle.
+The schedule is attached to the active registered llama.cpp-compatible Build Target rather than permanently to the built-in `llama.cpp` target. At the scheduled time LlamaForge resolves `active_llamacpp_build_target`. `llamacpp`, an empty legacy/default identity, or the equivalent built-in selection updates the built-in llama.cpp checkout using its normal pull-and-rebuild flow. A registered Custom Target updates that target using its saved Repository, Branch, Source, Build, Server Binary, and Build Command, with the same fetch/pull/clone validation rules as manual **Pull & Build**. Switching Build Target therefore changes the target of the next automatic update without requiring the schedule to be reconfigured.
 
-During an automatic update, new panel API operations return HTTP 503 and the llama.cpp router is stopped, so inference is temporarily unavailable. After the build, LlamaForge attempts to restore the router and previously loaded models, including after build failure. Clients connected directly to the router should retry connections during this maintenance window; their activity is checked immediately before stopping the router, but a direct request can still arrive between that check and the stop. Existing external `server_bin` paths are preserved. Only llama.cpp is updated. A failed git pull cancels the automatic rebuild; inspect **Build Log · llama.cpp** for build results.
+Automatic update never silently falls back to another Build Target. If `active_llamacpp_build_target` names a Custom Target that is no longer registered or cannot be resolved safely, the update is skipped for that day and the status records the reason. `ik_llama` remains outside this schedule: if `active_engine` is not `llamacpp`, the automatic update is skipped rather than rebuilding a different engine.
+
+The scheduler checks once per local day. Active requests, a build, another active engine, a running vLLM server, an unresolved Build Target, or unavailable activity information skip that day's update. The last check, resolved target, and its reason appear in the card. It checks every loaded model's current processing and queued request counts using the upstream [llama.cpp metrics endpoint](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#get-metrics-prometheus-compatible-metrics-exporter); missing metrics are treated as unknown, not idle.
+
+During an automatic update, new panel API operations return HTTP 503 and the active llama.cpp-compatible router is stopped, so inference is temporarily unavailable. The update runs against the resolved Build Target only. After the build, LlamaForge attempts to restart the same target's binary and restore the previously loaded models, including after build failure where recovery is possible. Clients connected directly to the router should retry connections during this maintenance window; their activity is checked immediately before stopping the router, but a direct request can still arrive between that check and the stop. A failed git fetch/pull/clone or build command cancels the automatic rebuild and does not switch to another target. Inspect the Build Log for the resolved target for details.
 
 ## Screenshot
 
@@ -194,6 +204,7 @@ During an automatic update, new panel API operations return HTTP 503 and the lla
 | Rebuild | `BuildManager.run_build()` | Validates paths, optional `git pull --ff-only`, backs up prior binaries, `cmake` configure + build (Release, parallel jobs = CPU count by default), records the built `server_bin`. |
 | Partial success | `BuildManager.run_build()` | Build-step failure with a fresh `llama-server` present → `done_warnings` (amber "built with warnings"); no fresh binary → hard `failed`. |
 | Engine target / switch | Build tab selector, `POST /api/engine/switch` | Builds `llama.cpp` or `ik_llama`; switching sets `active_engine`, refused if the target binary has no router mode. |
+| Automatic update target | `active_llamacpp_build_target`, daily scheduler | Follows the active registered llama.cpp-compatible Build Target. Built-in `llama.cpp` uses its normal build flow; a Custom Target uses its saved Pull & Build recipe. Unresolved targets and non-`llamacpp` engines are skipped without fallback. |
 
 ## Troubleshooting
 
