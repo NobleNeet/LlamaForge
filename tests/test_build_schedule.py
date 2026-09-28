@@ -37,13 +37,41 @@ class ScheduleTest(unittest.TestCase):
         restarted.tick(datetime(2026, 9, 10, 3, 0))
         self.assertEqual(self.run.call_count, 2)
 
-    def test_active_request_skips_entire_day(self):
+    def test_transient_activity_retries_within_the_minute(self):
         with self.schedule.activity() as admitted:
             self.assertTrue(admitted)
             self.schedule.tick(self.now)
-        self.schedule.tick(self.now)
         self.run.assert_not_called()
         self.assertIn("Skipped", self.cfg["build_auto_update_status"])
+        # The day was NOT consumed by the transient collision; the next tick
+        # inside the same scheduled minute runs the update.
+        self.assertNotEqual(self.cfg.get("build_auto_update_last_date"), "2026-09-09")
+        self.schedule.tick(self.now.replace(second=40))
+        self.run.assert_called_once()
+        self.assertEqual(self.cfg["build_auto_update_last_date"], "2026-09-09")
+        # Once consumed, the same day never runs again.
+        self.schedule.tick(self.now.replace(second=55))
+        self.run.assert_called_once()
+
+    def test_no_catch_up_after_the_minute_passes_while_still_busy(self):
+        with self.schedule.activity():
+            self.schedule.tick(self.now)
+        self.schedule.tick(self.now.replace(minute=4))
+        self.run.assert_not_called()
+
+    def test_last_at_records_offset_aware_iso8601(self):
+        self.schedule.tick(self.now)
+        value = self.cfg["build_auto_update_last_at"]
+        parsed = datetime.fromisoformat(value)
+        self.assertIsNotNone(parsed.tzinfo)
+        self.assertEqual(parsed,
+                         self.now.astimezone().replace(tzinfo=parsed.tzinfo))
+        self.assertRegex(value, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$")
+
+    def test_last_at_updated_after_run_completes(self):
+        self.schedule.tick(self.now)
+        self.assertIn("2026-09-09", self.cfg["build_auto_update_last_at"])
+        self.assertEqual(self.cfg["build_auto_update_status"], "Build done")
 
     def test_build_blocks_new_activity_and_exception_releases_gate(self):
         def run():
@@ -117,6 +145,21 @@ class IdleTest(unittest.TestCase):
         routes.BUILDER_IKLLAMA.state["running"] = True
         self.assertTrue(routes._scheduled_build_idle(self.cfg)[0])
         routes.BUILDER_IKLLAMA.state["running"] = False
+
+    def test_running_custom_build_manager_skips(self):
+        busy = mock.Mock()
+        busy.state = {"running": True}
+        with mock.patch.dict(routes._CUSTOM_BUILDERS, {"custom-x": busy}):
+            self.assertIn("already running", routes._scheduled_build_idle(self.cfg)[0])
+        busy.state = {"running": False}
+        self.assertEqual(routes._scheduled_build_idle(self.cfg), ("", True, ["a", "b"]))
+
+    def test_idle_check_never_creates_custom_builders(self):
+        with mock.patch.dict(routes._CUSTOM_BUILDERS, {}, clear=True), \
+             mock.patch.object(routes.custom_build, "CustomBuildManager",
+                              side_effect=AssertionError("must not build managers for idle")):
+            routes._scheduled_build_idle(self.cfg)
+            self.assertEqual(routes._CUSTOM_BUILDERS, {})
 
     def test_running_vllm_skips(self):
         with mock.patch.object(routes, "VLLM_SUPPORTED", True):
@@ -248,6 +291,19 @@ class AutoUpdateTargetTest(unittest.TestCase):
         self.assertIsNone(target)
         self.assertTrue(reason)
 
+    def test_build_log_schedule_reports_active_update_target(self):
+        # The card's Update target comes from the server-side active identity,
+        # not the target being viewed in the dropdown.
+        self.cfg["active_llamacpp_build_target"] = "custom-a"
+        with mock.patch.object(routes, "_builder_for", return_value=mock.Mock(state={}, tail=lambda n: "")):
+            _, s = routes.get_build_log(routes.Req(qs={"target": "llamacpp"}))
+        self.assertEqual(s["schedule"]["update_target"], "A")
+        self.cfg["active_llamacpp_build_target"] = "llamacpp"
+        with mock.patch.object(routes, "_builder_for", return_value=mock.Mock(state={}, tail=lambda n: "")):
+            _, s = routes.get_build_log(routes.Req(qs={"target": "custom-a"}))
+        self.assertEqual(s["schedule"]["update_target"], "llama.cpp")
+        self.assertIn("last_at", s["schedule"])
+
 
 class AutoUpdateRunTest(unittest.TestCase):
     """run_scheduled_build dispatches to the resolved target through the
@@ -287,6 +343,8 @@ class AutoUpdateRunTest(unittest.TestCase):
     def test_custom_target_a_is_auto_updated_with_saved_recipe(self):
         result = routes.run_scheduled_build()
         self.assertIn("Build done", result)
+        self.assertIn("A", result)  # resolved target name in the status
+        self.assertNotIn("llama.cpp Build Log", result)
         self.custom_builder.run_custom.assert_called_once()
         self.assertEqual(self.custom_builder.run_custom.call_args.args[0], self.saved_target)
         self.assertTrue(self.custom_builder.run_custom.call_args.kwargs["_claimed"])
@@ -313,7 +371,7 @@ class AutoUpdateRunTest(unittest.TestCase):
         # Use the real idle gate so the engine rule itself is exercised.
         self.mocks[3].side_effect = self.real_idle
         result = routes.run_scheduled_build()
-        self.assertEqual(result, "Skipped: llama.cpp is not the active engine")
+        self.assertEqual(result, "Skipped — A: llama.cpp is not the active engine")
         self.custom_builder.run_custom.assert_not_called()
 
     def test_build_failure_still_restores_router(self):

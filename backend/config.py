@@ -53,6 +53,7 @@ DEFAULTS = {
     "build_auto_update_enabled": False,
     "build_auto_update_time": "03:00",       # daily, server local time
     "build_auto_update_last_date": "",
+    "build_auto_update_last_at": "",        # offset-aware ISO 8601, UI "Last attempt"
     "build_auto_update_status": "Not run yet",
     "git_remote":  "https://github.com/ggml-org/llama.cpp",
     # ik_llama mirrors the llama.cpp path trio and, like it, ships empty: these

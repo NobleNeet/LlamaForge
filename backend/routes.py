@@ -931,8 +931,12 @@ def get_build_log(req):
     s["log"] = builder.tail(300)
     s["target"] = target
     c = cfg()
+    tid, skip = _auto_update_target(c)
     s["schedule"] = {"last_date": c.get("build_auto_update_last_date", ""),
+                     "last_at": c.get("build_auto_update_last_at", ""),
                      "status": c.get("build_auto_update_status", "Not run yet"),
+                     "update_target": ("Unresolved: " + str(c.get("active_llamacpp_build_target"))
+                                      if skip else _target_display_name(tid)),
                      "timezone": time.strftime("%Z (UTC%z)")}
     return 200, s
 
@@ -1582,7 +1586,8 @@ def _scheduled_build_idle(c):
         return reason, False, []
     if c.get("active_engine", "llamacpp") != "llamacpp":
         return skip("llama.cpp is not the active engine")
-    if BUILDER_LLAMA.state["running"] or BUILDER_IKLLAMA.state["running"]:
+    if any(b.state["running"] for b in (BUILDER_LLAMA, BUILDER_IKLLAMA,
+                                        *_CUSTOM_BUILDERS.values())):
         return skip("A build is already running")
     # vLLM is independent of the active llama-family engine. Be conservative
     # while it is up: this update should not compete with its inference work.
@@ -1635,19 +1640,30 @@ def _auto_update_target(c):
     return tid, ""
 
 
+def _target_display_name(target_id):
+    """Human name for a resolved automatic-update target id."""
+    if target_id in (None, "", "llamacpp"):
+        return "llama.cpp"
+    t = cfg().get("custom_build_targets", {}).get(target_id)
+    if isinstance(t, dict) and t.get("name"):
+        return t["name"]
+    return target_id
+
+
 def run_scheduled_build():
     target, skip = _auto_update_target(cfg())
     if skip:
-        return "Skipped: " + skip
+        return "Skipped — " + skip
+    name = _target_display_name(target)
     reason, _, _ = _scheduled_build_idle(cfg())
     if reason:
-        return "Skipped: " + reason
-    config.update({"build_auto_update_status": "Pull latest & rebuild running"})
+        return f"Skipped — {name}: {reason}"
+    config.update({"build_auto_update_status": f"Pull latest & rebuild running — {name}"})
     _, result = post_build_start(Req(body={"target": target, "pull": True},
                                      path="scheduled-build"), scheduled=True)
     if not result.get("started"):
-        return "Skipped: " + result.get("error", "Build unavailable")
-    return "Build " + result["phase"] + " — see llama.cpp Build Log"
+        return f"Skipped — {name}: " + result.get("error", "Build unavailable")
+    return f"Build {result['phase']} — {name} Build Log"
 
 
 BUILD_SCHEDULE = build_schedule.BuildSchedule(config.load, config.update, run_scheduled_build)

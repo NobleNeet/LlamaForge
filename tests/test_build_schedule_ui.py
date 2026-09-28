@@ -28,7 +28,7 @@ const context = vm.createContext({
     if (path.startsWith('/api/build/info')) return {};
     if (path === '/api/state') return {config: {llama_backend:'vulkan', build_auto_update_enabled:true, build_auto_update_time:'04:15'}};
     if (path.startsWith('/api/vllm/version')) return {error:'unsupported'};
-    if (path.startsWith('/api/build/log')) return {schedule: {last_date:'2026-09-09', status:'Skipped: busy', timezone:'JST (UTC+0900)'}};
+    if (path.startsWith('/api/build/log')) return {schedule: {last_date:'2026-09-09', last_at:'2026-09-09T03:00:10+09:00', status:'Skipped: busy', update_target:'llama-cpp-for-strix-halo', timezone:'JST (UTC+0900)'}};
     if (path === '/api/config') {
       saves.push({buildDisabled:nodes['#btn-build'].disabled, backendDisabled:nodes['#build-backend'].disabled});
       return input.response;
@@ -64,9 +64,16 @@ vm.runInContext(source, context);
         html = nodes["#view-build"]["innerHTML"]
         self.assertIn('id="build-auto-enabled" checked', html)
         self.assertIn('value="04:15"', html)
-        self.assertIn('Automatic Update · llama.cpp', html)
+        self.assertIn('Automatic Update \u00b7 Active Build Target', html)
+        self.assertIn('Update target', html)
+        self.assertIn('Last attempt', html)
         self.assertEqual(nodes["#build-schedule-timezone"]["textContent"], 'JST (UTC+0900)')
         self.assertIn('Skipped: busy', nodes["#build-schedule-status"]["textContent"])
+        # The card shows the server-resolved update target, not the viewed target.
+        self.assertEqual(nodes["#build-update-target"]["textContent"], 'llama-cpp-for-strix-halo')
+        # Last attempt renders date AND time from the offset-aware ISO value.
+        self.assertRegex(nodes["#build-last-attempt"]["textContent"],
+                        r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$')
         self.assertEqual(result["calls"][-1], {"path": "/api/config", "body": {
             "build_auto_update_enabled": False, "build_auto_update_time": "05:30"}})
         self.assertEqual(nodes["#build-schedule-msg"]["textContent"], 'Schedule saved')

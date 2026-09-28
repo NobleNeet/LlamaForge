@@ -9,6 +9,14 @@ let buildViewVersion = 0;
 let buildPollVersion = 0;
 let _target = localStorage.getItem("build_target") || "llamacpp";
 
+// Server sends offset-aware ISO 8601; render in the browser's local time as
+// YYYY-MM-DD HH:MM:SS (server and browser normally share the host clock).
+function fmtLocal(iso) {
+  const p = n => String(n).padStart(2, "0");
+  return `${iso.getFullYear()}-${p(iso.getMonth() + 1)}-${p(iso.getDate())} `
+       + `${p(iso.getHours())}:${p(iso.getMinutes())}:${p(iso.getSeconds())}`;
+}
+
 function setTarget(t) {
   _target = t;
   localStorage.setItem("build_target", t);
@@ -141,7 +149,7 @@ export async function loadBuild(force) {
       <div class="note">Rebuilds ${esc(label)} with CMake. Prior binaries are backed up first. Takes several minutes; watch the log below.</div>
     </div>
     `}
-    <div class="card"><h3>Automatic Update · llama.cpp</h3>
+    <div class="card"><h3>Automatic Update · Active Build Target</h3>
       <div class="actions">
         <label><input type="checkbox" id="build-auto-enabled" ${schedule.build_auto_update_enabled ? "checked" : ""}> Pull latest &amp; rebuild automatically when idle</label>
         <label for="build-auto-time">Daily time</label>
@@ -149,7 +157,9 @@ export async function loadBuild(force) {
         <button class="primary" id="btn-save-build-schedule">Save schedule</button>
         <span class="msg" id="build-schedule-msg"></span>
       </div>
-      <div class="note">Server local time: <span id="build-schedule-timezone"></span>. LlamaForge must be running at this time; the browser may be closed. Busy or unknown state skips that day. Inference is unavailable during the update; the router and loaded models are restored afterward. Applies to llama.cpp only.</div>
+      <div class="note">Server local time: <span id="build-schedule-timezone"></span>. LlamaForge must be running at this time; the browser may be closed. Transient busy states retry within the scheduled minute; other busy or unknown states skip that day. Inference is unavailable during the update; the router and loaded models are restored afterward.</div>
+      <div class="kv"><span class="k">Update target</span><span class="v" id="build-update-target">${esc(activeBuild.name || "llama.cpp")}</span></div>
+      <div class="kv"><span class="k">Last attempt</span><span class="v" id="build-last-attempt">Never</span></div>
       <div class="kv"><span class="k">last check</span><span class="v" id="build-schedule-status">${esc(schedule.build_auto_update_status || "Not run yet")}</span></div>
     </div>
     <div class="card"><h3>Build Log · ${esc(label)}</h3><div class="note">Updates pause while selecting text or reading earlier lines. Clear the selection and scroll to the bottom to resume.</div><div class="log" id="build-log" tabindex="0">idle</div></div>`
@@ -279,7 +289,14 @@ async function pollBuild() {
     const s = await api("/api/build/log?target=" + encodeURIComponent(target));
     if (target !== _target || pollVersion !== buildPollVersion) return;
     const sched = s.schedule || {}, status = $("#build-schedule-status");
-    if (status) status.textContent = [sched.last_date, sched.status].filter(Boolean).join(" · ");
+    if (status) status.textContent = sched.status || "Not run yet";
+    const upd = $("#build-update-target");
+    if (upd && sched.update_target) upd.textContent = sched.update_target;
+    const last = $("#build-last-attempt");
+    if (last) {
+      const d = sched.last_at ? new Date(sched.last_at) : null;
+      last.textContent = d && !isNaN(d) ? fmtLocal(d) : "Never";
+    }
     const tz = $("#build-schedule-timezone");
     if (tz) tz.textContent = sched.timezone || "";
     const log = $("#build-log");

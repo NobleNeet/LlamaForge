@@ -32,7 +32,7 @@ class BuildSchedule:
                     self.active -= 1
 
     def tick(self, now=None):
-        now = now or datetime.now().astimezone()
+        now = (now or datetime.now()).astimezone()
         with self.lock:
             c = self.load()
             day = now.date().isoformat()
@@ -41,18 +41,27 @@ class BuildSchedule:
                     or c.get("build_auto_update_last_date", "") >= day
                     or self.updating):
                 return
-            # Persist before acting: a restart or repeated DST minute cannot retry.
-            self.save({"build_auto_update_last_date": day,
-                       "build_auto_update_status": "Checking idle state"})
             if self.active:
+                # A panel request or background task holds the server. This is
+                # transient: do NOT consume the day. Retry on the next tick
+                # while the scheduled minute is still current; once the minute
+                # passes the guard above stops any later catch-up.
                 self.save({"build_auto_update_status": "Skipped: requests or background work active"})
                 return
+            # Commit the day only when an attempt actually starts (or run()
+            # records a definitive skip): a restart or repeated DST minute
+            # cannot retry, and the day is never consumed twice.
+            self.save({"build_auto_update_last_date": day,
+                       "build_auto_update_last_at": now.isoformat(timespec="seconds"),
+                       "build_auto_update_status": "Checking idle state"})
             self.updating = True
         try:
             result = self.run()
-            self.save({"build_auto_update_status": result})
+            self.save({"build_auto_update_status": result,
+                       "build_auto_update_last_at": now.isoformat(timespec="seconds")})
         except Exception as exc:
-            self.save({"build_auto_update_status": "Failed: " + str(exc)})
+            self.save({"build_auto_update_status": "Failed: " + str(exc),
+                       "build_auto_update_last_at": now.isoformat(timespec="seconds")})
         finally:
             with self.lock:
                 self.updating = False
