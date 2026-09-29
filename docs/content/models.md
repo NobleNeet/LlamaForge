@@ -32,6 +32,27 @@ Because the flag count is entirely a function of your `llama-server` build, Llam
 5. To compare settings across models, click **Compare** above the model list, tick the checkbox on two or more rows, then open the comparison. The table lists every knob key any selected model has explicitly set and highlights cells that differ between models; a blank cell marked "inherit" means that model falls back to the `[*]` default.
 6. Open **Static presets** to review **Safe / Balanced / Aggressive** recommendations, automatically calculated for the selected GGUF. Balanced is selected initially. Choosing a preset or clicking **Apply preset to editor** fills the fields; you can still edit every value before **Save + Reload**. **Recalculate presets** refreshes the current memory estimate. No model is loaded during recommendation.
 
+## Delete a model
+
+The **Models available on this server** section supports permanent deletion of a model from disk.
+
+The delete control is intentionally not placed in the always-visible model row. Expand the target model first; **Delete** appears at the far right of that model's action row, after the normal load/save/client actions. It is a destructive action and should use danger styling without competing visually with the primary load controls.
+
+Clicking **Delete** must not remove anything immediately. Show a confirmation dialog that identifies the model and the filesystem path or paths that will be affected, makes clear that the operation is permanent, and requires an explicit destructive confirmation such as **Delete permanently**. **Cancel** remains the safe default action.
+
+Deletion is defined in terms of the selected model, not simply "delete the parent directory":
+
+- If the target model is the only model payload in its containing model directory, delete that directory as a whole.
+- If the same directory contains another model, another quantization of the same model, or any other model payload that must remain usable, delete only the files that belong to the selected model and keep the shared directory.
+- A sharded GGUF is one model payload. Deleting it removes every shard in that shard set, not only the first shard recorded in the registry.
+- An `mmproj` file may be deleted together with the model only when LlamaForge can determine safely that it belongs exclusively to that model. An `mmproj` that may be shared or whose ownership is ambiguous must be preserved.
+- After deleting only the selected model files from a shared directory, remove the directory as well if and only if it has become empty.
+- The fact that a path is the selected model file's parent directory is never, by itself, sufficient justification for recursive directory deletion.
+
+Discover's existing on-disk download layout is retained. In particular, multiple GGUF quantizations downloaded from the same Hugging Face repository may continue to live in the same repository-named directory. The delete implementation must therefore handle shared directories safely rather than changing the download directory structure.
+
+The UI should treat deletion as a model-level operation regardless of whether the physical deletion resolves to a whole directory, a single GGUF, or a shard set. After a successful deletion the Models list must refresh so the deleted model no longer appears as available on the server.
+
 ## Screenshot
 
 ![Models tab](docs/img/models.png)
@@ -46,6 +67,7 @@ Because the flag count is entirely a function of your `llama-server` build, Llam
 | Presets | `POST /api/presets/save` / `/apply` / `/delete` / `/bind` | Named knob sets stored per model in `config.json`'s `model_presets` key. The Models UI uses **bind** to make a chip the model's default, record the pairing in `preset_bindings`, materialize those knobs into that same model, and refresh the editor with the preset's values. |
 | Compare | Models tab, Compare toggle (`web/js/models.js` `openCompare()`) | Client-side diff of `settings` across two or more selected models; no separate endpoint. |
 | Static presets | `POST /api/autotune/recommend` | GGUF tensor/header geometry + hardware memory budget → Safe / Balanced / Aggressive, including settings, rationale, confidence, memory estimates and fit status. |
+| Model deletion | Models tab, expanded model action row | Permanent model-level deletion with explicit confirmation. Delete the whole containing directory only when it contains no other model payload; otherwise delete only the selected model's file set, including all shards. Preserve ambiguous/shared `mmproj` files and remove a shared directory only after it becomes empty. Discover's current repository-based download layout is unchanged. |
 | UI density | `ui_mode` in `config.json` (`"lite"` / `"advanced"`) | Lite = curated knob subset; advanced = the full parsed schema. |
 
 ## Troubleshooting
