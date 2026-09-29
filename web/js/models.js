@@ -194,11 +194,20 @@ function editorButtons(m) {
     return `<button class="primary" data-act="vsave">Save${m.status==="loaded"?" + Restart":""}</button>
       ${m.status==="loaded"||m.status==="loading"?`<button class="ghost" data-act="vunload">${m.status==="loading"?"Cancel / Stop":"Stop"}</button>`:`<button data-act="vload">Load</button>`}
       <button class="ghost" data-act="client">Client config</button>
-      <button class="ghost" data-act="vdelete" title="remove model + delete its files from WSL">Delete</button>`;
+      ${deleteButton(m)}`;
   }
   return `<button class="primary" data-act="save">Save + Reload</button>
       ${m.status==="loaded"||m.status==="loading"?`<button class="ghost" data-act="unload">${m.status==="loading"?"Cancel / Unload":"Unload"}</button>`:`<button data-act="load">Load</button>`}
-      <button class="ghost" data-act="client">Client config</button>`;
+      <button class="ghost" data-act="client">Client config</button>
+      ${deleteButton(m)}`;
+}
+// Destructive action, deliberately last in the action row and styled as an
+// outlined danger button - visible as dangerous without a permanent fill
+// competing with the primary load/save controls.
+function deleteButton(m) {
+  if (!m.in_ini) return "";   // auto-discovered rows carry no recorded file set
+  const busy = m.status === "loaded" || m.status === "loading";
+  return `<button class="ghost danger" data-act="delete" title="${busy ? "unload this model first" : "permanently delete this model's files from disk"}">Delete</button>`;
 }
 function editorNote(m) {
   if (m.backend === "vllm")
@@ -613,6 +622,70 @@ function openClientConfig(id) {
     + snip("curl", curl) + snip("OpenAI client (environment)", envs) + snip("Test JSON payload", payload));
 }
 
+/* ---------- delete model ----------
+   Clicking Delete never deletes: it fetches the server-computed deletion
+   plan (exact paths + size) and shows a confirmation modal. Only the
+   "Delete permanently" button inside that modal calls the delete API. */
+function fmtBytes(n) {
+  if (!n) return "unknown size";
+  const gib = n / 1024 ** 3;
+  if (gib >= 1) return `${gib.toFixed(2)} GiB`;
+  const mib = n / 1024 ** 2;
+  if (mib >= 1) return `${mib.toFixed(1)} MiB`;
+  return `${n} B`;
+}
+async function openDeleteDialog(id) {
+  const m = modelRows().find(x => x.id === id); if (!m) return;
+  let plan;
+  try {
+    plan = await api("/api/model/delete_plan?model=" + encodeURIComponent(id) +
+                    "&backend=" + encodeURIComponent(m.backend || "llamacpp"));
+  } catch (e) {
+    toast(`Could not inspect the model: ${e}`, "err"); return;
+  }
+  if (!plan || !plan.files || !plan.files.length) { toast("Nothing to delete for this model", "err"); return; }
+  const pathList = plan.files.map(f => `<div class="del-path">${esc(f)}</div>`).join("");
+  const dirNote = plan.delete_directory
+    ? `The directory <code>${esc(plan.directory)}</code> becomes empty and is removed too.`
+    : `The directory <code>${esc(plan.directory)}</code> holds other files and stays.`;
+  const mmNote = plan.mmproj
+    ? ` Its exclusive projector <code>${esc(plan.mmproj)}</code> is included.`
+    : ` Any shared <code>mmproj</code> is preserved.`;
+  showModal("Delete model", `<div class="note danger-note"><b>Permanently delete <code>${esc(id)}</code>?</b><br>
+      This removes the actual files from disk. <b>This cannot be undone.</b></div>
+    <div class="note" style="margin-top:10px">${fmtBytes(plan.size_bytes)} &middot; ${plan.files.length} file${plan.files.length>1?"s":""}</div>
+    <div class="del-paths">${pathList}</div>
+    <div class="note" style="margin-top:8px">${dirNote}${mmNote}</div>
+    <div class="note del-error" id="del-error" style="color:var(--red);display:none"></div>
+    <div class="actions" style="margin-top:14px">
+      <button type="button" class="danger-solid" id="delete-perm-confirm">Delete permanently</button>
+      <button type="button" class="ghost" data-mclose>Cancel</button>
+    </div>`);
+  const btn = $("#delete-perm-confirm");
+  if (btn) btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const r = await api("/api/models/delete", {model: id, backend: m.backend || "llamacpp"});
+      if (r.ok) {
+        closeModal();
+        toast(`Deleted ${id}`, "ok");
+        delete metaCache[id]; delete diagCache[id];
+        if (openId === id) setOpenId(null);
+        await refresh(true);
+      } else {
+        btn.disabled = false;
+        const why = r.error || "delete failed";
+        toast(why, "err");
+        const box = $("#del-error");
+        if (box) { box.textContent = why; box.style.display = ""; }
+      }
+    } catch (e) {
+      btn.disabled = false;
+      toast(`Delete failed: ${e}`, "err");
+    }
+  };
+}
+
 /* ---------- presets ---------- */
 function presetBar(m) {
   const P = configOfPresets(m.id);
@@ -1012,12 +1085,10 @@ export function initModels() {
       } else if (act === "vunload") {
         msg.className = "msg work"; msg.textContent = "stopping vLLM...";
         await api("/api/vllm/unload", {model: id}); toast("vLLM stopped", "ok");
-      } else if (act === "vdelete") {
-        if (!confirm(`Delete ${id} and its files from WSL? This cannot be undone.`)) { btn.disabled = false; return; }
-        msg.className = "msg work"; msg.textContent = "deleting from WSL...";
-        const r = await api("/api/vllm/delete", {model: id});
-        r.ok ? toast("Deleted","ok") : (msg.className="msg err", msg.textContent=r.error||"delete failed");
-        setOpenId(null);
+      } else if (act === "delete") {
+        btn.disabled = false;
+        await openDeleteDialog(id);
+        return;
       }
       await refresh(true);
     } catch (err) { msg.className = "msg err"; msg.textContent = String(err); }

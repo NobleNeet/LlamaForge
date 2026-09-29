@@ -32,7 +32,7 @@ Pure stdlib.
 """
 import os
 
-import osplat, vllm_ctl, vllm_registry, wsl
+import osplat, vllm_ctl, vllm_registry, wsl, config, model_delete
 
 
 class Unsupported(Exception):
@@ -51,7 +51,10 @@ class Backend:
     def load(self, mid):     raise NotImplementedError
     def unload(self, mid):   raise NotImplementedError
     def save(self, mid, knobs):  raise NotImplementedError
-    def delete(self, mid):   raise Unsupported(f"{self.name} cannot delete models")
+    def delete(self, mid):
+        raise Unsupported(f"{self.name} cannot delete models")
+    def delete_plan(self, mid):
+        raise Unsupported(f"{self.name} cannot plan a model deletion")
 
 
 class LlamaCppBackend:
@@ -104,8 +107,34 @@ class LlamaCppBackend:
         return {"restarted": False, "was_running": was_running}
 
     def delete(self, mid):
-        raise Unsupported("llama.cpp models are files on disk; remove them with "
-                          "Setup > prune instead")
+        # Never yank a file out from under a running inference process.
+        row = next((m for m in self.list_models() if m["id"] == mid), None)
+        if row and row.get("status") in ("loaded", "loading"):
+            return False, "model is loaded or loading - unload it first"
+        try:
+            p = self.delete_plan(mid)
+        except model_delete.NotFound:
+            raise
+        except model_delete.DeleteError as e:
+            return False, str(e)
+        ok, err = model_delete.execute(p)
+        if not ok:
+            return False, err
+        # The file is gone; drop its models.ini section so the router and the
+        # dashboard stop offering it.
+        config.remove_section(mid)
+        self._d.router("/models?reload=1")
+        return True, ""
+
+    def delete_plan(self, mid):
+        """The exact file set deleting `mid` would remove, plus the directory
+        decision. Computed from models.ini + a live directory listing."""
+        sections = config.read_sections()
+        sect = sections.get(mid)
+        if not sect:
+            raise model_delete.NotFound(f"unknown model: {mid}")
+        others = [s for k, s in sections.items() if k not in (mid, "*")]
+        return model_delete.plan(sect, others)
 
 
 class VllmBackend:
@@ -170,10 +199,27 @@ class VllmBackend:
         return {"restarted": running, "was_running": running}
 
     def delete(self, mid):
+        # Never delete a model out from under a running vLLM process.
+        running = any(i["model_id"] == mid and i["state"] in ("ready", "loading", "starting")
+                      for i in self._d.vllm_mgr().status()) if self.available() else False
+        if running:
+            return False, "model is loaded or loading - stop it first"
         ok, err = self._d.vllm_dl().delete(mid)
         if ok:
             vllm_registry.remove(mid)
         return ok, err
+
+    def delete_plan(self, mid):
+        """What deleting `mid` would remove inside WSL. The real removal is
+        vllm_download's own guarded script; this only reports the target."""
+        entry = vllm_registry.load().get(mid)
+        if not entry:
+            raise model_delete.NotFound(f"unknown vLLM model: {mid}")
+        path = entry.get("wsl_path") or entry.get("repo") or mid
+        return {"files": [path], "directory": path,
+                "delete_directory": True,
+                "size_bytes": int(entry.get("size_bytes") or 0),
+                "mmproj": None}
 
 
 STATE_MAP = {"ready": "loaded", "loading": "loading", "starting": "loading",

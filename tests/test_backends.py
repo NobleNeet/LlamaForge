@@ -89,9 +89,13 @@ class LlamaCppBackendTest(unittest.TestCase):
         self.assertTrue(out["was_running"])
         self.assertIn(("apply", "qwen", {"ctx-size": "8192"}), self.deps.router_calls)
 
-    def test_delete_is_unsupported_and_says_why(self):
-        with self.assertRaises(backends.Unsupported):
-            self.be.delete("qwen")
+    def test_delete_is_a_real_verb_now(self):
+        """llama.cpp deletion moved from Unsupported to the safe file-level
+        flow in model_delete; the backend keeps the verb, so a missing model
+        reports NotFound rather than Unsupported."""
+        with mock.patch.object(backends.config, "read_sections", return_value={}):
+            with self.assertRaises(backends.model_delete.NotFound):
+                self.be.delete("ghost")   # not loaded, not registered
 
 
 class VllmBackendTest(unittest.TestCase):

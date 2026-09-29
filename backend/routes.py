@@ -25,7 +25,7 @@ import autotune, anthropic_shim, agentsetup, wiki, docs, model_settings
 import autotune_hardware
 import vram_predict
 import wsl, vllm_ctl, vllm_registry, vllm_setup, vllm_job, vllm_hub, vllm_download
-import gguf, diag, backends
+import gguf, diag, backends, model_delete
 import build_schedule
 import custom_build
 import build_activation
@@ -1203,9 +1203,31 @@ def post_model_delete(req):
         ok, err = backend.delete(mid)
     except backends.Unsupported as e:
         raise ApiError(400, str(e))
+    except model_delete.NotFound as e:
+        raise ApiError(404, str(e))
     if ok:
         config.prune_binding(mid)          # a gone model keeps no binding
-    return (200 if ok else 500), {"ok": ok, "error": err, "backend": backend.name}
+    # A busy model is a conflict, not a server fault; anything else is 500.
+    status = 200 if ok else 409 if err and "loaded or loading" in err else 500
+    return status, {"ok": ok, "error": err, "backend": backend.name}
+
+
+def get_model_delete_plan(req):
+    """What deleting this model would remove: exact paths, size, and whether
+    the containing directory goes with it. The confirmation dialog shows this
+    before the user commits."""
+    mid = req.q("model")
+    backend = REGISTRY.for_model(mid, req.q("backend"))
+    try:
+        p = backend.delete_plan(mid)
+    except backends.Unsupported as e:
+        raise ApiError(400, str(e))
+    except model_delete.NotFound as e:
+        raise ApiError(404, str(e))
+    return 200, {"model": mid, "backend": backend.name,
+                 "files": p["files"], "directory": p["directory"],
+                 "delete_directory": p["delete_directory"],
+                 "size_bytes": p["size_bytes"], "mmproj": p["mmproj"]}
 
 
 # ---- llama.cpp aliases (kept: this is what the dashboard calls today) -------
@@ -2296,6 +2318,7 @@ GET_ROUTES = {
     "/api/vllm/schema":       get_vllm_schema,
     "/api/vllm/version":      get_vllm_version,
     "/api/vllm/hub/progress": get_vllm_hub_progress,
+    "/api/model/delete_plan":   get_model_delete_plan,
     "/api/model/metadata":    get_model_metadata,
     "/api/model/diag":        get_model_diag,
     "/api/presets":           get_presets,
