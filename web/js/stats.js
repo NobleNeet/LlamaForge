@@ -2,14 +2,70 @@
 import { $, esc, setHTML, api, toast, fmtNum, fmtDur, fmtAgo } from "./core.js";
 
 let statsSort = "tokens", statsRange = 14;
+let expandedModel = null, runLimit = 10, selectedConfig = null, commandOpen = false;
+let historyData = null, historyError = '', historyRequest = 0;
+
+async function fetchHistory() {
+  const model = expandedModel, limit = runLimit, request = ++historyRequest;
+  if (model === null) return;
+  try {
+    const data = await api(`/api/stats/runs?model=${encodeURIComponent(model)}&limit=${limit}`);
+    if (request !== historyRequest || model !== expandedModel || limit !== runLimit) return;
+    if (data.error || !Array.isArray(data.runs)) throw Error(data.error || 'History unavailable');
+    historyData = data;
+    historyError = '';
+    if (!selectedConfig || !data.configs[selectedConfig]) selectedConfig = data.runs[0]?.load_config_id ?? null;
+  } catch (e) {
+    if (request !== historyRequest) return;
+    historyError = 'Run history unavailable';
+  }
+}
+
+function localTime(timestamp) {
+  const d = new Date(timestamp * 1000), pad = n => String(n).padStart(2, '0');
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return {time, full:`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${time}:${pad(d.getSeconds())}`};
+}
+const metric = (n, decimals = 0) => n == null ? '—' : Number(n).toLocaleString(undefined, {minimumFractionDigits:decimals, maximumFractionDigits:decimals});
+const engineLabel = c => `${c.engine_name}${c.engine_commit ? ` (${c.engine_commit.slice(0,7)})` : ''}`;
+const kv = (label, value) => `<div class="kv"><span class="k">${esc(label)}</span><span class="v" style="overflow-wrap:anywhere">${esc(value ?? '—')}</span></div>`;
+// POSIX quoting preserves argv boundaries, including spaces and literal quotes.
+const quoteArg = arg => /^[a-zA-Z0-9_@%+=:,./-]+$/.test(arg) ? arg : "'" + arg.replaceAll("'", "'\"'\"'") + "'";
+
+function loadConfigDetail(c) {
+  const groups = c.normalized_options || {};
+  const group = (title, values) => values && Object.keys(values).length ? `<h3>${title}</h3>${Object.entries(values).map(([k,v])=>kv(k,/^\d+$/.test(v) ? Number(v).toLocaleString() : v)).join('')}` : '';
+  return `<div class="card"><h3>LOAD CONFIG #${c.id}<span style="float:right">Loaded ${esc(localTime(c.loaded_at).full)}</span></h3>
+    <h3>ENGINE</h3>${kv('Engine', engineLabel(c))}${kv('Executable', c.engine_executable)}
+    ${group('PERFORMANCE', groups.performance)}${group('SPECULATIVE DECODING', groups.speculative)}
+    ${c.other_options?.length ? `<h3>ENGINE-SPECIFIC / OTHER OPTIONS</h3><pre class="log">${esc(c.other_options.map(quoteArg).join(' '))}</pre>` : ''}
+    ${group('MODELS', groups.models)}
+    <button class="qbtn" data-command aria-expanded="${commandOpen}">${commandOpen ? 'Hide' : 'Show'} full launch command</button>
+    ${commandOpen ? `<h3>FULL LAUNCH COMMAND</h3>${kv('Engine', engineLabel(c))}${kv('Executable', c.engine_executable)}<pre class="log" style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(c.launch_command || c.argv.map(quoteArg).join(' '))}</pre>` : ''}</div>`;
+}
+
+function historyDetail() {
+  if (historyError) return `<div class="note">${esc(historyError)}</div>`;
+  if (!historyData) return '<div class="note">Loading run history…</div>';
+  const runs = historyData.runs, c = historyData.configs[selectedConfig];
+  return `<div class="card"><h3>RECENT RUNS <select data-runlimit aria-label="Recent Runs limit" style="float:right">${[10,25,50,100].map(n=>`<option value="${n}" ${n===runLimit?'selected':''}>Latest ${n}</option>`).join('')}</select></h3>
+    ${runs.length ? `<div style="overflow-x:auto"><table style="width:100%;text-align:right"><thead><tr>${['Time','Prompt (tok)','PP (tok/s)','Generated (tok)','TG (tok/s)','Total (s)','MTP Accept (%)','Load Config'].map(label=>`<th>${label}</th>`).join('')}</tr></thead><tbody>
+    ${runs.map(r=>{const date=localTime(r.timestamp); const mtp=r.mtp_acceptance == null ? '' : `Acceptance: ${r.mtp_acceptance*100}% · ${r.mtp_accepted ?? '—'} accepted / ${r.mtp_generated ?? '—'} generated · mean length: ${r.mtp_mean_len ?? '—'}`;
+      return `<tr><td title="${esc(date.full)}">${date.time}</td><td>${metric(r.prompt_tokens)}</td><td>${metric(r.pp_tps,2)}</td><td>${metric(r.generated_tokens)}</td><td>${metric(r.tg_tps,2)}</td><td>${metric(r.total_ms == null ? null : r.total_ms/1000,2)}</td><td title="${esc(mtp)}">${metric(r.mtp_acceptance == null ? null : r.mtp_acceptance*100,1)}</td><td><button class="qbtn" data-loadconfig="${r.load_config_id}" aria-pressed="${r.load_config_id===Number(selectedConfig)}">#${r.load_config_id}</button></td></tr>`;}).join('')}
+    </tbody></table></div>` : '<div class="note">No completed runs recorded. vLLM supports aggregate stats only.</div>'}
+    ${c ? loadConfigDetail(c) : ''}</div>`;
+}
 const SORT_COLS = {tokens:"Total", prompt:"Prompt", generated:"Gen",
                    avg_tps:"Tok/s", runs:"Runs", loaded_secs:"Loaded"};
 
 function setStatsRange(n) { statsRange = n; loadStats(true); }
 function sortStats(c) { statsSort = c; loadStats(true); }
 async function resetStats() {
-  if (!confirm("Reset ALL usage statistics? Per-model and daily history will be zeroed. This cannot be undone.")) return;
+  if (!confirm("Reset ALL usage statistics? Per-model totals, daily totals, Run and Load Config history will be zeroed. This cannot be undone.")) return;
   await api("/api/stats/reset", {});
+  expandedModel = selectedConfig = historyData = null;
+  commandOpen = false;
+  ++historyRequest;
   toast("Stats reset", "ok");
   loadStats(true);
 }
@@ -24,7 +80,26 @@ export function initStats() {
     if (range) { setStatsRange(+range.dataset.range); return; }
     const sort = e.target.closest("[data-sort]");
     if (sort) { sortStats(sort.dataset.sort); return; }
-    if (e.target.closest("[data-statsreset]")) resetStats();
+    if (e.target.closest("[data-statsreset]")) { resetStats(); return; }
+    const config = e.target.closest('[data-loadconfig]');
+    if (config) { selectedConfig = config.dataset.loadconfig; commandOpen = false; loadStats(true); return; }
+    if (e.target.closest('[data-command]')) { commandOpen = !commandOpen; loadStats(true); return; }
+    const model = e.target.closest('[data-historymodel]');
+    if (model) {
+      expandedModel = expandedModel === model.dataset.historymodel ? null : model.dataset.historymodel;
+      historyData = selectedConfig = null; historyError = ''; commandOpen = false;
+      loadStats(true);
+    }
+  });
+  view.addEventListener('change', e => {
+    if (e.target.matches('[data-runlimit]')) {
+      runLimit = Number(e.target.value); loadStats(true);
+    }
+  });
+  view.addEventListener('keydown', e => {
+    if (e.target.matches('[data-historymodel]') && ['Enter',' '].includes(e.key)) {
+      e.preventDefault(); e.target.click();
+    }
   });
 }
 
@@ -43,6 +118,7 @@ export async function loadStats(silent) {
     if (!silent) setHTML(v, `<div class="skel" style="color:var(--red)">BACKEND UNREACHABLE</div>`);
     return;
   }
+  if (expandedModel !== null) await fetchHistory();
   const t = s.totals, live = s.live;
   // The router can hold several models loaded at once (`router_models_max`);
   // older backends only reported a single `loaded_model`.
@@ -89,7 +165,7 @@ export async function loadStats(silent) {
         <span class="chip" data-statsreset style="margin-left:auto;color:var(--red);border-color:var(--red)" title="zero all usage statistics">Reset stats</span>
       </div>
       <div class="list" style="margin-top:12px">${rows.map(m=>`
-        <div class="row"><div class="rhead" style="cursor:default;grid-template-columns:9px 1fr auto auto auto auto auto">
+        <div class="row"><div class="rhead" ${m.has_history ? `data-historymodel="${esc(m.id)}" role="button" tabindex="0" aria-expanded="${expandedModel===m.id}"` : ''} style="cursor:${m.has_history ? 'pointer' : 'default'};grid-template-columns:9px 1fr auto auto auto auto auto">
           <span class="led ${loaded.includes(m.id)?"loaded":""}"></span>
           <span class="mid">${esc(m.id)}</span>
           <span class="ctxpill" title="prompt ${fmtNum(m.prompt)} + generated ${fmtNum(m.generated)}">${fmtNum(m.tokens)} tok</span>
@@ -97,7 +173,7 @@ export async function loadStats(silent) {
           <span class="stat">${fmtNum(m.runs)} runs</span>
           <span class="stat">${fmtDur(m.loaded_secs)}</span>
           <span class="stat">${fmtAgo(m.last_used)}</span>
-        </div></div>`).join("")}</div>`
+        </div>${expandedModel===m.id ? historyDetail() : ''}</div>`).join("")}</div>`
       :`<div class="note">No models have logged usage yet.</div>`}
     </div>`);
 }

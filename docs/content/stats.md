@@ -6,7 +6,7 @@ order: 5
 
 # Usage Stats
 
-Per-model token counts, run counts, generation speed, daily activity, and detailed run-history design for llama.cpp-family engines.
+Per-model token counts, run counts, generation speed, daily activity, and detailed run history for llama.cpp-family engines.
 
 ## What it does
 
@@ -19,13 +19,13 @@ The dashboard itself never sees inference traffic — clients talk to the llama.
 
 Each model's aggregate record in `stats.json` tracks `prompt`, `generated`, `loaded_secs`, `gen_secs`, `runs`, and `last_used`. A "run" in the aggregate counters increments whenever generation transitions from idle to active (`_idle` flag), so it remains an approximation rather than a true request log. Average tokens/sec (`avg_tps`) is `generated / gen_secs`, where `gen_secs` only accumulates during poll windows that had active generation. Daily totals are kept for `DAILY_KEEP = 30` days and trimmed on each write.
 
-Detailed per-run PP/TG/MTP history is specified separately in [`docs/specs/stats-run-history.md`](../specs/stats-run-history.md). That extension is designed to supplement, not replace, the aggregate Prometheus accounting described above.
+Detailed per-run PP/TG/MTP history is specified separately in [`docs/specs/stats-run-history.md`](../specs/stats-run-history.md). This extension supplements the aggregate Prometheus accounting described above.
 
-## Per-model Run History design
+## Per-model Run History
 
-The detailed-history extension expands a Per-model Usage row to show recent completed inference runs for supported llama.cpp-family engines.
+Detailed history expands a Per-model Usage row to show recent completed inference runs for supported llama.cpp-family engines.
 
-The Recent Runs table is specified as:
+The Recent Runs table shows:
 
 | Column | Meaning |
 |---|---|
@@ -57,7 +57,7 @@ The engine commit is the commit of the engine source repository, not the LlamaFo
 
 Detailed history must not associate a run with merely "the most recently parsed load". Several models may be resident and serving at the same time.
 
-The correlation design is:
+Correlation works as follows:
 
 1. `router.err.log` identifies a model load with `name=<model>` and a unique child server port.
 2. The immediately associated `spawning server instance with args:` block is captured as that load session's immutable argv snapshot.
@@ -67,7 +67,15 @@ The correlation design is:
 
 If the child port cannot be bound unambiguously to a PID, detailed history is skipped for that ambiguous session rather than guessed from timestamps or nearest-log-line heuristics. Aggregate Stats continue working independently.
 
-See [`stats-run-history.md`](../specs/stats-run-history.md) for the complete persistence, retention, rotation, reset, API, and test requirements.
+History is stored separately in `stats-history.json` at the repository root using atomic writes when history changes. It is not rewritten by aggregate polling. Each model retains its newest 1,000 completed runs; referenced and active Load Configs remain available. Existing `stats.json` files require no migration.
+
+A separate one-second follower starts at the current end of the router logs, processes only new complete lines, and handles rotation/truncation. It does not import old logs at installation or dashboard restart. PID binding retries for up to 30 seconds. Process birth markers, when available, also protect against PID reuse between polls. Complete PP/TG/total blocks are finalized after a short quiet interval to include trailing MTP lines; incomplete blocks are discarded. Optional throughput/MTP metrics remain nullable.
+
+`GET /api/stats` stays lightweight. Expanded rows fetch `GET /api/stats/runs?model=<encoded-id>&limit=10` (allowed limits: 10/25/50/100), with only the referenced snapshots. `GET /api/stats/config?model=<encoded-id>&id=<config-id>` retrieves an individual snapshot and validates its model ownership. vLLM stays on aggregate Stats and has no detailed-history expansion.
+
+Reset clears both stores and the active parser mappings, and advances log cursors to the current end. Detailed capture resumes on the next observed model load; reload an already resident model to capture a fresh Load Config after reset or dashboard restart. Aggregate accounting resumes independently. Historical commands redact credential options before persistence and retain original argv boundaries, including spaces and unknown fork flags.
+
+See [`stats-run-history.md`](../specs/stats-run-history.md) for the full contract.
 
 ## Network access and API key
 
@@ -83,8 +91,8 @@ The dashboard's own proxied calls send the configured key as `Authorization: Bea
 2. **Live Throughput** shows loaded models, aggregate generation and prompt-eval tok/s, and active request count in real time.
 3. **Activity** is a stacked prompt/generated bar chart; toggle **14d** / **30d** to change the window.
 4. **Per-model Usage** lists every model with logged usage — total tokens, average tok/s while generating, run count, time loaded, and when it was last used. Click a column chip to sort by it.
-5. With the Run History extension implemented, click a supported llama.cpp-family model row to expand Recent Runs, then click a `Load Config` value to inspect the engine, commit, options, model files, and full sanitized launch command.
-6. Click **Reset stats** to zero the statistics store. With detailed history implemented, the same reset also clears Run and Load Config history and re-baselines log ingestion.
+5. Click a supported llama.cpp-family model row to expand Recent Runs, then click a `Load Config` value to inspect the engine, commit, options, model files, and full sanitized launch command.
+6. Click **Reset stats** to zero the statistics store. The same reset also clears Run and Load Config history and re-baselines log ingestion.
 7. To share the router on your LAN, go to the **Setup** tab's **Network Access** panel, enable network access, optionally generate or enter an API key, then apply/restart the router.
 
 ## Screenshot
@@ -104,7 +112,7 @@ The dashboard's own proxied calls send the configured key as `Authorization: Bea
 | Avg tok/s | `StatsTracker.summary()` | `generated / gen_secs`; `gen_secs` accumulates only during poll windows with active generation. |
 | Daily retention | `stats.py: DAILY_KEEP` | 30 days of daily buckets kept; UI toggles between showing the last 14 or 30. |
 | Aggregate persistence | `stats.py: STATS_FILE` | `stats.json` at the repo root; atomic write via temp file + `os.replace`. |
-| Detailed history | `docs/specs/stats-run-history.md` | 1,000 completed Runs per model; immutable Load Configs; PID/session-safe correlation; UI fetch capped at 100. |
+| Detailed history | `stats_history.py`, `stats-history.json` | 1,000 completed Runs per model; immutable Load Configs; PID/session-safe correlation; UI fetch capped at 100. |
 | Router launch | `router_ctl.start()` | Starts the configured router executable with models preset, models-max, host/port, offline mode, metrics, and optional API key. |
 | LAN bind | `POST /api/network` | Sets `router_host` to `0.0.0.0` (LAN) or `127.0.0.1` (local only) and restarts the router. |
 | Key visibility | `GET /api/network` | Returns `has_api_key: bool` only — the stored key itself is never sent back to the browser. |
@@ -115,7 +123,7 @@ If **Live Throughput** shows the router offline but models load fine, confirm th
 
 If one loaded model does not accumulate tokens, inspect that model's `/metrics?model=<id>` endpoint and confirm the router reports it as `loaded`; each resident model is scraped independently.
 
-For detailed Run History, an ambiguous child port -> PID association must produce no guessed Run/Load Config relationship. Check the diagnostic log and router logs for the relevant load session. Log rotation/truncation must be handled by the history ingester without replaying old runs.
+For detailed Run History, an ambiguous child port -> PID association produces no guessed Run/Load Config relationship. Check the diagnostic log and router logs for the relevant load session. The history ingester follows rotation/truncation incrementally without replaying completed tasks.
 
 If external clients get `401`/`403` after enabling LAN access, verify they send `Authorization: Bearer <key>` with the configured key. A blank key field on save keeps the previously stored key rather than clearing it.
 

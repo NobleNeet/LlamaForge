@@ -975,6 +975,26 @@ def get_stats(req):
     return 200, stats.TRACKER.summary()
 
 
+def get_stats_runs(req):
+    try:
+        limit = req.q("limit", "10")
+        if not isinstance(limit, str) or limit not in ("10", "25", "50", "100"):
+            raise ValueError("limit must be 10, 25, 50 or 100")
+        return 200, stats.TRACKER.history.recent(req.q("model"), int(limit))
+    except ValueError as exc:
+        raise ApiError(400, str(exc))
+
+
+def get_stats_config(req):
+    try:
+        snapshot = stats.TRACKER.history.config(req.q("id"), req.q("model"))
+    except ValueError as exc:
+        raise ApiError(400, str(exc))
+    if snapshot is None:
+        raise ApiError(404, "Load Config not found for model")
+    return 200, snapshot
+
+
 def _normalized_scan_roots(body_roots=None):
     if body_roots is not None:
         roots = _v_dirs(body_roots)
@@ -2345,6 +2365,8 @@ GET_ROUTES = {
     "/api/router/log":        get_router_log,
     "/api/llama/log":         get_llama_output_log,
     "/api/stats":             get_stats,
+    "/api/stats/runs":        get_stats_runs,
+    "/api/stats/config":      get_stats_config,
     "/api/scan/missing":      get_scan_missing,
     "/api/network":           get_network,
     "/api/vllm/log":          get_vllm_log,

@@ -97,6 +97,43 @@ def _pid_on_port(port):
     except Exception:
         return None
 
+def process_identity(pid):
+    """Best-effort process birth marker, to detect PID reuse between polls."""
+    try:
+        if osplat.IS_WIN:
+            return subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-Process -Id {int(pid)} -ErrorAction Stop).StartTime.Ticks"],
+                text=True, timeout=2).strip() or None
+        if os.path.exists("/proc"):
+            with open(f"/proc/{int(pid)}/stat", encoding="utf-8") as f:
+                return f.read().rsplit(')', 1)[1].split()[19]
+        return osplat.run_text(["ps", "-p", str(int(pid)), "-o", "lstart="], timeout=2).strip() or None
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
+def listening_pid(port):
+    """Return a unique listening owner for history attribution, or None.
+
+    Keep the existing first-owner helper's control semantics unchanged.
+    """
+    if not osplat.IS_WIN:
+        out = osplat.run_text(["lsof", "-ti", f"tcp:{int(port)}", "-sTCP:LISTEN"], timeout=2)
+        pids = set(osplat.parse_lsof_pids(out))
+    else:
+        try:
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command",
+                 f"Get-NetTCPConnection -LocalPort {int(port)} -State Listen "
+                 "-ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique"],
+                text=True, timeout=2)
+            pids = set(osplat.parse_lsof_pids(out))
+        except Exception:
+            return None
+    return next(iter(pids)) if len(pids) == 1 else None
+
+
 def is_running(port):
     return _pid_on_port(port) is not None
 

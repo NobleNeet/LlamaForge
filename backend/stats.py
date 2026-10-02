@@ -15,6 +15,7 @@ import json, os, re, threading, time, urllib.request, urllib.parse
 from datetime import date
 
 import atomicio, config
+from stats_history import RunHistory
 
 ROOT       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATS_FILE = os.path.join(ROOT, "stats.json")
@@ -68,6 +69,7 @@ def _empty():
 
 class StatsTracker:
     def __init__(self):
+        self.history = RunHistory(path=os.path.splitext(STATS_FILE)[0] + "-history.json")
         self.lock = threading.Lock()
         self.data = self._load()
         self._prev = {}              # model id -> (prompt_total, gen_total) last seen
@@ -294,12 +296,22 @@ class StatsTracker:
             time.sleep(POLL_SECS)
 
     def start(self):
+        try:
+            self.history.start()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Stats history startup failed")
         threading.Thread(target=self.run_forever, daemon=True, name="stats-poller").start()
 
     # ---------- read side (for the API) ----------
     def reset(self):
         """Zero the whole store (user-initiated from the Stats tab)."""
         with self.lock:
+            try:
+                self.history.reset()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("Stats history reset persistence failed")
             self.data = _empty()
             self._prev = {}            # dict, see __init__
             self._idle = {}
@@ -310,8 +322,9 @@ class StatsTracker:
     def summary(self):
         with self.lock:
             models = self.data["models"]
+            history_models = self.history.model_ids()
             per_model = [{
-                "id": mid,
+                "id": mid, "has_history": mid in history_models,
                 "prompt": m["prompt"], "generated": m["generated"],
                 "tokens": m["prompt"] + m["generated"],
                 "loaded_secs": m["loaded_secs"], "runs": m["runs"],

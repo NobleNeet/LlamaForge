@@ -5,6 +5,7 @@ models.ini
 config.json.backup-*
 models.ini.backup-*
 stats.json
+stats-history.json
 wiki/
 logs/
 __pycache__/
