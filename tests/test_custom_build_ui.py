@@ -16,7 +16,7 @@ const source = fs.readFileSync(JSON.parse(fs.readFileSync(0, 'utf8')), 'utf8')
 const nodes = {}, calls = [], dialogs = [], confirmations = [];
 let selected = 'custom-one';
 let activeBuild = {id:'llamacpp',name:'llama.cpp',server_bin:'/old/server'};
-let custom = {id:selected,name:'My fork',repository:'https://example.com/fork',branch:'main',source:'/src',build:'/build',server_binary:'{build}/server',build_command:'echo hello'};
+let custom = {id:selected,name:'My fork',repository:'https://example.com/fork',branch:'main',source:'/src',build:'/build',server_binary:'{build}/server',build_command:'echo hello',models_ini:'/registries/custom.ini'};
 const builtins = [{id:'llamacpp',name:'llama.cpp',builtin:true},{id:'ikllama',name:'ik_llama',builtin:true}];
 function dialog() {
  const children = {'form':{reportValidity:()=>true}};
@@ -71,6 +71,8 @@ vm.runInContext(source,context);
  await vm.runInContext('setTarget("custom-one");loadBuild()',context);
  nodes['#btn-edit-target'].onclick();
  let d=dialogs.at(-1);assert.match(d.innerHTML,/textarea/);assert.match(d.innerHTML,/echo hello/);
+ assert.match(d.innerHTML,/name="models_ini"[^>]*value="\/registries\/custom.ini"/);
+ assert.doesNotMatch(d.innerHTML,/name="models_ini"[^>]*required/);
  await d.children['[data-action="validate"]'].onclick();
  assert.match(d.children['[data-status]'].textContent,/Valid/);
  assert.equal(calls.filter(x=>x.path==='/api/build/start').length,1);
@@ -78,6 +80,7 @@ vm.runInContext(source,context);
  // Submit handler deliberately launches an async operation; drain its awaits.
  for(let i=0;i<20;i++)await Promise.resolve();
  assert.equal(calls.find(x=>x.path==='/api/build/targets/save').body.id,'custom-one');
+ assert.equal(calls.find(x=>x.path==='/api/build/targets/save').body.models_ini,'/registries/custom.ini');
  assert.equal(d.removed,true);
  nodes['#btn-add-target'].onclick();d=dialogs.at(-1);
  await d.children.form.onsubmit({preventDefault(){}});

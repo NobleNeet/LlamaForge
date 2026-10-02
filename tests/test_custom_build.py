@@ -95,6 +95,13 @@ class CustomBuildTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Git checkout'):
             custom_build.validate(self.target)
 
+    def test_optional_registry_validation(self):
+        self.assertEqual(custom_build.validate(self.target)['models_ini'], '')
+        self.assertEqual(custom_build.validate(dict(self.target, models_ini=' ./fork.ini '))['models_ini'], './fork.ini')
+        for value in (None, [], 42, 'bad\x00path'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'models_ini'):
+                custom_build.validate(dict(self.target, models_ini=value))
+
     def test_config_crud_and_remove_preserves_files(self):
         with mock.patch.object(config, 'CONFIG', str(self.root / 'config.json')), \
              mock.patch.object(routes, 'cfg', side_effect=config.load):
@@ -104,9 +111,11 @@ class CustomBuildTests(unittest.TestCase):
                 start.assert_not_called()
             tid = saved['target']['id']
             self.assertEqual(config.load()['custom_build_targets'][tid]['name'], 'My fork')
-            edited = dict(saved['target'], name='Renamed')
+            self.assertEqual(saved['target']['models_ini'], '')
+            edited = dict(saved['target'], name='Renamed', models_ini=str(self.root / 'fork.ini'))
             routes.post_build_target_save(routes.Req(body=edited))
             self.assertEqual(config.load()['custom_build_targets'][tid]['name'], 'Renamed')
+            self.assertEqual(config.load()['custom_build_targets'][tid]['models_ini'], str(self.root / 'fork.ini'))
             self.build.mkdir()
             (self.build / 'keep').write_text('keep')
             routes.post_build_target_remove(routes.Req(body={'id': tid}))

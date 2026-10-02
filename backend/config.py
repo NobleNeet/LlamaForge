@@ -23,7 +23,7 @@ LOAD_ERROR = None
 
 DEFAULTS = {
     "llama_builtin_server_bin": "",          # saved default binary before explicit custom activation
-    "active_llamacpp_build_target": "",       # build identity only; never a runtime backend
+    "active_llamacpp_build_target": "",       # build + model registry identity; never a runtime backend
     "custom_build_targets": {},              # user-saved shell recipes; built-ins stay separate
     "llama_src":   "",                       # git checkout of llama.cpp
     "build_dir":   "",                       # cmake build dir (usually <src>/build)
@@ -218,25 +218,44 @@ def _abs(p):
         return p
     return os.path.normpath(os.path.join(ROOT, p))
 
-def ini_path():
-    """The models.ini the active engine reads, always as an absolute path.
+def ini_path(c=None):
+    """Resolve the active runtime's registry without creating or changing files.
 
-    ik_llama gets its own registry because the two binaries accept different
-    knobs; when the user has not named one, derive a sibling of the llama.cpp
-    file. Split on the extension rather than str.replace(".ini", ...), which is
-    a global replace and rewrites any directory that happens to contain ".ini"."""
-    c = load()
+    Built-ins retain their paths; custom registries use stable registered IDs.
+    Relative overrides are anchored to ROOT, including for detached routers.
+    """
+    c = load() if c is None else c
     if c.get("active_engine") == "ikllama":
         p = c.get("ik_llama_models_ini")
         if p:
             return _abs(p)
         stem, ext = os.path.splitext(_abs(c["models_ini"]))
         return stem + "-ikllama" + (ext or ".ini")
+    tid = c.get("active_llamacpp_build_target")
+    target = c.get("custom_build_targets", {}).get(tid)
+    if tid not in (None, "", "llamacpp", "ikllama") and target is not None:
+        if target.get("models_ini"):
+            return _abs(target["models_ini"])
+        # IDs come from saved target registration, never from display names.
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", tid):
+            raise ValueError("Invalid custom build target ID for registry path")
+        stem, ext = os.path.splitext(_abs(c["models_ini"]))
+        return stem + "-" + tid + (ext or ".ini")
     return _abs(c["models_ini"])
+
+
+def prepared_ini_path():
+    """Initialize the selected registry before reading, editing or starting it."""
+    c = load()
+    path = ini_path(c)
+    if c.get("active_engine", "llamacpp") == "llamacpp" and c.get("active_llamacpp_build_target") in c.get("custom_build_targets", {}):
+        ensure_models_ini(path, c=c)
+    return path
+
 
 def read_sections(path=None):
     """Return {section: {key: value}} for all sections including [*]."""
-    path = path or ini_path()
+    path = path or prepared_ini_path()
     if not path or not os.path.exists(path):
         return {}
     out, cur = {}, None
@@ -259,7 +278,7 @@ def set_keys(section, updates, path=None):
     updates: {key: value or None(remove)}. Creates the section if missing.
     New keys are inserted right after the section's last existing key line
     (before any trailing blank/comment lines), so they stay visually grouped."""
-    path = path or ini_path()
+    path = path or prepared_ini_path()
     with _INI_LOCK:
         return _set_keys_locked(section, updates, path)
 
@@ -330,7 +349,7 @@ def _write(path, lines):
 def remove_section(section, path=None):
     """Delete an entire [section] block (header + body up to the next section),
     preserving everything else in the file. Returns True if it was removed."""
-    path = path or ini_path()
+    path = path or prepared_ini_path()
     with _INI_LOCK:
         return _remove_section_locked(section, path)
 
@@ -539,7 +558,7 @@ def apply_ctx_defaults(path=None):
 
     Returns {"changed": [section, ...]}.
     """
-    path = path or ini_path()
+    path = path or prepared_ini_path()
     if not path or not os.path.exists(path):
         return {"changed": []}
     # Held across the whole scan+rewrite: the decision to drop or set each
@@ -587,7 +606,7 @@ def normalize_known_aliases(path=None):
     alternate alias does not strand the whole router on a parse error.
     Returns {"changed": [section, ...]}.
     """
-    path = path or ini_path()
+    path = path or prepared_ini_path()
     if not path or not os.path.exists(path):
         return {"changed": []}
     with _INI_LOCK:
@@ -621,7 +640,7 @@ def sanitize_models_ini(path=None, valid_keys=None, alias_to_key=None, extra_val
     canonical key, blank values are removed, and any non-INI garbage lines are
     discarded by reconstruction. Returns {"changed": [section, ...]}.
     """
-    path = path or ini_path()
+    path = path or prepared_ini_path()
     if not path or not os.path.exists(path):
         return {"changed": []}
     valid_keys = set(valid_keys or ())
@@ -707,7 +726,7 @@ def _rewrite_models_ini(path, sections):
             lines.append("")
     _write(path, lines + [""])
 
-def ensure_models_ini(path=None, defaults=None):
+def ensure_models_ini(path=None, defaults=None, c=None):
     """Create models.ini with a [*] global section if it isn't there yet.
 
     llama-server refuses to start without this file, and on a fresh checkout
@@ -716,15 +735,27 @@ def ensure_models_ini(path=None, defaults=None):
     Runs on every startup and is idempotent - an existing file, even one with no
     [*] section, is left exactly as the user wrote it.
 
+    Missing active custom registries are seeded once from built-in models_ini.
     Returns True if the file was created.
     """
-    path = path or ini_path()
+    c = load() if c is None else c
+    path = path or ini_path(c)
     with _INI_LOCK:
         if os.path.exists(path):
             return False
+        baseline = _abs(c["models_ini"])
+        custom = (c.get("active_engine", "llamacpp") == "llamacpp"
+                  and c.get("active_llamacpp_build_target") in c.get("custom_build_targets", {})
+                  and path == ini_path(c) and path != baseline)
+        if custom:
+            ensure_models_ini(baseline, defaults, c=dict(c, active_llamacpp_build_target="llamacpp"))
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
+        if custom:
+            with open(baseline, encoding="utf-8", newline="") as f:
+                atomicio.write_text(path, f.read())
+            return True
         with open(path, "w", encoding="utf-8", newline="") as f:
             f.write("; LlamaForge model registry - read by llama-server's router.\n"
                     "; Sections are model ids; keys are llama-server flags.\n"

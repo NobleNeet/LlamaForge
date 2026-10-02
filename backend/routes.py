@@ -89,7 +89,7 @@ def _check_activation_idle():
 
 def get_build_targets(req):
     targets = [dict(id=k, name=v, builtin=True) for k, v in custom_build.BUILTINS.items()]
-    targets.extend(dict(t, id=k, builtin=False) for k, t in cfg().get("custom_build_targets", {}).items())
+    targets.extend({"models_ini": "", **t, "id": k, "builtin": False} for k, t in cfg().get("custom_build_targets", {}).items())
     return 200, {"targets": targets, "active_build": build_activation.active_build(cfg())}
 
 
@@ -1376,7 +1376,7 @@ def _bring_router_back(source=""):
         return
     if not router_ctl.supports_router_mode(sbin):
         return   # a binary that cannot be the router must not replace a good one
-    ok, _ = router_ctl.restart(sbin, config.ini_path(), c.get("router_port", 8080),
+    ok, _ = router_ctl.restart(sbin, config.prepared_ini_path(), c.get("router_port", 8080),
                                c.get("router_host", "127.0.0.1"),
                                c.get("router_api_key", ""), LOGDIR,
                                models_max=router_ctl.resolve_models_max(c))
@@ -2048,7 +2048,7 @@ def post_network(req):
     c = config.update({"router_host": host, "router_api_key": api_key,
                        "router_port": port, "panel_host": panel_host})
     sbin = _active_server_bin(c)
-    ini = config.ini_path()
+    ini = config.prepared_ini_path()
     ok, err = router_ctl.restart(sbin, ini, port,
                                  host, api_key, LOGDIR,
                                  models_max=router_ctl.resolve_models_max(c))
@@ -2091,7 +2091,7 @@ def post_router_restart(req):
               if st == 200 and m.get("id") != "default"
               and m.get("status", {}).get("value") in ("loaded", "loading")]
     models_max = router_ctl.resolve_models_max(c)
-    ok, err = router_ctl.restart(sbin, config.ini_path(), port,
+    ok, err = router_ctl.restart(sbin, config.prepared_ini_path(), port,
                                  c.get("router_host", "127.0.0.1"),
                                  c.get("router_api_key", ""), LOGDIR,
                                  models_max=models_max)
@@ -2144,7 +2144,7 @@ def _post_engine_switch(req):
                               f"--models-preset), so LlamaForge cannot drive it as the "
                               f"router. Staying on {current}."}
     c = config.update({"active_engine": engine})
-    ok, err = router_ctl.restart(sbin, config.ini_path(), c["router_port"],
+    ok, err = router_ctl.restart(sbin, config.prepared_ini_path(), c["router_port"],
                                  c.get("router_host", "127.0.0.1"),
                                  c.get("router_api_key", ""), LOGDIR,
                                  models_max=router_ctl.resolve_models_max(c))

@@ -36,6 +36,10 @@ def validate(raw):
         if not isinstance(value, str) or not value.strip() or "\x00" in value:
             raise ValueError(f"{field} is required and must be text without NUL characters")
         target[field] = value if field == "build_command" else value.strip()
+    registry = raw.get("models_ini", "")
+    if not isinstance(registry, str) or "\x00" in registry:
+        raise ValueError("models_ini must be text without NUL characters")
+    target["models_ini"] = registry.strip()
     repository = target["repository"]
     url = urlsplit(repository)
     if not ((url.scheme in ("https", "http", "ssh", "git") and url.hostname and url.path not in ("", "/"))

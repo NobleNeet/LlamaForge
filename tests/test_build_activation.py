@@ -23,7 +23,9 @@ class BuildActivationTests(unittest.TestCase):
         self.new.write_text('fixture')
         self.target = dict(id='custom-one', name='My fork', source=str(self.root), build=str(self.root),
                            server_binary='{source}/new-server')
-        config.update({'server_bin': str(self.old), 'custom_build_targets': {'custom-one': self.target}})
+        config.update({'models_ini': str(self.root / 'models.ini'), 'server_bin': str(self.old), 'custom_build_targets': {'custom-one': self.target}})
+        config.ensure_models_ini()
+        config.set_keys('model-a', {'model': '/fixtures/a.gguf'})
         self.stack.enter_context(mock.patch.object(routes.os, 'access', return_value=True))
         self.capable = self.stack.enter_context(mock.patch.object(routes.router_ctl, 'supports_router_mode', return_value=True))
         self.running = self.stack.enter_context(mock.patch.object(routes.router_ctl, 'is_running', return_value=True))
@@ -58,6 +60,67 @@ class BuildActivationTests(unittest.TestCase):
         self.assertEqual(config.load()['server_bin'], str(self.old))
         self.assertEqual(self.restart.call_args.args[0], str(self.old))
         self.assertEqual(result['active_build']['id'], 'llamacpp')
+
+    def test_first_activation_seeds_before_restart_and_return_uses_baseline(self):
+        baseline = Path(config.ini_path())
+        content = baseline.read_bytes()
+        self.activate()
+        dedicated = Path(config.ini_path())
+        self.assertEqual(dedicated.read_bytes(), content)
+        self.assertEqual(self.restart.call_args.args[1], str(dedicated))
+        config.set_keys('model-a', {'spec-draft-adaptive': 'true'})
+        fork = dedicated.read_bytes()
+        routes.post_engine_switch(routes.Req(body={'engine': 'llamacpp'}))
+        self.assertEqual(self.restart.call_args.args[1], str(baseline))
+        self.assertEqual(baseline.read_bytes(), content)
+        self.activate()
+        self.assertEqual(dedicated.read_bytes(), fork)
+
+    def test_existing_registry_filters_and_reports_missing_models(self):
+        dedicated = self.root / 'models-custom-one.ini'
+        dedicated.write_text('[*]\n[other]\nmodel = /other.gguf\n')
+        content = dedicated.read_bytes()
+        _, result = self.activate()
+        self.assertEqual(result['skipped_models'], ['model-a'])
+        self.reload.assert_not_called()
+        self.assertEqual(dedicated.read_bytes(), content)
+
+    def test_same_binary_with_different_target_restarts_on_new_registry(self):
+        config.update({'server_bin': str(self.new)})
+        _, result = self.activate()
+        self.assertTrue(result['ok'])
+        self.restart.assert_called_once()
+        self.assertEqual(self.restart.call_args.args[1], str(self.root / 'models-custom-one.ini'))
+
+    def test_already_active_legacy_target_migrates_on_router_restart(self):
+        config.update({'server_bin': str(self.new), 'active_llamacpp_build_target': 'custom-one'})
+        _, result = routes.post_router_restart(routes.Req())
+        self.assertTrue(result['ok'])
+        dedicated = self.root / 'models-custom-one.ini'
+        self.assertEqual(dedicated.read_bytes(), (self.root / 'models.ini').read_bytes())
+        self.assertEqual(self.restart.call_args.args[1], str(dedicated))
+
+    def test_registry_initialization_error_leaves_router_and_config_unchanged(self):
+        before = config.load()
+        with mock.patch.object(config, 'ensure_models_ini', side_effect=OSError('unwritable registry')):
+            with self.assertRaises(routes.ApiError) as caught:
+                self.activate()
+        self.assertIn('registry', str(caught.exception))
+        self.assertEqual(config.load(), before)
+        self.stop.assert_not_called()
+        self.restart.assert_not_called()
+
+    def test_switch_from_ik_uses_baseline_seed_and_matching_ids_only(self):
+        config.update({'active_engine': 'ikllama', 'ik_llama_server_bin': str(self.old)})
+        config.ensure_models_ini()
+        config.set_keys('ik-only', {'model': '/ik.gguf', 'fork-key': 'true'})
+        self.models.return_value = (200, {'data': [
+            {'id': 'ik-only', 'status': {'value': 'loaded'}},
+            {'id': 'model-a', 'status': {'value': 'loaded'}}]})
+        _, result = self.activate()
+        self.assertEqual(result['skipped_models'], ['ik-only'])
+        self.reload.assert_called_with(['model-a'], source='/api/build/activate')
+        self.assertNotIn('ik-only', config.read_sections())
 
     def test_invalid_binary_never_stops_or_changes_config(self):
         initial = config.load()
@@ -94,6 +157,8 @@ class BuildActivationTests(unittest.TestCase):
         self.assertEqual(config.load()['server_bin'], str(self.old))
         self.assertEqual(config.load()['active_llamacpp_build_target'], '')
         self.assertEqual([call.args[0] for call in self.restart.call_args_list], [str(self.new), str(self.old)])
+        self.assertEqual([call.args[1] for call in self.restart.call_args_list],
+                         [str(self.root / 'models-custom-one.ini'), str(self.root / 'models.ini')])
         self.reload.assert_called_with(['model-a'], source='/api/build/activate/rollback')
 
     def test_ready_timeout_rolls_back(self):

@@ -28,7 +28,7 @@ class EngineSwitchRouteTest(unittest.TestCase):
         for target, name, new in (
                 (config, "update", fake_update),
                 (config, "load", lambda: dict(self.base, **self.saved)),
-                (config, "ini_path", lambda: "/tmp/models.ini")):
+                (config, "ini_path", lambda c=None: "/tmp/models.ini")):
             p = mock.patch.object(target, name, side_effect=new) \
                 if callable(new) else None
             p.start(); self.addCleanup(p.stop)

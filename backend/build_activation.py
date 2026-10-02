@@ -41,13 +41,14 @@ def activate(r, binary, target):
         raise r.ApiError(400, 'Server Binary is not executable.')
     if not r.router_ctl.supports_router_mode(binary):
         raise r.ApiError(400, 'Server Binary does not support llama.cpp router mode (--models-preset).')
-    if old.get('active_engine', 'llamacpp') == 'llamacpp' and same_path(old.get('server_bin'), binary):
-        # Record identity even for a binary previously selected manually in Setup.
-        changes = {'active_llamacpp_build_target': target}
-        if target != 'llamacpp' and old.get('active_llamacpp_build_target') in (None, '', 'llamacpp'):
-            changes['llama_builtin_server_bin'] = old.get('server_bin', '')
-        r.config.update(changes)
-        return 200, {'ok': True, 'active_engine': 'llamacpp', 'active_build': active_build(r.cfg())}
+    destination = dict(old, server_bin=binary, active_engine='llamacpp',
+                       active_llamacpp_build_target=target)
+    # Prepare before stopping the working router; failed registry I/O leaves it live.
+    try:
+        r.config.ensure_models_ini(c=destination)
+        sections = r.config.read_sections(r.config.ini_path(destination))
+    except (OSError, ValueError) as exc:
+        raise r.ApiError(400, f'Cannot initialize model registry: {exc}')
     port = old.get('router_port', 8080)
     running = r.router_ctl.is_running(port)
     loaded = []
@@ -65,7 +66,7 @@ def activate(r, binary, target):
         changes['llama_builtin_server_bin'] = old.get('server_bin', '')
 
     def restart(c):
-        ok, error = r.router_ctl.restart(r._active_server_bin(c), r.config.ini_path(), port,
+        ok, error = r.router_ctl.restart(r._active_server_bin(c), r.config.prepared_ini_path(), port,
                                         c.get('router_host', '127.0.0.1'),
                                         c.get('router_api_key', ''), r.LOGDIR,
                                         models_max=r.router_ctl.resolve_models_max(c))
@@ -95,8 +96,9 @@ def activate(r, binary, target):
         return 500, {'ok': False, 'error': str(exc), 'rollback_ok': not recovery_error,
                      'rollback_error': recovery_error, 'active_engine': r.cfg().get('active_engine', 'llamacpp'),
                      'active_build': active_build(r.cfg())}
-    # Models belong to different INIs across engines. Only restore the previous
-    # llama.cpp session on successful activation; rollback restores either one.
-    if old.get('active_engine', 'llamacpp') == 'llamacpp':
-        r._reload_loaded_models(loaded, source='/api/build/activate')
-    return 200, {'ok': True, 'active_engine': 'llamacpp', 'active_build': active_build(r.cfg())}
+    restored = [mid for mid in loaded if mid in sections and mid != '*']
+    skipped = [mid for mid in loaded if mid not in restored]
+    if restored:
+        r._reload_loaded_models(restored, source='/api/build/activate')
+    return 200, {'ok': True, 'active_engine': 'llamacpp', 'active_build': active_build(r.cfg()),
+                 'skipped_models': skipped}

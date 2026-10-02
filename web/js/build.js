@@ -189,7 +189,7 @@ export async function loadBuild(force) {
     useBtn.textContent = "activating...";
     try {
       const result = await api("/api/build/activate", {target: selected.id});
-      if (result.ok) toast(`Using ${label}`, "ok");
+      if (result.ok) toast(`Using ${label}${result.skipped_models?.length ? ` · Skipped models absent from this registry: ${result.skipped_models.join(", ")}` : ""}`, "ok");
       else toast([result.error || "Activation failed", result.rollback_error ? `Recovery failed: ${result.rollback_error}` : ""].filter(Boolean).join(" · "), "err");
       await loadBuild();
     } catch (error) { toast(error.message, "err"); }
@@ -321,14 +321,14 @@ async function pollBuild() {
 
 function editTarget(target = {}) {
   const dialog = document.createElement("dialog");
-  const fields = {name:"Name", repository:"Repository", branch:"Branch", source:"Source", build:"Build", server_binary:"Server Binary", build_command:"Build Command"};
+  const fields = {name:"Name", repository:"Repository", branch:"Branch", source:"Source", build:"Build", server_binary:"Server Binary", build_command:"Build Command", models_ini:"Model Registry (optional)"};
   const defaults = {branch:"master", server_binary:"{build}/bin/llama-server"};
   const placeholders = {repository:"https://github.com/halo-box/strix-llama.cpp.git", source:"/home/ubnadmin/LlamaForge-autotune/strix-llama.cpp", build:"/home/ubnadmin/LlamaForge-autotune/strix-llama.cpp/build"};
   setHTML(dialog, `<form style="min-width:320px;max-width:760px">
     <h3>${target.id ? "Edit" : "Add"} Custom Build Target</h3>
     ${Object.entries(fields).map(([k,label]) => `<label style="display:block;margin:10px 0">${label}
-      ${k === "build_command" ? `<textarea name="${k}" rows="8" style="width:100%" required>${esc(target[k] || "")}</textarea>` : `<input name="${k}" style="display:block;width:100%" value="${esc(target[k] || defaults[k] || "")}" placeholder="${esc(placeholders[k] || "")}" required>`}</label>`).join("")}
-    <p class="note">Save and Validate do not clone or execute commands. Pull &amp; Build runs this command with your account's permissions. Use only commands you trust. Bash is required (Git Bash on Windows). The working directory is Build; placeholders: {source}, {build}, {jobs}. Quote paths where needed. Existing checkouts must match Repository and Branch.</p>
+      ${k === "build_command" ? `<textarea name="${k}" rows="8" style="width:100%" required>${esc(target[k] || "")}</textarea>` : `<input name="${k}" style="display:block;width:100%" value="${esc(target[k] || defaults[k] || "")}" placeholder="${esc(placeholders[k] || "")}" ${k === "models_ini" ? "" : "required"}>`}</label>`).join("")}
+    <p class="note">An empty Model Registry derives a file from the target ID beside the built-in registry. First activation copies the built-in registry once; subsequent settings stay independent. Save and Validate do not clone or execute commands. Pull &amp; Build runs this command with your account's permissions. Use only commands you trust. Bash is required (Git Bash on Windows). The working directory is Build; placeholders: {source}, {build}, {jobs}. Quote paths where needed. Existing checkouts must match Repository and Branch.</p>
     <div class="actions"><button type="button" data-action="validate">Validate</button><button type="submit">Save Target</button><button type="button" data-action="cancel">Cancel</button></div>
     <p data-status role="status"></p>
   </form>`);
