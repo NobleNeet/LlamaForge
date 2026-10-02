@@ -70,8 +70,8 @@ Custom Target registries are initialized from built-in `models_ini` only when fi
 | POST | `/api/build/targets/validate` | Validate/normalize Custom Target fields and resolve its Server Binary without saving or executing the build recipe. |
 | POST | `/api/build/targets/save` | Create or update a Custom Build Target. Omitting `id` creates a stable generated ID; an existing `id` updates that target. `models_ini` is optional. |
 | POST | `/api/build/targets/remove` | Remove Custom Target registration only. Source/build/binary and target registry files remain on disk. |
-| POST | `/api/build/activate` | Activate a saved Custom Build Target. Validates router capability, initializes its registry if absent, switches `server_bin` and `active_llamacpp_build_target`, restarts with that registry, and rolls back binary/config/registry selection on startup failure. |
-| POST | `/api/engine/switch` | Point the router at built-in `llamacpp` or `ikllama`; refused if the target binary has no router mode. Returning to built-in llama.cpp also returns registry selection to `models_ini`. |
+| POST | `/api/build/activate` | Activate a saved Custom Build Target. Validates router capability and current option schema, initializes its registry if absent and sanitizes it against that schema, switches `server_bin` and `active_llamacpp_build_target`, restarts with that registry, and rolls back binary/config/registry selection on startup failure. |
+| POST | `/api/engine/switch` | Point the router at built-in `llamacpp` or `ikllama`; refused before stopping the current router if router mode or a reliable option schema is unavailable. Sanitizes only the destination registry with the same metadata used by the knob editor. Returning to built-in llama.cpp also returns registry selection to `models_ini`. |
 
 A Custom Build Target remains `active_engine = "llamacpp"` for backend dispatch, but `active_llamacpp_build_target` is part of runtime identity: it selects both the binary/build workflow and the target-specific model registry.
 

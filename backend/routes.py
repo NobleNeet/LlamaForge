@@ -20,6 +20,7 @@ tables: they write to the socket themselves and stay in server.py.
 """
 import json, os, subprocess, sys, threading, time, urllib.request, urllib.error, urllib.parse
 
+import runtime_registry
 import config, argspec, hardware, osplat, prereqs, scanner, hub, router_ctl, stats
 import autotune, anthropic_shim, agentsetup, wiki, docs, model_settings
 import autotune_hardware
@@ -486,6 +487,22 @@ def _cached_schema(bin_path, cache_holder):
         schema = argspec.build_schema(bin_path)
         key = new_key
     return schema, key
+
+
+def _prepare_runtime(c, apply_ctx_defaults=False):
+    """Refresh metadata once for both the registry and the Web UI."""
+    global _SCHEMA, _SCHEMA_KEY, _IK_SCHEMA, _IK_SCHEMA_KEY
+    path, metadata, _result = runtime_registry.prepare(c, apply_ctx_defaults=apply_ctx_defaults)
+    binary = _active_server_bin(c)
+    try:
+        key = (binary, os.path.getmtime(binary))
+    except OSError:
+        key = (binary, None)
+    if c.get("active_engine") == "ikllama":
+        _IK_SCHEMA, _IK_SCHEMA_KEY = metadata, key
+    else:
+        _SCHEMA, _SCHEMA_KEY = metadata, key
+    return path
 
 
 def schema():
@@ -1376,7 +1393,12 @@ def _bring_router_back(source=""):
         return
     if not router_ctl.supports_router_mode(sbin):
         return   # a binary that cannot be the router must not replace a good one
-    ok, _ = router_ctl.restart(sbin, config.prepared_ini_path(), c.get("router_port", 8080),
+    try:
+        ini = _prepare_runtime(c)
+    except runtime_registry.RegistryPreparationError as exc:
+        _dbg("router.registry.error", error=str(exc), source=source)
+        return
+    ok, _ = router_ctl.restart(sbin, ini, c.get("router_port", 8080),
                                c.get("router_host", "127.0.0.1"),
                                c.get("router_api_key", ""), LOGDIR,
                                models_max=router_ctl.resolve_models_max(c))
@@ -2045,10 +2067,13 @@ def post_network(req):
     if api_key is None:
         api_key = c.get("router_api_key", "")   # field left blank -> keep existing key
     panel_restart_required = panel_host != c.get("panel_host", "127.0.0.1")
+    try:
+        ini = _prepare_runtime(c)
+    except runtime_registry.RegistryPreparationError as exc:
+        raise ApiError(400, str(exc))
     c = config.update({"router_host": host, "router_api_key": api_key,
                        "router_port": port, "panel_host": panel_host})
     sbin = _active_server_bin(c)
-    ini = config.prepared_ini_path()
     ok, err = router_ctl.restart(sbin, ini, port,
                                  host, api_key, LOGDIR,
                                  models_max=router_ctl.resolve_models_max(c))
@@ -2091,7 +2116,11 @@ def post_router_restart(req):
               if st == 200 and m.get("id") != "default"
               and m.get("status", {}).get("value") in ("loaded", "loading")]
     models_max = router_ctl.resolve_models_max(c)
-    ok, err = router_ctl.restart(sbin, config.prepared_ini_path(), port,
+    try:
+        ini = _prepare_runtime(c)
+    except runtime_registry.RegistryPreparationError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    ok, err = router_ctl.restart(sbin, ini, port,
                                  c.get("router_host", "127.0.0.1"),
                                  c.get("router_api_key", ""), LOGDIR,
                                  models_max=models_max)
@@ -2143,8 +2172,12 @@ def _post_engine_switch(req):
                      "error": f"{engine} has no router mode (its llama-server rejects "
                               f"--models-preset), so LlamaForge cannot drive it as the "
                               f"router. Staying on {current}."}
+    try:
+        ini = _prepare_runtime(dict(c, active_engine=engine))
+    except runtime_registry.RegistryPreparationError as exc:
+        return 400, {"ok": False, "active_engine": current, "error": str(exc)}
     c = config.update({"active_engine": engine})
-    ok, err = router_ctl.restart(sbin, config.prepared_ini_path(), c["router_port"],
+    ok, err = router_ctl.restart(sbin, ini, c["router_port"],
                                  c.get("router_host", "127.0.0.1"),
                                  c.get("router_api_key", ""), LOGDIR,
                                  models_max=router_ctl.resolve_models_max(c))

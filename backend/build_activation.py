@@ -45,8 +45,8 @@ def activate(r, binary, target):
                        active_llamacpp_build_target=target)
     # Prepare before stopping the working router; failed registry I/O leaves it live.
     try:
-        r.config.ensure_models_ini(c=destination)
-        sections = r.config.read_sections(r.config.ini_path(destination))
+        destination_ini = r._prepare_runtime(destination)
+        sections = r.config.read_sections(destination_ini)
     except (OSError, ValueError) as exc:
         raise r.ApiError(400, f'Cannot initialize model registry: {exc}')
     port = old.get('router_port', 8080)
@@ -65,8 +65,8 @@ def activate(r, binary, target):
     if target != 'llamacpp' and old.get('active_llamacpp_build_target') in (None, '', 'llamacpp'):
         changes['llama_builtin_server_bin'] = old.get('server_bin', '')
 
-    def restart(c):
-        ok, error = r.router_ctl.restart(r._active_server_bin(c), r.config.prepared_ini_path(), port,
+    def restart(c, ini):
+        ok, error = r.router_ctl.restart(r._active_server_bin(c), ini, port,
                                         c.get('router_host', '127.0.0.1'),
                                         c.get('router_api_key', ''), r.LOGDIR,
                                         models_max=r.router_ctl.resolve_models_max(c))
@@ -77,7 +77,7 @@ def activate(r, binary, target):
 
     try:
         current = r.config.update(changes)
-        restart(current)
+        restart(current, destination_ini)
     except Exception as exc:
         recovery_error = ''
         try:
@@ -89,7 +89,7 @@ def activate(r, binary, target):
             if not stopped:
                 raise RuntimeError('Could not stop the new router')
             if running:
-                restart(old)
+                restart(old, r.config.ini_path(old))
                 r._reload_loaded_models(loaded, source='/api/build/activate/rollback')
         except Exception as recovery:
             recovery_error = str(recovery)

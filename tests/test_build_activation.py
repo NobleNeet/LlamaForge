@@ -21,11 +21,15 @@ class BuildActivationTests(unittest.TestCase):
         self.new = self.root / 'new-server'
         self.old.write_text('fixture')
         self.new.write_text('fixture')
+        self.stack.enter_context(mock.patch.object(routes.argspec, '_help_text', return_value=(
+            '--ctx-size N  context\n--spec-draft-adaptive  adaptive\n', '')))
         self.target = dict(id='custom-one', name='My fork', source=str(self.root), build=str(self.root),
                            server_binary='{source}/new-server')
         config.update({'models_ini': str(self.root / 'models.ini'), 'server_bin': str(self.old), 'custom_build_targets': {'custom-one': self.target}})
         config.ensure_models_ini()
         config.set_keys('model-a', {'model': '/fixtures/a.gguf'})
+        baseline = Path(config.ini_path())
+        baseline.write_text(baseline.read_text() + '\n')
         self.stack.enter_context(mock.patch.object(routes.os, 'access', return_value=True))
         self.capable = self.stack.enter_context(mock.patch.object(routes.router_ctl, 'supports_router_mode', return_value=True))
         self.running = self.stack.enter_context(mock.patch.object(routes.router_ctl, 'is_running', return_value=True))

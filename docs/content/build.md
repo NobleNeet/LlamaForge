@@ -108,9 +108,9 @@ The generated target ID is the identity of the registry. Changing the target's d
 
 On the **first activation** of a Custom Target, if its registry does not yet exist, LlamaForge copies the current built-in llama.cpp registry into the target registry before starting the new binary. This is a one-time seed so the target begins with the same model inventory and baseline tuning. From that point forward the files are independent: changing model settings under the Custom Target changes only its registry, and changing built-in llama.cpp settings changes only `models.ini`.
 
-If the dedicated target registry already exists, activation uses it unchanged. LlamaForge does not merge or filter settings across targets on every switch. A fork may therefore store options such as `spec-draft-adaptive` without causing built-in llama.cpp to reject its registry.
+If the dedicated target registry already exists, activation reuses it and refreshes it against that target binary's current schema. LlamaForge does not merge settings across targets. Unsupported keys are removed and recognized aliases are canonicalized only in the destination registry; fork-only options remain there while the fork supports them. See [Runtime schema refresh](models-ini.md#runtime-schema-refresh-and-automatic-sanitization). Schema discovery failure refuses activation before the working router is stopped and leaves the registry unchanged.
 
-For upgrades from the previous shared-registry behavior, an already-active Custom Target with no dedicated registry is initialized by copying the current built-in registry before that target is restarted. The migration preserves the settings users had been running with. It does not guess which existing keys are fork-only and does not silently remove keys from built-in `models.ini`.
+For upgrades from the previous shared-registry behavior, an already-active Custom Target with no dedicated registry is initialized by copying the current built-in registry before that target is restarted. The one-time copy preserves existing settings without guessing which keys are fork-only. Before startup, the target registry is sanitized against the target binary's schema; the built-in registry remains untouched.
 
 ### Use this build
 

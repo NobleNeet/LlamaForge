@@ -236,6 +236,8 @@ def _help_text(server_bin):
                            timeout=20)
     except Exception as e:
         return "", str(e)
+    if r.returncode != 0:
+        return "", f"`{server_bin} --help` failed (exit code {r.returncode})"
     # some builds/forks route usage through the log system -> stderr
     out = r.stdout if r.stdout.strip() else r.stderr
     if not out.strip():
@@ -244,21 +246,27 @@ def _help_text(server_bin):
     return out, ""
 
 
-def build_key_aliases(server_bin):
-    """Return the current valid keys and alias->canonical map for models.ini."""
-    out, err = _help_text(server_bin)
-    if err:
-        return {"error": err, "keys": set(), "alias_to_key": {}}
+def schema_key_aliases(schema):
+    """Use the editor's exact schema for registry validation and canonicalization."""
+    if not isinstance(schema, dict):
+        return {"error": "invalid option schema"}
+    if schema.get("error"):
+        return {"error": schema["error"]}
     alias_to_key, keys = {}, set()
-    for it in parse_help(out):
-        if it.get("reserved"):
-            continue
-        key = it["key"]
-        keys.add(key)
-        for alias in it.get("aliases", []):
-            alias_to_key[alias] = key
-            keys.add(alias)
+    for group in schema.get("groups", []):
+        for it in group.get("knobs", []):
+            key = it["key"]
+            keys.add(key)
+            for alias in it.get("aliases", []):
+                alias_to_key[alias] = key
+    if not keys:
+        return {"error": "could not parse any editable arguments from --help output"}
     return {"keys": keys, "alias_to_key": alias_to_key}
+
+
+def build_key_aliases(server_bin):
+    """Return current registry keys using the same parser as the knob editor."""
+    return schema_key_aliases(build_schema(server_bin))
 
 if __name__ == "__main__":
     import json, sys

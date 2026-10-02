@@ -288,6 +288,9 @@ class BuildAfterStopTest(unittest.TestCase):
     """
 
     def setUp(self):
+        prepared = mock.patch.object(routes, "_prepare_runtime", return_value="/tmp/models.ini")
+        prepared.start()
+        self.addCleanup(prepared.stop)
         self.timeline = []
         self._loaded = []
 
@@ -589,6 +592,11 @@ class ScanMissingScopeTest(unittest.TestCase):
 
 
 class NetworkConfigTest(unittest.TestCase):
+    def setUp(self):
+        prepared = mock.patch.object(routes, "_prepare_runtime", return_value="/tmp/models.ini")
+        prepared.start()
+        self.addCleanup(prepared.stop)
+
     def test_network_updates_router_port_and_restarts_on_new_port(self):
         saved = {}
         base = {"router_host": "127.0.0.1", "router_api_key": "", "router_port": 8080,
@@ -678,6 +686,11 @@ class RouterRestartTest(unittest.TestCase):
 
     BASE = {"router_host": "127.0.0.1", "router_api_key": "", "router_port": 8080,
             "router_models_max": 4}
+
+    def setUp(self):
+        prepared = mock.patch.object(routes, "_prepare_runtime", return_value="/tmp/models.ini")
+        prepared.start()
+        self.addCleanup(prepared.stop)
 
     def _run(self, loaded=("a", "b"), restart=(True, ""), router_mode=True,
              sbin="/bin/llama-server", exists=True):

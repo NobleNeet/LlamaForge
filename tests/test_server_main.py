@@ -33,7 +33,8 @@ class MainStartupTest(unittest.TestCase):
 
         with mock.patch.object(server.config, "migrate"), \
              mock.patch.object(server.routes, "cfg", return_value=cfg), \
-             mock.patch.object(server.config, "ensure_models_ini", return_value=False), \
+             mock.patch.object(server.routes, "_prepare_runtime", return_value="/tmp/models.ini"), \
+             mock.patch.object(server.routes, "router", return_value=(200, {})), \
              mock.patch.object(server.argspec, "build_key_aliases", return_value={"keys": set(), "alias_to_key": {}}), \
              mock.patch.object(server.config, "sanitize_models_ini", return_value={"changed": False}), \
              mock.patch.object(server.config, "apply_ctx_defaults", return_value={"changed": False}), \

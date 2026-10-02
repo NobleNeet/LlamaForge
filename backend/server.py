@@ -632,23 +632,14 @@ def main():
     if config.LOAD_ERROR:
         print(f"  WARNING: {config.LOAD_ERROR}")
         print(f"  previous contents saved to {config.CONFIG}.corrupt")
-    try:                    # the repo ships no models.ini; llama-server needs one
-        if config.ensure_models_ini():
-            print(f"  created {config.ini_path()}")
-    except OSError as e:    # unwritable path: say so, the router will fail next
-        print(f"  WARNING: could not create models.ini ({e})")
-    try:                    # clean up stale aliases before the router parses models.ini
-        meta = argspec.build_key_aliases(routes.cfg().get("server_bin", ""))
-        if config.sanitize_models_ini(config.ini_path(), valid_keys=meta.get("keys"),
-                                      alias_to_key=meta.get("alias_to_key")).get("changed"):
-            print(f"  sanitized {config.ini_path()} for current llama-server")
-    except Exception:
-        pass
-    try:                    # backfill ctx-size defaults, then nudge the router
-        if config.apply_ctx_defaults().get("changed"):
-            routes.router("/models?reload=1")
-    except Exception:
-        pass
+    try:
+        path = routes._prepare_runtime(c, apply_ctx_defaults=True)
+        print(f"  refreshed runtime registry {path}")
+        routes.router("/models?reload=1")
+    except routes.runtime_registry.RegistryPreparationError as exc:
+        print(f"  WARNING: {exc}; registry left unchanged if schema discovery failed")
+    except OSError as exc:
+        print(f"  WARNING: could not update registry ({exc})")
     stats.TRACKER.start()   # background usage poller
     try:                    # optional tray icon (no-op unless pystray+pillow present)
         import tray

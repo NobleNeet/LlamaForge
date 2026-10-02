@@ -73,6 +73,9 @@ class RestartUsesConfigTest(unittest.TestCase):
     back: Setup and the engine switch both read the config they just saved."""
 
     def setUp(self):
+        prepared = mock.patch.object(routes, "_prepare_runtime", return_value="/tmp/models.ini")
+        prepared.start()
+        self.addCleanup(prepared.stop)
         self.saved = {}
         self.base = {"router_port": 8080, "router_host": "127.0.0.1",
                      "router_api_key": "", "router_models_max": 0,

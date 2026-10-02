@@ -640,10 +640,12 @@ def sanitize_models_ini(path=None, valid_keys=None, alias_to_key=None, extra_val
     canonical key, blank values are removed, and any non-INI garbage lines are
     discarded by reconstruction. Returns {"changed": [section, ...]}.
     """
+    valid_keys = set(valid_keys or ())
+    if not valid_keys:
+        raise ValueError("Cannot sanitize registry without a reliable option schema")
     path = path or prepared_ini_path()
     if not path or not os.path.exists(path):
         return {"changed": []}
-    valid_keys = set(valid_keys or ())
     alias_to_key = dict(alias_to_key or {})
     extra_valid = set(extra_valid or EXTRA_MODELS_INI_KEYS)
     with _INI_LOCK:
@@ -669,14 +671,15 @@ def sanitize_models_ini(path=None, valid_keys=None, alias_to_key=None, extra_val
                     continue
                 if raw_key != key:
                     section_changed = True
-                out[key] = val
+                # An explicit canonical value wins regardless of INI order.
+                out[key] = str(kv.get(key, val)).strip() or val
             if sec != "*" and out.get("model") is None:
                 if kv:
                     section_changed = True
                 out = {}
             if section_changed:
                 changed.append(sec)
-            if out:
+            if out or sec == "*":
                 cleaned[sec] = out
         if not changed and not had_garbage:
             return {"changed": []}
