@@ -14,6 +14,7 @@ const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:a
 const source = fs.readFileSync(JSON.parse(fs.readFileSync(0, 'utf8')), 'utf8')
  .replace(/^import .*;\r?$/gm, '').replace(/^export /gm, '');
 const nodes = {}, calls = [], dialogs = [], confirmations = [];
+let runtimeRefreshes = 0;
 let selected = 'custom-one';
 let activeBuild = {id:'llamacpp',name:'llama.cpp',server_bin:'/old/server'};
 let custom = {id:selected,name:'My fork',repository:'https://example.com/fork',branch:'main',source:'/src',build:'/build',server_binary:'{build}/server',build_command:'echo hello',models_ini:'/registries/custom.ini'};
@@ -25,6 +26,7 @@ function dialog() {
 const context = vm.createContext({
  $: s => nodes[s] ||= {style:{}}, esc: s=>String(s), setHTML:(n,h)=>n.innerHTML=h,
  localStorage:{getItem:()=>selected,setItem:(k,v)=>selected=v},
+ refreshRuntime:async()=>{runtimeRefreshes++;},
  setInterval:()=>1, clearInterval:()=>{}, setTimeout:()=>{}, toast:()=>{}, agoText:()=>'', fmtDur:()=>'',
  confirm: text=>{confirmations.push(text);return true;},
  document:{createElement:()=>{const d=dialog();dialogs.push(d);return d;},body:{appendChild(){}}},
@@ -60,6 +62,7 @@ vm.runInContext(source,context);
  assert.equal(calls.filter(x=>x.path==='/api/build/activate').length,0,'building never activates');
  await nodes['#btn-use-build'].onclick();
  assert.equal(calls.find(x=>x.path==='/api/build/activate').body.target,'custom-one');
+ assert.equal(runtimeRefreshes,1);
  html=nodes['#view-build'].innerHTML;
  assert.match(html,/Active build: <strong>My fork/);
  assert.match(html,/>Active<\/span>/);
@@ -68,6 +71,7 @@ vm.runInContext(source,context);
  assert.match(nodes['#view-build'].innerHTML,/id="btn-switch-engine"/);
  await nodes['#btn-switch-engine'].onclick();
  assert.equal(calls.find(x=>x.path==='/api/engine/switch').body.engine,'llamacpp');
+ assert.equal(runtimeRefreshes,2);
  await vm.runInContext('setTarget("custom-one");loadBuild()',context);
  nodes['#btn-edit-target'].onclick();
  let d=dialogs.at(-1);assert.match(d.innerHTML,/textarea/);assert.match(d.innerHTML,/echo hello/);

@@ -3,6 +3,7 @@
 // Also surfaces the vLLM pip package version, since updating it is a build-ish
 // concern rather than a setup one.
 import { $, esc, setHTML, api, toast, agoText, fmtDur } from "./core.js";
+import { refreshRuntime } from "./models.js";
 
 let buildPoll = null;
 let buildViewVersion = 0;
@@ -189,7 +190,10 @@ export async function loadBuild(force) {
     useBtn.textContent = "activating...";
     try {
       const result = await api("/api/build/activate", {target: selected.id});
-      if (result.ok) toast(`Using ${label}${result.skipped_models?.length ? ` · Skipped models absent from this registry: ${result.skipped_models.join(", ")}` : ""}`, "ok");
+      if (result.ok) {
+        await refreshRuntime();
+        toast(`Using ${label}${result.skipped_models?.length ? ` · Skipped models absent from this registry: ${result.skipped_models.join(", ")}` : ""}`, "ok");
+      }
       else toast([result.error || "Activation failed", result.rollback_error ? `Recovery failed: ${result.rollback_error}` : ""].filter(Boolean).join(" · "), "err");
       await loadBuild();
     } catch (error) { toast(error.message, "err"); }
@@ -203,6 +207,7 @@ export async function loadBuild(force) {
     switchBtn.textContent = "switching...";
     const r = await api("/api/engine/switch", {engine: _target});
     if (r.ok) {
+      await refreshRuntime();
       toast(`Switched to ${label}`, "ok");
       setTimeout(loadBuild, 1500);
     } else {

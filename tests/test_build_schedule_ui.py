@@ -21,6 +21,7 @@ const context = vm.createContext({
   setHTML: (node, html) => { node.innerHTML = html; },
   localStorage: {getItem: () => 'ikllama', setItem: () => {}},
   setInterval: () => 1, clearInterval: () => {},
+  refreshRuntime: async () => {},
   toast: () => {}, agoText: () => '', fmtDur: () => '',
   api: async (path, body) => {
     calls.push({path, body});

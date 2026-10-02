@@ -78,7 +78,6 @@ clock();
 setInterval(clock, 1000);
 
 (async () => {
-  S.SCHEMA = await api("/api/schema");
   await models.refresh();
   // theme/cvd defaults from config.json, used only when this device hasn't chosen
   try {

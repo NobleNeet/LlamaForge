@@ -6,7 +6,8 @@
 // A row whose data is unchanged is left alone, so focus, caret position,
 // scroll and half-typed knob values survive the 4-second poll. See syncEditor()
 // for how the editor separates what the server owns from what the user is
-// typing. Nothing here may re-render a knob input the user might be editing.
+// typing. Ordinary polls preserve knob inputs; successful runtime switches
+// explicitly discard the previous runtime's editor.
 import { $, $$, esc, setHTML, api, toast, meter } from "./core.js";
 import { S, models as modelRows, config as cfgOf } from "./state.js";
 import { on, emit } from "./bus.js";
@@ -23,6 +24,10 @@ let onlySet = false, kquery = "", mquery = "", favOnly = false;
 let vllmSchemaPending = false;
 let loadBusy = false;
 let knobEpoch = 0;
+let runtimeEpoch = 0;
+let refreshSequence = 0;
+let runtimeBoundary = 0;
+let appliedRefreshSequence = 0;
 let unloadedCollapsed = localStorage.getItem("lf_unloaded_collapsed") === "1";
 const cmpSet = new Set();         // model ids picked for compare
 const diagCache = {};             // failure diagnosis per model id
@@ -362,10 +367,17 @@ function headSig(m, cols, showBackend) {
     loadQ.findIndex(j => j.id === m.id), loadingSecs(m) >= 20, cols, showBackend]);
 }
 // Keyed so only a different model, backend or schema rebuilds the knob grid.
+function runtimeIdentity(state) {
+  const c = state?.config || {};
+  const engine = state?.active_engine || c.active_engine || "llamacpp";
+  return JSON.stringify([engine, c.active_llamacpp_build_target || "",
+    engine === "ikllama" ? c.ik_llama_server_bin || "" : c.server_bin || ""]);
+}
 function knobSig(m) {
   return JSON.stringify([m.id, m.backend, m.in_ini,
     m.backend === "vllm" ? (S.VLLM_SCHEMA ? S.VLLM_SCHEMA.count||0 : -1)
-                         : (S.SCHEMA ? S.SCHEMA.count||0 : -1), knobEpoch]);
+                         : (S.SCHEMA ? S.SCHEMA.count||0 : -1), knobEpoch,
+    m.backend === "vllm" ? "" : [runtimeIdentity(S.STATE), runtimeEpoch]]);
 }
 function ensureModelSections(list, loadedCount, unloadedCount) {
   let loadedSec = $('[data-section="loaded"]', list);
@@ -851,11 +863,26 @@ function moveSel(delta) {
 }
 
 /* ---------- refresh ---------- */
+// Explicit switches are schema boundaries even if the flag count is unchanged.
+export async function refreshRuntime() {
+  runtimeEpoch++;
+  runtimeBoundary = ++refreshSequence; // discard polls already in flight
+  S.SCHEMA = null;
+  renderModels();                 // remove stale llama-family inputs immediately
+  await refresh(true);
+}
+
 export async function refresh(silent) {
+  const sequence = ++refreshSequence;
   try {
-    // recover the knob schema without a reload once config.json is fixed
-    if (!S.SCHEMA || S.SCHEMA.error || !(S.SCHEMA.groups||[]).length) S.SCHEMA = await api("/api/schema");
     const s = await api("/api/state");
+    const changed = S.STATE && runtimeIdentity(s) !== runtimeIdentity(S.STATE);
+    let schema = S.SCHEMA;
+    if (changed || !schema || schema.error || !(schema.groups||[]).length)
+      schema = await api("/api/schema");
+    if (sequence < runtimeBoundary || sequence < appliedRefreshSequence) return;
+    appliedRefreshSequence = sequence;
+    S.SCHEMA = schema;
     S.STATE = s;
     renderGpus(s.gpus);
     renderModels();
@@ -864,6 +891,7 @@ export async function refresh(silent) {
     const vlog = $("#vllm-log-details");
     if (vlog && s.vllm_supported === false) vlog.style.display = "none";
   } catch (e) {
+    if (sequence < runtimeBoundary || sequence < appliedRefreshSequence) return;
     if (!silent) setHTML($("#list"), `<div class="skel" style="color:var(--red)">BACKEND UNREACHABLE</div>`);
   }
 }
