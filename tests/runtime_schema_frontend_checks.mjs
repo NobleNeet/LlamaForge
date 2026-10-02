@@ -6,7 +6,12 @@ const source = name => fs.readFileSync(new URL(`../web/js/${name}.js`, import.me
   .replace(/^import .*;\r?$/gm, '').replace(/^export /gm, '');
 const model = {id:'m', backend:'llamacpp', status:'offline', in_ini:true, settings:{}};
 let engine = 'llamacpp', target = 'llamacpp', binary = '/builtin/server';
-const state = () => ({active_engine:engine, config:{active_engine:engine,
+let customName = 'strix-llama.cpp_vulkan';
+const state = () => ({active_engine:engine,
+  active_build:{id:engine==='ikllama'?'ikllama':target,
+    name:engine==='ikllama'?'ik_llama':target.startsWith('custom')?customName:target?'llama.cpp':'External / unregistered build',
+    server_bin:engine==='ikllama'?'/ik/server':binary},
+  config:{active_engine:engine,
   active_llamacpp_build_target:target, server_bin:binary, ik_llama_server_bin:'/ik/server'},
   models:[{...model}], gpus:[], presets:{}, preset_bindings:{}});
 const schema = () => ({count:1, groups:[{name:'Options', knobs:[{key:
@@ -41,11 +46,24 @@ async function api(path, body) {
 const edit = {innerHTML:'', input:null};
 let builds = 0;
 const S = {STATE:state(), SCHEMA:schema(), VLLM_SCHEMA:null};
+const listeners={};
+const on=(event, fn)=>(listeners[event] ||= []).push(fn);
+const emit=(event,...args)=>{for(const fn of listeners[event] || []) fn(...args);};
+const badge={innerHTML:''};
+let badgeWrites=0;
+const badgeCtx=vm.createContext({S,on,$:()=>badge,
+  setHTML:(node,html)=>{node.innerHTML=html;badgeWrites++;}});
+const core=source('core');
+vm.runInContext(core.slice(core.indexOf('const esc ='),core.indexOf('// Every value interpolated')),badgeCtx);
+const main=source('main');
+vm.runInContext(main.slice(main.indexOf('const ENGINE_LABEL'),main.indexOf('function clock()')),badgeCtx);
+badgeCtx.renderEngineBadge();
+assert.match(badge.innerHTML,/>llama.cpp<\/span>/);
 const ctx = vm.createContext({S, api, console, row:{lastElementChild:edit},
   modelRows:()=>S.STATE.models, cfgOf:()=>S.STATE.config,
   $:()=>null, $$:()=>[], esc:String,
   setHTML:(node, html)=>{node.innerHTML=html;if(node===edit){builds++;node.input={value:'server default'};}},
-  on:()=>{}, emit:()=>{}, activeTab:()=> 'build', initAutoTune:()=>{}, syncAutoTune:()=>{},
+  on, emit, activeTab:()=> 'build', initAutoTune:()=>{}, syncAutoTune:()=>{},
   toast:()=>{}, meter:()=>'', localStorage:{getItem:()=>null,setItem:()=>{},removeItem:()=>{}},
   document:{title:''}, setTimeout:()=>{}, clearTimeout:()=>{}, CSS:{escape:String},
 });
@@ -64,6 +82,7 @@ await ctx.refresh(true);
 assert.equal(edit.input, firstInput);
 assert.equal(edit.input.value, 'half typed');
 assert.equal(builds, beforePoll, 'ordinary 4-second refresh preserves input DOM');
+assert.equal(badgeWrites,1,'unchanged state must not churn badge DOM');
 
 const nodes = {};
 const build = vm.createContext({api, refreshRuntime:ctx.refreshRuntime,
@@ -84,16 +103,19 @@ assert.notEqual(edit.input, firstInput, 'same-engine custom switch discards old 
 
 // Returning to Models needs no loader or full-page reload: hidden rows are ready.
 assert.equal(S.STATE.config.active_llamacpp_build_target, 'custom-one');
+assert.match(badge.innerHTML,/>strix-llama.cpp_vulkan<\/span>/,'badge updates within successful switch');
 await vm.runInContext('setTarget("ikllama"); loadBuild()', build);
 requests=[];
 await nodes['#btn-switch-engine'].onclick();
 assert.ok(requests.includes('/api/schema'));
 assert.match(edit.innerHTML, /data-k="ik-only"/);
+assert.match(badge.innerHTML,/>ik_llama<\/span>/);
 assert.doesNotMatch(edit.innerHTML, /data-k="fork-only"/);
 await vm.runInContext('setTarget("llamacpp"); loadBuild()', build);
 await nodes['#btn-switch-engine'].onclick();
 assert.match(edit.innerHTML, /data-k="builtin-only"/);
 assert.doesNotMatch(edit.innerHTML, /data-k="ik-only"/);
+assert.match(badge.innerHTML,/>llama.cpp<\/span>/);
 
 // Failed switches do not invalidate a working editor or fetch a new schema.
 await vm.runInContext('setTarget("custom-one"); loadBuild()', build);
@@ -154,6 +176,18 @@ await firstPoll;
 assert.notEqual(S.STATE,stateBefore,'overlapping polls must not starve updates');
 resolveSecond(state());
 await secondPoll;
+
+// Backend-resolved external identity and renamed targets update without reload.
+target='';binary='/external/server';
+await ctx.refresh(true);
+assert.match(badge.innerHTML,/>External \/ unregistered build<\/span>/);
+target='custom-one';customName='Renamed <fork> & "build"';
+await ctx.refresh(true);
+assert.match(badge.innerHTML,/Renamed &lt;fork&gt; &amp; &quot;build&quot;/);
+assert.ok(!badge.innerHTML.includes('<fork>'));
+customName='Second name';
+await ctx.refresh(true);
+assert.match(badge.innerHTML,/>Second name<\/span>/);
 
 // vLLM schema cache is independent from llama-family switches.
 const vllm={count:1, groups:[]};S.VLLM_SCHEMA=vllm;

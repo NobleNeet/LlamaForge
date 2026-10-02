@@ -7,6 +7,7 @@
 // HTML and view templates carry no inline on* attributes to keep in sync.
 import { $, api, esc, setHTML } from "./core.js";
 import { S } from "./state.js";
+import { on } from "./bus.js";
 import * as ui from "./ui.js";
 import * as models from "./models.js";
 import * as stats from "./stats.js";
@@ -50,24 +51,27 @@ window.addEventListener("hashchange", () => {
 });
 if (location.hash) ui.switchTab(location.hash.slice(1));
 
-// The engine badge sits beside the clock but changes about once a session,
-// so it gets its own element: the clock stays a textContent write, and the
-// badge is only re-rendered (through the audited setHTML/esc sink) when the
-// engine actually changes. Rebuilding markup once a second would both churn
-// the DOM and put a dynamic value into innerHTML on every tick.
+// Use the backend's active-build resolver, shared with Build / Update.
+// State events update immediately after switches; the clock remains a fallback.
 const ENGINE_LABEL = { llamacpp: "llama.cpp", ikllama: "ik_llama" };
-let shownEngine = null;
+let shownRuntime = null;
 
-function renderEngineBadge() {
-  const engine = (S.STATE && S.STATE.active_engine) || "";
-  if (engine === shownEngine) return;
-  shownEngine = engine;
+function renderEngineBadge(state = S.STATE) {
+  const engine = state?.active_engine || "";
+  const build = state?.active_build;
+  const c = state?.config || {};
+  const label = build?.name || ENGINE_LABEL[engine] || engine;
+  const identity = JSON.stringify([engine, build?.id, label, build?.server_bin,
+    c.active_llamacpp_build_target, c.server_bin, c.ik_llama_server_bin]);
+  if (identity === shownRuntime) return;
   const el = $("#engine-badge");
   if (!el) return;
+  shownRuntime = identity;
   setHTML(el, engine
-    ? `<span class="tag be-${esc(engine)}">${esc(ENGINE_LABEL[engine] || engine)}</span>`
+    ? `<span class="tag be-${esc(engine)}">${esc(label)}</span>`
     : "");
 }
+on("state", renderEngineBadge);
 
 function clock() {
   const el = $("#clock");
