@@ -14,8 +14,8 @@ order: 1
 |---|---|---|---|
 | `llama_src` | string | `""` | Path to a git checkout of `llama.cpp`. |
 | `build_dir` | string | `""` | CMake build directory for `llama.cpp` (usually `<llama_src>/build`). |
-| `server_bin` | string | `""` | Path to the built `llama-server` (or `llama-server.exe`) binary. |
-| `models_ini` | string | `<repo root>/models.ini` | Path to the `models.ini` preset file passed to `llama-server --models-preset`. |
+| `server_bin` | string | `""` | Path to the active built-in/custom llama.cpp-compatible `llama-server` (or `llama-server.exe`) binary while `active_engine = "llamacpp"`. |
+| `models_ini` | string | `<repo root>/models.ini` | Built-in llama.cpp model registry and baseline registry used to seed a Custom Build Target the first time that target is activated. |
 | `model_dirs` | list | `[]` | Directories the Setup scan targets for GGUF discovery, and the base location for Discover downloads. Empty means use the platform-default scan roots. |
 | `download_dir` | string | `""` | Folder the Discover tab writes GGUF downloads into (one subfolder per repo, e.g. `acme--model`). Empty follows the default: the first `model_dirs` entry's `LlamaForge-downloads` folder, else `<repo root>/models`. Set from the Discover tab; `~` is expanded and a relative path is anchored to the folder the dashboard was launched from. |
 | `router_port` | int | `8080` | Port `llama-server` (the router) listens on. |
@@ -33,7 +33,7 @@ order: 1
 | `build_auto_update_status` | string | `"Not run yet"` | Scheduler-owned result or skip reason displayed on the Build card. |
 | `cmake_backend` | string | `""` | Which backend (cuda/hip/vulkan/cpu) those `cmake_flags` were generated for, so stale flags for a different backend are recognised rather than reused. |
 | `git_remote` | string | `"https://github.com/ggml-org/llama.cpp"` | Remote used to clone/update the `llama.cpp` source. |
-| `active_engine` | string | `"llamacpp"` | Which llama-family binary the router uses: `"llamacpp"` or `"ikllama"`. |
+| `active_engine` | string | `"llamacpp"` | Which llama-family runtime family the router uses: `"llamacpp"` (built-in or Custom Build Target) or `"ikllama"`. |
 | `ik_llama_src` | string | `""` | Path to a git checkout of `ik_llama.cpp`. |
 | `ik_llama_build_dir` | string | `""` | CMake build directory for ik_llama. |
 | `ik_llama_server_bin` | string | `""` | Path to ik_llama's built `llama-server`; empty leaves the engine disabled. |
@@ -47,7 +47,7 @@ order: 1
 | `presets` | object | `{}` | Legacy global presets from older installs. New saves are model-scoped. |
 | `model_presets` | object | `{}` | Named knob sets per model: `{model_id: {preset_name: {knob: value}}}`. |
 | `preset_bindings` | object | `{}` | Preset bound as each model's default: `{model_id: preset_name}`. |
-| `ui_mode` | string | `"lite"` | `"lite"` shows a curated knob set; `"advanced"` exposes all ~220 llama-server flags. |
+| `ui_mode` | string | `"lite"` | `"lite"` shows a curated knob set; `"advanced"` exposes all flags reported by the currently selected llama-server binary. |
 | `onboarded` | bool | `False` | Whether the first-run wizard has already been shown; set to `True` once dismissed. |
 | `anthropic_default_model` | string | `""` | Fallback local model id used by the Anthropic-compatible shim when a request doesn't map to one. |
 | `anthropic_shim_enabled` | bool | `True` | Whether `/v1/messages` (Anthropic-compatible) is served. |
@@ -60,7 +60,25 @@ order: 1
 | `vram_predict_enabled` | bool | `True` | Whether the offline VRAM-fit/tok-s estimate is computed (Discover, on expand). |
 | `docs_dir` | string | `""` | Directory the in-app docs viewer reads from. Empty string resolves to `<repo root>/docs/content`. |
 
-43 keys total, matching `DEFAULTS` in `backend/config.py`.
+`custom_build_targets` is an object keyed by generated stable target ID. Each Custom Target record contains its build recipe and may additionally contain:
+
+| Custom Target field | Type | Default | Meaning |
+|---|---|---|---|
+| `models_ini` | string | `""` | Model registry dedicated to this target. Empty resolves to a sibling of the built-in `models_ini` named with the stable target ID, for example `models-custom-strix.ini`. |
+
+The stable ID, not the target display name, determines the default registry filename. Editing the target name therefore does not change its registry path. Removing the target does not delete its registry file.
+
+## Active model registry resolution
+
+The router must resolve its `--models-preset` path from both `active_engine` and the active llama.cpp build identity:
+
+1. `active_engine = "ikllama"` → `ik_llama_models_ini`, falling back to the derived `-ikllama` sibling.
+2. `active_engine = "llamacpp"` with built-in/legacy `active_llamacpp_build_target` → `models_ini`.
+3. `active_engine = "llamacpp"` with a registered Custom Build Target → that target's `models_ini`, falling back to `models-<stable-target-id>.ini` beside the built-in registry.
+
+A Custom Target registry is initialized only when it does not yet exist. Its initial contents are copied from the built-in `models_ini`; after that point the registries are independent and must not be automatically merged or synchronized. This prevents fork-only keys from leaking into another llama.cpp-compatible binary.
+
+For an installation upgraded from the former shared-registry design, if a Custom Target is already active and no dedicated registry exists, the current built-in registry is copied to the target registry before that target is restarted. No automatic attempt is made to classify or delete fork-specific keys from the built-in registry.
 
 ## Loading and saving
 
@@ -68,4 +86,6 @@ order: 1
 
 `config.migrate()` runs once at server startup (`backend/server.py` `main()`) to classify pre-existing installs: a config file with no `ui_mode` key is treated as a legacy install. If `server_bin` is already set, it is stamped `ui_mode: "advanced"` and `onboarded: True`; otherwise it gets `ui_mode: "lite"` and `onboarded: False`, so the onboarding wizard shows. The migration is idempotent — a config that already has `ui_mode` is returned unchanged.
 
-See also [models.ini Format](models-ini.md) for the preset file `models_ini` points at, and [HTTP API](api.md) for the endpoints that read and write these keys.
+The per-Custom-Target registry feature does not require adding a top-level config key: the optional override belongs to each record in `custom_build_targets`, while the derived-path behavior covers existing target records. Implementations must nevertheless perform the one-time registry initialization described above before starting an existing active Custom Target.
+
+See also [models.ini Format](models-ini.md) for registry isolation rules, [Build & Update](build.md) for build-target activation, and [HTTP API](api.md) for the endpoints that read and write these keys.
