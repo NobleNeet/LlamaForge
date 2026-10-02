@@ -14,6 +14,10 @@ Each row in the Models list is a section of `models.ini` (or an auto-discovered 
 
 `backend/argspec.py` (`build_schema()`) runs `<server_bin> --help`, parses the column-aligned help text into typed, grouped knobs (bool, int, float, enum, path, string), and caches the result per `(server_bin path, binary mtime)` — the cache self-invalidates automatically if you repoint `server_bin` at a different binary or rebuild it (`backend/server.py` `schema()`). A handful of flags the router itself owns (`host`, `port`, `model`, `hf-repo`, and similar) are filtered out of the editor as `RESERVED` — they aren't safe to set per model.
 
+The browser-side Models view must follow the same runtime identity immediately. A successful switch between built-in llama.cpp, ik_llama, or any Custom Build Target invalidates the currently cached llama-family schema in the SPA, fetches `/api/schema` again for the newly active binary, refreshes `/api/state`, and rebuilds any open model knob editor from that new schema. The user must not need to press F5 or otherwise reload the page before the Models tab reflects the newly active runtime.
+
+For this purpose, runtime identity is not only `active_engine`. Built-in llama.cpp and a Custom Build Target both use `active_engine = "llamacpp"`, so a change of `active_llamacpp_build_target` / active `server_bin` is also a runtime-schema change and must trigger the same client-side invalidation. A normal polling refresh must continue preserving in-progress edits, but an explicit successful runtime/build-target switch is a deliberate schema boundary and therefore invalidates the old knob grid.
+
 The editor has two density levels, controlled by `ui_mode` in `config.json`:
 
 - **Lite** shows a curated set of common knobs (`n-gpu-layers`, `ctx-size`, `cache-type-k`/`cache-type-v`, `flash-attn`, `batch-size`, `ubatch-size`, `threads`, `tensor-split`, `temp`, `top-p`).
@@ -62,6 +66,7 @@ The UI should treat deletion as a model-level operation regardless of whether th
 | Concept | Source | Behavior |
 |---|---|---|
 | Live flag schema | `backend/argspec.py` `build_schema()` | Parses `<server_bin> --help`; cached by `(server_bin, mtime)`; refreshes automatically after a rebuild or binary change. |
+| Runtime switch UI refresh | Build/Update activation + Models SPA state | A successful runtime/build-target switch invalidates the browser's llama-family schema cache, refetches `/api/schema` and `/api/state`, and rebuilds the knob editor from the new active binary without requiring F5. Runtime identity includes the active Custom Build Target / `server_bin`, not only `active_engine`. |
 | Reserved flags | `backend/argspec.py` `RESERVED` | Router-owned flags (`host`, `port`, `model`, `hf-repo`, etc.) are excluded from the per-model editor. |
 | Hot reload | `POST /api/save` (`backend/server.py`) | Writes knobs via `config.set_keys()`, unloads the model if running, then calls the router's `/models?reload=1` so `models.ini` is re-read live. |
 | Presets | `POST /api/presets/save` / `/apply` / `/delete` / `/bind` | Named knob sets stored per model in `config.json`'s `model_presets` key. The Models UI uses **bind** to make a chip the model's default, record the pairing in `preset_bindings`, materialize those knobs into that same model, and refresh the editor with the preset's values. |
@@ -73,6 +78,8 @@ The UI should treat deletion as a model-level operation regardless of whether th
 ## Troubleshooting
 
 If the editor shows "Could not read knobs from `llama-server --help`", `server_bin` in `config.json` is missing, wrong, or the binary failed to run (missing DLLs is common on Windows). Fix the path from the Setup tab or `config.json` directly — the schema is retried automatically on the next open, no restart needed. If `--help` runs but returns no arguments, the help text format wasn't recognized; check the binary is actually `llama-server` and not a different tool.
+
+If Build / Update reports a successful runtime/build-target switch but the Models editor still shows knobs from the previous runtime, that is a UI synchronization failure. A successful switch is required to refresh the schema and editor within the current SPA session; F5 is not part of the normal workflow.
 
 See also [models.ini Format](models-ini.md) for the on-disk file this editor writes to, and [config.json Reference](config.md) for `server_bin` and `ui_mode`.
 
