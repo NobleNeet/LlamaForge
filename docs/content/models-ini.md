@@ -18,7 +18,7 @@ The registry mapping is:
 
 Custom Target registry identity is based on the stable target ID, never the display name. Renaming a target therefore does not change or orphan its model settings.
 
-The active registry is selected together with the active runtime/build target. All llama-family model operations that read or mutate a registry — model listing, load configuration, knob editing, preset application, scan/download registration, automatic `ctx-size` updates, model deletion metadata, and router restart — operate on that selected registry only. Switching runtimes does not merge, filter, or rewrite another runtime's registry.
+The active registry is selected together with the active runtime/build target. All llama-family model operations that read or mutate a registry — model listing, load configuration, knob editing, preset application, scan/download registration, automatic `ctx-size` updates, model deletion metadata, and router restart — operate on that selected registry only. Switching runtimes does not merge or copy settings from another runtime's registry.
 
 ## Registry creation and isolation
 
@@ -26,11 +26,44 @@ A registry is created if it is absent and must contain at least a `[*]` section 
 
 The built-in llama.cpp registry remains the baseline registry. When a Custom Build Target is activated for the first time and its registry does not yet exist, LlamaForge copies the current built-in llama.cpp registry to the target's resolved registry path before starting that target. This gives the target the same model inventory and current baseline settings without making the files permanently shared. After creation, the Custom Target registry is authoritative for that target and is never automatically re-synced from built-in llama.cpp.
 
-If the target registry already exists, LlamaForge uses it unchanged. Switching away and back restores exactly that target's settings. A Custom Target may therefore safely persist fork-only keys such as `spec-draft-adaptive` without exposing them to built-in llama.cpp or another fork.
+If the target registry already exists, LlamaForge uses that registry rather than copying or merging settings from another target. Switching away and back restores that target's own settings, subject only to the active binary schema refresh described below. A Custom Target may therefore safely persist fork-only keys such as `spec-draft-adaptive` while that option continues to exist in that fork.
 
 Removing a Custom Build Target removes registration only. Its derived or explicitly configured registry file remains on disk, like the target's source/build directories and binaries; LlamaForge must not delete model configuration implicitly.
 
-For upgrades from the older shared-registry design, an already-active Custom Build Target whose dedicated registry does not yet exist is initialized from the existing built-in registry before the target is restarted. This preserves the settings that were previously shared. The migration does not guess which existing keys are fork-specific and does not silently delete keys from the built-in registry; once registries are separated, edits belong only to the selected runtime.
+For upgrades from the older shared-registry design, an already-active Custom Build Target whose dedicated registry does not yet exist is initialized from the existing built-in registry before the target is restarted. This preserves the settings that were previously shared. The one-time copy itself does not guess which keys are fork-specific. After registries are separated, each registry is refreshed against its own runtime's current option schema when that runtime is selected, so stale keys inherited during migration are removed from the runtime that no longer supports them.
+
+## Runtime schema refresh and automatic sanitization
+
+The selected `llama-server` binary is the source of truth for both the Web UI's editable load-option list and the option keys that may remain in that runtime's registry. LlamaForge derives the current option schema from the selected binary's `--help` output through `backend/argspec.py`; the registry sanitizer and the knob editor must use the same binary metadata so they cannot disagree about which options exist.
+
+LlamaForge refreshes the selected registry against the selected binary schema at these points:
+
+- on panel startup, before the active router is started;
+- whenever the user switches between built-in llama.cpp, ik_llama, or a Custom Build Target, before the destination router is started;
+- after a build/update replaces the binary that will continue as the active runtime, before that rebuilt binary is started again.
+
+For a runtime/build-target switch, the required order is:
+
+1. resolve and validate the destination binary;
+2. resolve or initialize the destination registry;
+3. obtain the destination binary's current flag schema;
+4. sanitize **only the destination registry** using that schema;
+5. make the same schema the source for the Web UI knob list;
+6. stop/switch/restart the router against the sanitized destination registry.
+
+Sanitization is intentionally runtime-local. Selecting built-in llama.cpp may remove a Strix-only key from built-in `models.ini`, but it must not edit the Strix Custom Target's `models-<target-id>.ini`. Selecting Strix later sanitizes the Strix registry against the Strix binary instead. No normal switch copies settings between registries.
+
+A registry key is retained when it is either:
+
+- a canonical option exposed by the selected binary's current schema;
+- a recognized alias that can be rewritten to the current canonical key; or
+- LlamaForge-owned/preset metadata explicitly allowed in `models.ini` even when it is not a normal editable CLI knob, such as `model`, `mmproj`, `spec-draft-model`, `embeddings`, and `load-on-startup`.
+
+When a successful schema refresh finds a stored key that is no longer valid for that runtime, LlamaForge removes it from that runtime's registry. This covers both fork-specific contamination and ordinary version drift: if a future llama.cpp or fork release removes or renames an option, the stale setting is removed or canonicalized before the new binary parses the registry. Blank values and malformed registry content may be cleaned at the same time.
+
+Destructive sanitization must never be based on an incomplete or unavailable schema. If LlamaForge cannot obtain a reliable option schema during an explicit runtime/build-target switch, the switch is refused **before the currently working router is stopped**, and the destination registry is left unchanged. During panel startup, schema-discovery failure leaves the registry unchanged and is reported as a warning/error rather than guessing that unknown keys are obsolete.
+
+The refresh is idempotent: once a registry matches the current binary schema, repeating startup or selecting the same runtime again produces no further changes.
 
 ## Format
 
@@ -57,7 +90,7 @@ n-cpu-moe = 37
 model = D:/models/lmstudio-community/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q4_K_M.gguf
 
 [gpt-oss-20b-mxfp4]
-model = D:/models/lmstudio-community/gpt-oss-20b-GGUF/gpt-oss-20b-MXFP4.gguf
+model = D:/models/lmstudio-community/gpt-oss-120b-GGUF/gpt-oss-20b-MXFP4.gguf
 ctx-size = 100000
 ```
 
@@ -71,7 +104,7 @@ model = /models/gemma-4-31b-it.gguf
 spec-draft-adaptive = true
 ```
 
-That key remains in the Custom Target's registry and is not presented to built-in llama.cpp when the user switches back.
+That key remains in the Custom Target's registry while the selected fork continues to expose it. If a later version of that same fork removes the option, the next schema refresh removes the stale key from that fork's registry.
 
 ## Common keys
 
