@@ -29,7 +29,9 @@ A rebuild (`BuildManager.run_build()`) runs in a background thread: it first val
 
 **"Built, with warnings."** `cmake --build` returns a single exit code for the whole build, so a failing non-essential target (the npm/`sharp` UI-asset step on Windows is the common one) used to be reported as a hard **BUILD FAILED** even though `llama-server` itself built. Now, if the build step fails but a *freshly built* `llama-server` is present (freshness proven by comparing its mtime to the build's start, so a stale binary from a previous build can't mask a real compile failure), the build is reported as **built, with warnings** — the binary is recorded and usable, and the failing step is left in the log for you to read. A build that produced no fresh binary is still a hard failure.
 
-**Two llama-family engines.** The Build tab has a **Build Target** selector. Building the `ik_llama` target uses its own `ik_llama_src` / `ik_llama_build_dir` / `ik_llama_cmake_flags` and produces a separate binary. A **Switch engine** control (`POST /api/engine/switch`) points the router at the chosen engine by setting `active_engine`. The switch is gated on a capability probe (`router_ctl.supports_router_mode()`): because LlamaForge drives the router as `<server_bin> --models-preset ...`, a binary whose `llama-server` predates router mode is **refused** with an explanation rather than being switched to and taking the router down. Each engine reads its own `models.ini` (ik_llama uses a `-ikllama` sibling), and the knob editor reflects whichever engine is active.
+**llama-family runtimes and registries.** The Build tab has a **Build Target** selector. Building the `ik_llama` target uses its own `ik_llama_src` / `ik_llama_build_dir` / `ik_llama_cmake_flags` and produces a separate binary. A **Switch engine** control (`POST /api/engine/switch`) points the router at the chosen engine by setting `active_engine`. The switch is gated on a capability probe (`router_ctl.supports_router_mode()`): because LlamaForge drives the router as `<server_bin> --models-preset ...`, a binary whose `llama-server` predates router mode is **refused** with an explanation rather than being switched to and taking the router down.
+
+Every runtime/build target that can expose a different llama-server option set has its own model registry. Built-in llama.cpp uses `models_ini`; ik_llama uses its own `-ikllama` sibling (or explicit override); and each Custom Build Target uses a registry dedicated to that target's stable ID. The knob editor reflects whichever binary is active, and all model-setting writes go only to that active target's registry. This prevents fork-only options from being passed to another binary.
 
 ## How to use it
 
@@ -84,10 +86,31 @@ have reviewed; LlamaForge does not extract commands from repository documentatio
 **Check Update** compares HEAD with `origin/<branch>` using the existing cache;
 it never executes the recipe. **Edit** keeps the target ID stable and does not
 move or delete old directories. **Remove** removes registration only: source,
-build, binaries, and Git files remain on disk. Editing/removing a running target
-is rejected. When a Custom Target is the active llama.cpp-compatible build, the
-daily automatic update schedule follows that target and runs its saved Pull & Build
-workflow instead of updating the built-in llama.cpp checkout.
+build, binaries, Git files, and that target's model-registry file remain on disk.
+Editing/removing a running target is rejected. When a Custom Target is the active
+llama.cpp-compatible build, the daily automatic update schedule follows that target
+and runs its saved Pull & Build workflow instead of updating the built-in llama.cpp
+checkout.
+
+### Per-target model registry
+
+A Custom Build Target is a distinct inference runtime for model-setting purposes even though runtime dispatch still uses `active_engine = "llamacpp"`. Different forks may support different options, so they must not share the built-in llama.cpp `models.ini`.
+
+Each target record may optionally specify `models_ini`. When it is empty or absent, LlamaForge derives a sibling path from the built-in `models_ini` and the Custom Target's stable ID:
+
+```text
+built-in llama.cpp        models.ini
+ik_llama                  models-ikllama.ini
+custom target "custom-strix"  models-custom-strix.ini
+```
+
+The generated target ID is the identity of the registry. Changing the target's display name does not rename the registry.
+
+On the **first activation** of a Custom Target, if its registry does not yet exist, LlamaForge copies the current built-in llama.cpp registry into the target registry before starting the new binary. This is a one-time seed so the target begins with the same model inventory and baseline tuning. From that point forward the files are independent: changing model settings under the Custom Target changes only its registry, and changing built-in llama.cpp settings changes only `models.ini`.
+
+If the dedicated target registry already exists, activation uses it unchanged. LlamaForge does not merge or filter settings across targets on every switch. A fork may therefore store options such as `spec-draft-adaptive` without causing built-in llama.cpp to reject its registry.
+
+For upgrades from the previous shared-registry behavior, an already-active Custom Target with no dedicated registry is initialized by copying the current built-in registry before that target is restarted. The migration preserves the settings users had been running with. It does not guess which existing keys are fork-only and does not silently remove keys from built-in `models.ini`.
 
 ### Use this build
 
@@ -96,18 +119,25 @@ executable, and pass the existing `--models-preset` router compatibility probe.
 Missing binaries produce “Server Binary does not exist. Build this target first.”
 Validation failures leave the current runtime and configuration unchanged.
 
-Activation keeps `active_engine = "llamacpp"` and changes `server_bin` to the
-resolved target binary. A running router's loaded model IDs are captured before
-stopping it. LlamaForge starts the new binary, waits for router readiness, then
-attempts to restore the previous llama.cpp models using the existing model reload
-helper. Switching from ik_llama does not copy its separate model registry.
-A stopped router is started by activation. Builds must finish before activation.
+Activation keeps `active_engine = "llamacpp"`, changes `server_bin` to the resolved
+target binary, sets `active_llamacpp_build_target` to the target's stable ID, and
+selects that target's dedicated model registry for `--models-preset`. The target
+registry is initialized from built-in `models.ini` first when required by the
+rules above.
 
-If startup fails or readiness times out, the previous configuration is restored.
-Any partially started new router is stopped, and the old router is restarted if
-it was previously running; its models are reloaded on a best-effort basis.
-Recovery failures are reported separately, so a failed rollback is never presented
-as a successful activation. Model reload itself is best-effort, not transactional.
+A running router's loaded model IDs are captured before stopping it. Because a
+build-target switch also changes registry identity, LlamaForge restores only model
+IDs that exist in the destination registry. Missing IDs are skipped and reported;
+settings are never copied from the source registry during ordinary switching.
+Switching from ik_llama likewise does not copy its separate model registry. A
+stopped router is started by activation. Builds must finish before activation.
+
+If startup fails or readiness times out, the previous configuration **and previous
+registry selection** are restored. Any partially started new router is stopped, and
+the old router is restarted if it was previously running; its models are reloaded
+on a best-effort basis. Recovery failures are reported separately, so a failed
+rollback is never presented as a successful activation. Model reload itself is
+best-effort, not transactional.
 
 The UI shows **Active runtime**, **Active build**, and the configured binary path.
 A Custom Target whose resolved binary is already active displays **Active**.
@@ -116,17 +146,18 @@ target matches it afterward, the UI shows **External / unregistered build**.
 
 To return, select the built-in **llama.cpp** target and click **Switch to llama.cpp**.
 LlamaForge preserves the previously selected default binary (including an explicit
-external `server_bin`) for this operation. Subsequent built-in builds update that
-saved build path without replacing an active Custom Target. The automatic update
-schedule follows whichever registered llama.cpp-compatible Build Target is active:
-a Custom Target uses its own saved repository/branch/recipe, while switching back
-to built-in `llama.cpp` makes subsequent automatic updates use the built-in checkout.
-`ik_llama` remains a separate runtime and is not included in this schedule.
+external `server_bin`) for this operation. Switching back also selects the built-in
+`models_ini`; the Custom Target's dedicated registry is left untouched. Subsequent
+built-in builds update the saved build path without replacing an active Custom
+Target. The automatic update schedule follows whichever registered llama.cpp-
+compatible Build Target is active: a Custom Target uses its own saved repository/
+branch/recipe, while switching back to built-in `llama.cpp` makes subsequent
+automatic updates use the built-in checkout. `ik_llama` remains a separate runtime
+and is not included in this schedule.
 
 ### Configuration and API
 
-Existing configurations need no migration. A separate `custom_build_targets`
-object maps generated stable IDs to target records:
+Existing target records remain valid. A separate `custom_build_targets` object maps generated stable IDs to target records:
 
 ```json
 {
@@ -139,20 +170,23 @@ object maps generated stable IDs to target records:
       "source": "/home/user/fork",
       "build": "/home/user/fork/build",
       "server_binary": "{build}/bin/llama-server",
-      "build_command": "cmake -S \"{source}\" -B .\ncmake --build . --parallel {jobs}"
+      "build_command": "cmake -S \"{source}\" -B .\ncmake --build . --parallel {jobs}",
+      "models_ini": ""
     }
   }
 }
 ```
 
-Two optional configuration keys default to empty strings for older installations:
+`models_ini` on a Custom Target is optional. Empty/missing means derive `models-<stable-target-id>.ini` beside the built-in registry. Existing target records therefore need no JSON-shape migration; their dedicated registry is created lazily when needed.
+
+Two optional top-level configuration keys default to empty strings for older installations:
 
 - `llama_builtin_server_bin`: saved default llama.cpp binary for switching back.
 - `active_llamacpp_build_target`: selected custom ID, `llamacpp` after switching
-  back, or empty for legacy/default selection. This never participates in runtime
-  backend dispatch; `active_engine` remains `llamacpp` or `ikllama`. The automatic
-  update scheduler does use this build identity to resolve which registered
-  llama.cpp-compatible Build Target should be pulled and rebuilt.
+  back, or empty for legacy/default selection. This does not change backend dispatch;
+  `active_engine` remains `llamacpp` or `ikllama`. It **does** participate in
+  resolving the active model registry and in resolving which registered target the
+  automatic updater should pull/rebuild.
 - `build_auto_update_last_at`: timestamp of the latest completed automatic-update
   decision/attempt, stored as an offset-aware ISO 8601 value. The UI renders this
   in server-local time as `YYYY-MM-DD HH:MM:SS`. Empty means no automatic update
@@ -160,18 +194,23 @@ Two optional configuration keys default to empty strings for older installations
   once-per-day guard for compatibility, but it is not the user-facing timestamp.
 
 - `GET /api/build/targets`: built-in and custom target records (`builtin` flag),
-  plus `active_build` with `id`, `name`, and `server_bin`.
+  plus `active_build` with `id`, `name`, and `server_bin`. Custom target records
+  include the configured `models_ini` override (empty means derived).
 - `POST /api/build/activate`: `{ "target": "custom-ID" }`; validates and activates
-  a saved Custom Target. Unknown IDs and built-in IDs return HTTP 400; running
+  a saved Custom Target, initializes/selects its registry, and restarts the router
+  against that registry. Unknown IDs and built-in IDs return HTTP 400; running
   builds or unsafe current-router state return 409. Startup failure returns 500
   with `rollback_ok` and `rollback_error`. Success returns `active_engine` and
   `active_build`. Returning to built-in uses the existing
-  `POST /api/engine/switch` with `{ "engine": "llamacpp" }`.
+  `POST /api/engine/switch` with `{ "engine": "llamacpp" }` and selects built-in
+  `models_ini`.
 - `POST /api/build/targets/validate`: target fields; returns normalized fields and
   resolved binary path without saving.
 - `POST /api/build/targets/save`: target fields; omit `id` to create, include an
-  existing custom `id` to edit. Returns the saved target.
-- `POST /api/build/targets/remove`: `{ "id": "..." }`; removes registration only.
+  existing custom `id` to edit. Returns the saved target. Changing display `name`
+  does not change a derived registry path because the stable target ID is used.
+- `POST /api/build/targets/remove`: `{ "id": "..." }`; removes registration only;
+  it does not delete the target registry.
 - Existing `/api/build/info`, `/api/build/log`, and `/api/build/start` accept the
   custom target ID. Start uses the saved recipe, ignoring ad-hoc command/flag input.
   Unknown target IDs return HTTP 400, rather than falling back to llama.cpp.
@@ -192,7 +231,7 @@ The scheduler polls throughout the configured local minute. A transient collisio
 
 Before starting a build, the scheduler rechecks current inference activity, router state, vLLM state, and all build managers, including registered Custom Build managers. Any already-running built-in or Custom build prevents a concurrent automatic build. Missing/unknown activity information is treated conservatively. The card reports the final target and reason whenever a run is skipped.
 
-During an automatic update, new panel API operations return HTTP 503 and the active llama.cpp-compatible router is stopped, so inference is temporarily unavailable. The update runs against the resolved Build Target only. After the build, LlamaForge attempts to restart the same target's binary and restore the previously loaded models, including after build failure where recovery is possible. Clients connected directly to the router should retry connections during this maintenance window; their activity is checked immediately before stopping the router, but a direct request can still arrive between that check and the stop. A failed git fetch/pull/clone or build command cancels the automatic rebuild and does not switch to another target. Inspect the Build Log for the resolved target for details; status text and log guidance must name the resolved target rather than always referring to the built-in llama.cpp log.
+During an automatic update, new panel API operations return HTTP 503 and the active llama.cpp-compatible router is stopped, so inference is temporarily unavailable. The update runs against the resolved Build Target only. After the build, LlamaForge attempts to restart the same target's binary with the **same target-specific registry** and restore the previously loaded models, including after build failure where recovery is possible. Clients connected directly to the router should retry connections during this maintenance window; their activity is checked immediately before stopping the router, but a direct request can still arrive between that check and the stop. A failed git fetch/pull/clone or build command cancels the automatic rebuild and does not switch to another target. Inspect the Build Log for the resolved target for details; status text and log guidance must name the resolved target rather than always referring to the built-in llama.cpp log.
 
 ## Screenshot
 
@@ -215,6 +254,7 @@ During an automatic update, new panel API operations return HTTP 503 and the act
 | Rebuild | `BuildManager.run_build()` | Validates paths, optional `git pull --ff-only`, backs up prior binaries, `cmake` configure + build (Release, parallel jobs = CPU count by default), records the built `server_bin`. |
 | Partial success | `BuildManager.run_build()` | Build-step failure with a fresh `llama-server` present → `done_warnings` (amber "built with warnings"); no fresh binary → hard `failed`. |
 | Engine target / switch | Build tab selector, `POST /api/engine/switch` | Builds `llama.cpp` or `ik_llama`; switching sets `active_engine`, refused if the target binary has no router mode. |
+| Custom registry | `active_llamacpp_build_target`, target `models_ini` | Each registered Custom Build Target resolves a dedicated model registry by stable ID; first activation seeds it from built-in `models.ini`, then it remains independent. |
 | Automatic update target | `active_llamacpp_build_target`, daily scheduler | Follows the active registered llama.cpp-compatible Build Target, not the browser-local Build Target dropdown selection. Built-in `llama.cpp` uses its normal build flow; a Custom Target uses its saved Pull & Build recipe. Unresolved targets and non-`llamacpp` engines are skipped without fallback. |
 | Automatic update attempt | `build_auto_update_last_at`, `build_auto_update_status` | Card shows the latest finalized scheduler attempt/decision as server-local `YYYY-MM-DD HH:MM:SS`, together with resolved target and result/reason. Transient admission collisions retry within the configured minute and do not consume the day by themselves. |
 
@@ -222,4 +262,4 @@ During an automatic update, new panel API operations return HTTP 503 and the act
 
 If the upstream status shows "check failed," `git fetch` couldn't reach GitHub (network issue, or `llama_src` isn't a valid checkout) — check `llama_src` in `config.json` points at a real git clone. If a build fails, the Build Log panel shows the failing `cmake` step's output; prior binaries are always backed up first (to a `bin-backup-<timestamp>` folder next to the build output) so a bad build doesn't leave you without a working server. If flag detection looks wrong, verify the backend-specific tools (`nvidia-smi`, `rocminfo` / `hipconfig`, `vulkaninfo`) are on `PATH` and working.
 
-See also [Models & Tuning](models.md) for the flags the resulting `llama-server` binary exposes, and [config.json Reference](config.md) for `llama_src`, `build_dir`, `server_bin`, and `cmake_flags`.
+See also [Models & Tuning](models.md) for the flags the resulting `llama-server` binary exposes, [models.ini Format](models-ini.md) for per-runtime registry isolation, and [config.json Reference](config.md) for `llama_src`, `build_dir`, `server_bin`, registry settings, and `cmake_flags`.
