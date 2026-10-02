@@ -222,7 +222,7 @@ engine_name            normalized engine display name
 engine_executable      exact executable path
 engine_commit          source Git SHA, nullable
 child_port             child llama-server port when known
-child_pid              child process PID when known
+child_pid              child process PID from optional OS lookup, nullable
 argv                   exact sanitized argv array
 normalized_options     parsed known options for UI
 other_options          unclassified argv/options for UI
@@ -243,7 +243,8 @@ Required logical fields:
 model_id
 load_config_id
 timestamp
-child_pid
+child_port             child llama-server port from the router log
+child_pid              from optional OS lookup, nullable; never the log prefix
 task_id                when present in engine log
 prompt_tokens
 prompt_eval_ms
@@ -274,41 +275,43 @@ load: spawning server instance with args:
 ...
 ```
 
-The child inference log prefixes output with the child PID, for example:
+The router prefixes forwarded child inference output with the **child server port**, not the OS PID. For example:
 
 ```text
-[43981] ... slot print_timing: id 3 | task 4 | ...
+load: spawning server instance with name=gemma-... on port 35409
+[35409] ... slot print_timing: id 3 | task 4 | prompt eval time = ...
+[35409] ... slot print_timing: id 3 | task 4 | eval time = ...
+[35409] ... slot print_timing: id 3 | task 4 | total time = ...
+[35409] ... slot print_timing: id 3 | task 4 | draft acceptance = ...
 ```
 
-Use those facts to create an explicit load-session mapping.
+The numeric prefix above must never be interpreted as PID 35409. `child_port` bridges the two log streams directly. An OS PID is optional metadata obtained independently from the process listening on that port.
 
 Required correlation procedure:
 
 1. When `router.err.log` reports `spawning server instance with name=<model> on port <port>`, open a **pending load session** containing at least `model_id`, `child_port`, and `loaded_at`.
 2. Capture the immediately associated `spawning server instance with args:` block as an argv array for that same pending session. Parse the executable from argv[0], derive the engine name, and best-effort resolve the engine Git commit.
-3. Resolve the OS process listening on the reported child port and bind its PID to the pending session. Poll/retry for a short bounded startup window because the port may not be listening at the exact instant the spawn line is written.
-4. Once PID is known, the stable runtime identity is the load session containing at least `{model_id, child_port, child_pid, loaded_at}`. Persist a new immutable LoadConfig record and maintain an active `child_pid -> load_config_id` mapping.
-5. Parse `router.out.log` timing records by the `[PID]` prefix. A timing/MTP line from PID `P` may only be attributed to the active LoadConfig bound to PID `P`.
-6. Use `(child_pid, task_id)` as the in-memory Run assembly key when `task` is present. Accumulate the prompt timing, eval timing, total timing, graphs/optional information, and MTP acceptance lines until the run is complete, then persist exactly one Run record.
-7. On child exit, unload/reload, PID replacement, router restart, or evidence that the child port now belongs to a different PID, close the old session mapping. A later process reusing the same PID must become a new LoadConfig/session, never reuse historical state.
+3. Once the argv snapshot is complete, persist a new immutable LoadConfig and maintain an active `child_port -> load_config_id` mapping. This must work even if OS PID resolution is unavailable, ambiguous, or fails.
+4. Parse `router.out.log` timing/MTP records by the `[child_port]` prefix. A line from port `P` may only be attributed to the active load session mapped to port `P`.
+5. Use `(load_config_id, task_id)` as the in-memory Run assembly key when `task` is present. Accumulate the prompt timing, eval timing, total timing, graphs/optional information, and MTP acceptance lines until the run is complete, then persist exactly one Run record. Session identity prevents task IDs reused by later loads from colliding with old runs.
+6. Best-effort resolve the OS PID listening on the child port and, when available, its process birth identity. Use these only as optional liveness/reuse evidence; never infer them from the router log prefix. Missing/failed lookups do not invalidate otherwise unambiguous port correlation. A later lookup may enrich in-memory process metadata without mutating a historical LoadConfig.
+7. On child exit, unload/reload, router restart, or positive evidence of a different PID/process birth identity owning the child port, close the old session mapping. Every later observed load creates a new LoadConfig, including when it reuses the same port, PID, or task IDs. Unread output from the old port session must not be imported into the new session.
 
-### Why port -> PID binding is required
+### Why child-port/session correlation is required
 
-The model/port line identifies which router child is being launched, while the PID prefix identifies which child emitted a completed inference record. Binding the unique child port to its owning PID bridges those two log streams without relying on temporal proximity.
-
-This is what makes correlation safe when two or more models are loaded simultaneously.
+Both the model load log and the forwarded child output identify the child by its unique port. The active port mapping selects the load session, and the LoadConfig ID distinguishes different sessions that reuse the same port. This isolates multiple resident models without relying on temporal proximity or a mandatory OS process lookup.
 
 ### Failure behavior
 
 Correctness is preferred over guessed history.
 
-If a pending load cannot be bound unambiguously to a child PID, do **not** attach later PID-prefixed runs to it by timestamp/"nearest load" heuristics. Keep aggregate Stats working and skip detailed history for the ambiguous run/session, with diagnostic logging sufficient to investigate the failure.
+If a port has no unambiguous active load session or the associated argv snapshot is incomplete, do **not** attach runs to another configuration by timestamp/"nearest load" heuristics. Keep aggregate Stats working and skip detailed history for that ambiguous run/session, with diagnostic logging sufficient to investigate the failure. Failure to resolve a PID alone is not ambiguity in the port/session mapping.
 
 Likewise, incomplete timing blocks must not be persisted as complete runs with invented values. Missing optional fields may be null/`—`; the base run identity/config association must be unambiguous.
 
 ### Platform support
 
-PID resolution from a listening child port must work on supported LlamaForge platforms. Reuse/extract existing platform-specific port/PID helpers where practical rather than shelling out independently in multiple modules.
+Optional PID/process-identity resolution should reuse existing platform-specific helpers on supported LlamaForge platforms. Port-based history correlation must remain functional without those helpers or when they fail.
 
 ## Log ingestion
 
@@ -418,8 +421,8 @@ Implementation is complete when all of the following hold:
 8. Switching engine creates a new LoadConfig and the engine label shows e.g. `strix-llama (06a64c3)` when the engine commit is available.
 9. Load Config shows executable path, normalized known options, model/draft/mmproj paths when available, and unclassified engine-specific options.
 10. Full Launch Command reproduces the sanitized argv captured at load time rather than current settings.
-11. Concurrent loaded models cannot cross-attribute runs/configs; PID/session correlation is tested.
-12. Ambiguous PID/session correlation is skipped rather than guessed.
+11. Concurrent loaded models cannot cross-attribute runs/configs; child-port/session correlation is tested.
+12. Ambiguous port/session correlation is skipped rather than guessed; unavailable PID lookup does not block valid port-based history.
 13. Retention is 1,000 completed Runs per model; UI can request 10/25/50/100.
 14. Reset stats clears both aggregate and detailed history and re-baselines ingestion.
 15. Log rotation/truncation and partial lines do not duplicate or corrupt history.
@@ -433,10 +436,13 @@ At minimum cover:
 - parse a complete PP/TG/total timing block into one Run
 - parse MTP acceptance and mean length
 - non-MTP run yields nullable MTP fields
-- two child PIDs interleaving output are attributed to different LoadConfigs
+- two child ports interleaving output are attributed to different LoadConfigs, even with equal task IDs
 - same model reload creates a new LoadConfig and old runs keep the old reference
-- PID reuse after session close does not reuse the old config
-- pending load port -> PID binding success and timeout/failure behavior
+- port/PID reuse after session close does not reuse the old config or partial task state
+- the real port-35409 pattern produces one complete PP/TG/total/MTP Run and the correct LoadConfig
+- log prefix 35409 is never treated as OS PID 35409
+- optional PID lookup success, transient failure, unavailable/ambiguous lookup, and process identity reuse
+- incomplete pending argv capture times out without guessed history
 - engine name + 7-char commit display, plus missing-commit fallback
 - unknown engine-specific args survive in `other_options` and Full Launch Command
 - secret argv values are redacted before persistence

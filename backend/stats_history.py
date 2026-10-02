@@ -1,4 +1,4 @@
-"""Incremental, PID-bound llama.cpp run history; aggregate accounting is separate."""
+"""Incremental, child-port-bound llama.cpp run history; aggregate accounting is separate."""
 import copy
 from collections import deque
 import json
@@ -172,6 +172,7 @@ class RunHistory:
         self.path = path or HISTORY_FILE
         self.resolve_pid = resolve_pid or router_ctl.listening_pid
         self.process_identity = process_identity or router_ctl.process_identity
+        self.pids = {}             # optional observed process metadata, keyed by port
         self.identities = {}
         self.clock = clock
         self.lock = threading.RLock()
@@ -197,7 +198,7 @@ class RunHistory:
         self.slot_keys = {}
         self.completed = set()
         self.completed_order = deque()
-        self.retired_pids = set()
+        self.retired_ports = set()
         self.skip_offsets = {}
         self.followers = {}
         self.router_pid = None
@@ -205,17 +206,34 @@ class RunHistory:
         self.dirty = False
         self._model_ids = frozenset(self.data['runs']) | frozenset(c['model_id'] for c in self.data['configs'].values())
 
-    def close(self, pid):
-        if pid in self.active:
-            self.retired_pids.add(pid)
-        self.active.pop(pid, None)
-        self.identities.pop(pid, None)
+    def close(self, port):
+        cid = self.active.pop(port, None)
+        if cid is not None:
+            self.retired_ports.add(port)
+        self.pids.pop(port, None)
+        self.identities.pop(port, None)
         for key in list(self.blocks):
-            if key[0] == pid:
+            if key[0] == cid:
                 self.blocks.pop(key)
-        self.slot_keys = {key: value for key, value in self.slot_keys.items() if key[0] != pid}
-        self.completed = {key for key in self.completed if key[0] != pid}
-        self.completed_order = deque(key for key in self.completed_order if key[0] != pid)
+        self.slot_keys = {key: value for key, value in self.slot_keys.items() if key[0] != cid}
+        self.completed = {key for key in self.completed if key[0] != cid}
+        self.completed_order = deque(key for key in self.completed_order if key[0] != cid)
+
+    def _process_on_port(self, port):
+        """Optional OS evidence only; absence/failure never blocks port correlation."""
+        try:
+            pid = self.resolve_pid(port)
+        except Exception:
+            LOG.debug('Stats history: process lookup failed for port %s', port, exc_info=True)
+            return None, None
+        if not pid:
+            return None, None
+        try:
+            identity = self.process_identity(pid)
+        except Exception:
+            LOG.debug('Stats history: process identity lookup failed for PID %s', pid, exc_info=True)
+            identity = None
+        return pid, identity
 
     def stderr(self, line):
         spawn = re.search(r'spawning server instance with name=(.+?) on port (\d+)', line)
@@ -224,10 +242,10 @@ class RunHistory:
                 self.capture['ready'] = True
             self.capture = None
             mid, port = spawn.group(1), int(spawn.group(2))
-            for pid, cid in list(self.active.items()):
+            for active_port, cid in list(self.active.items()):
                 cfg = self.data['configs'][str(cid)]
                 if cfg['model_id'] == mid or cfg['child_port'] == port:
-                    self.close(pid)
+                    self.close(active_port)
             self.pending = [p for p in self.pending if p['model_id'] != mid and p['child_port'] != port]
             session = dict(model_id=mid, child_port=port, loaded_at=self.clock(), argv=[], ready=False)
             self.pending.append(session)
@@ -248,52 +266,55 @@ class RunHistory:
         if exit_model:
             mid = exit_model.group(1)
             self.pending = [p for p in self.pending if p['model_id'] != mid]
-            for pid, cid in list(self.active.items()):
+            for active_port, cid in list(self.active.items()):
                 if self.data['configs'][str(cid)]['model_id'] == mid:
-                    self.close(pid)
-        exit_pid = re.search(r'\[(\d+)\].*(?:exited|terminated)', line)
-        if exit_pid:
-            self.close(int(exit_pid.group(1)))
+                    self.close(active_port)
+        exit_port = re.search(r'^\[\s*(\d+)\].*(?:exited|terminated)', line)
+        if exit_port:
+            self.close(int(exit_port.group(1)))
 
     def bind(self):
+        """Activate complete load snapshots by port, without requiring a PID."""
         now = self.clock()
-        for pid, cid in list(self.active.items()):
-            cfg = self.data['configs'][str(cid)]
-            identity = self.process_identity(pid)
-            if self.resolve_pid(cfg['child_port']) != pid or (self.identities.get(pid) is not None and identity != self.identities[pid]):
-                self.close(pid)
+        for port in list(self.active):
+            pid, identity = self._process_on_port(port)
+            previous_pid = self.pids.get(port)
+            previous_identity = self.identities.get(port)
+            if ((pid is not None and previous_pid is not None and pid != previous_pid)
+                    or (identity is not None and previous_identity is not None and identity != previous_identity)):
+                self.close(port)
+            elif pid is not None:
+                # A late successful lookup enriches runtime metadata only;
+                # the persisted LoadConfig remains an immutable load snapshot.
+                self.pids[port] = pid
+                if identity is not None:
+                    self.identities[port] = identity
         for session in list(self.pending):
             if now - session['loaded_at'] > STARTUP_WINDOW:
-                LOG.warning('Stats history: child port %s for %s could not be bound', session['child_port'], session['model_id'])
+                LOG.warning('Stats history: incomplete launch argv for child port %s (%s)', session['child_port'], session['model_id'])
                 self.pending.remove(session)
                 if self.capture is session:
                     self.capture = None
                 continue
             if not session['ready'] or not session['argv']:
                 continue
-            pid = self.resolve_pid(session['child_port'])
-            if not pid:
-                continue
-            # A PID cannot belong to two live child sessions.
-            if pid in self.active:
-                LOG.warning('Stats history: ambiguous child PID %s', pid)
-                self.close(pid)
-                self.pending.remove(session)
-                continue
+            port = session['child_port']
+            pid, identity = self._process_on_port(port)
             cid = self.data['next_id']
             self.data['next_id'] += 1
             cfg = {k: session[k] for k in ('model_id', 'child_port', 'loaded_at')}
             cfg.update(snapshot(session['argv']), id=cid, child_pid=pid)
             self.data['configs'][str(cid)] = cfg
-            self.active[pid] = cid
-            self.identities[pid] = self.process_identity(pid)
-            # A reused PID's unread output can be from the previous process.
-            # Discard only that PID up to this cursor; other models keep flowing.
+            self.active[port] = cid
+            self.pids[port] = pid
+            self.identities[port] = identity
+            # A reused port's unread output may belong to the previous session.
+            # Discard only that port up to this cursor; other models keep flowing.
             follower = self.followers.get('router_stdout')
-            if pid in self.retired_pids and follower:
+            if port in self.retired_ports and follower:
                 try:
                     st = os.stat(follower.path)
-                    self.skip_offsets[pid] = ((st.st_dev, st.st_ino), st.st_size)
+                    self.skip_offsets[port] = ((st.st_dev, st.st_ino), st.st_size)
                 except OSError:
                     pass
             self.pending.remove(session)
@@ -303,31 +324,33 @@ class RunHistory:
             self.dirty = True
 
     def stdout(self, line, offset=None):
-        prefix = re.match(r'^\[(\d+)\]', line)
+        prefix = re.match(r'^\[\s*(\d+)\]', line)
         if not prefix:
             return
-        pid = int(prefix.group(1))
-        marker = self.skip_offsets.get(pid)
+        port = int(prefix.group(1))
+        marker = self.skip_offsets.get(port)
         if offset is not None and marker:
             follower = self.followers['router_stdout']
             if marker[0] == follower.identity and offset < marker[1]:
                 return
-        if pid not in self.active:
-            LOG.debug('Stats history: skipping timing from unbound child PID %s', pid)
+        if port not in self.active:
+            LOG.debug('Stats history: skipping timing from unknown child port %s', port)
             return
+        cid = self.active[port]
+        cfg = self.data['configs'][str(cid)]
         task = re.search(r'\btask\s+(\d+)', line)
         slot = re.search(r'\bid\s+(\d+)\s*\|', line)
         if not task and not slot:
             return  # no safe request identity
         if task:
-            key = (pid, int(task.group(1)))
+            key = (cid, int(task.group(1)))
         else:
-            slot_key = (pid, int(slot.group(1)))
+            slot_key = (cid, int(slot.group(1)))
             if 'prompt eval time' in line:
                 # Timestamped prompt-line identity makes slot-only forks safe
                 # against rotation replay without inventing a task ID.
                 fingerprint = hashlib.sha256(line.encode('utf-8')).hexdigest()
-                self.slot_keys[slot_key] = (pid, ('slot', slot_key[1], fingerprint))
+                self.slot_keys[slot_key] = (cid, ('slot', slot_key[1], fingerprint))
             key = self.slot_keys.get(slot_key)
             if key is None:
                 return
@@ -337,8 +360,8 @@ class RunHistory:
         mtp = re.search(r'draft acceptance\s*=\s*(\d+(?:\.\d+)?)\s*\(\s*(\d+) accepted\s*/\s*(\d+) generated\)(?:, mean len\s*=\s*(\d+(?:\.\d+)?))?', line)
         if not timing and not mtp:
             return
-        block = self.blocks.setdefault(key, dict(model_id=self.data['configs'][str(self.active[pid])]['model_id'],
-             load_config_id=self.active[pid], child_pid=pid, task_id=int(task.group(1)) if task else None,
+        block = self.blocks.setdefault(key, dict(model_id=cfg['model_id'],
+             load_config_id=cid, child_port=port, child_pid=self.pids.get(port), task_id=int(task.group(1)) if task else None,
              prompt_tokens=None, prompt_eval_ms=None, pp_tps=None, generated_tokens=None,
              eval_ms=None, tg_tps=None, total_ms=None, mtp_acceptance=None, mtp_accepted=None,
              mtp_generated=None, mtp_mean_len=None))
@@ -415,6 +438,7 @@ class RunHistory:
         with self.lock:
             self.data = empty_store()
             self.active.clear()
+            self.pids.clear()
             self.identities.clear()
             self.pending.clear()
             self.capture = None
@@ -423,7 +447,7 @@ class RunHistory:
             self.completed.clear()
             self.completed_order.clear()
             self._model_ids = frozenset()
-            self.retired_pids.clear()
+            self.retired_ports.clear()
             self.skip_offsets.clear()
             for follower in self.followers.values():
                 follower.baseline()
@@ -441,22 +465,24 @@ class RunHistory:
                 path = log_manager.log_path(kind)
                 if path != follower.path:
                     self.followers[kind] = Follower(path)
-                    for pid in list(self.active):
-                        self.close(pid)
+                    for port in list(self.active):
+                        self.close(port)
                     self.pending.clear()
                     self.blocks.clear()
                     self.slot_keys.clear()
                     self.capture = None
             import config
-            router_pid = self.resolve_pid(config.load()['router_port'])
-            router_identity = self.process_identity(router_pid) if router_pid else None
-            if self.router_pid != router_pid or (self.router_identity is not None and router_identity != self.router_identity):
-                for pid in list(self.active):
-                    self.close(pid)
+            router_pid, router_identity = self._process_on_port(config.load()['router_port'])
+            if ((self.router_pid is not None and router_pid is not None and self.router_pid != router_pid)
+                    or (self.router_identity is not None and router_identity is not None and router_identity != self.router_identity)):
+                for port in list(self.active):
+                    self.close(port)
                 self.pending.clear()
                 self.capture = None
-            self.router_pid = router_pid
-            self.router_identity = router_identity
+            if router_pid is not None:
+                self.router_pid = router_pid
+                if router_identity is not None:
+                    self.router_identity = router_identity
             err = self.followers['router_stderr']
             for line in err.read():
                 self.stderr(line)
@@ -469,10 +495,10 @@ class RunHistory:
             out = self.followers['router_stdout']
             lines = out.read()
             if out.rewound:
-                for pid, marker in list(self.skip_offsets.items()):
+                for port, marker in list(self.skip_offsets.items()):
                     if marker[0] == out.identity:
                         # A truncate/regrow invalidates old byte positions.
-                        self.skip_offsets[pid] = (out.identity, os.path.getsize(out.path))
+                        self.skip_offsets[port] = (out.identity, os.path.getsize(out.path))
             for line, offset in zip(lines, out.line_offsets):
                 self.stdout(line, offset=offset)
             if not out.partial and not out.backlog:

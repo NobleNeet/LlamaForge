@@ -61,15 +61,16 @@ Correlation works as follows:
 
 1. `router.err.log` identifies a model load with `name=<model>` and a unique child server port.
 2. The immediately associated `spawning server instance with args:` block is captured as that load session's immutable argv snapshot.
-3. LlamaForge resolves the OS process that owns the reported child port and binds its PID to the load session.
-4. `router.out.log` inference lines carry a `[PID]` prefix. Timing records from that PID are therefore attached only to the Load Config bound to the same PID/session.
-5. When a task ID is present, `(child_pid, task_id)` is used to assemble the prompt timing, generation timing, total timing, and optional MTP lines into one completed Run record.
+3. Once argv capture is complete, LlamaForge maps the child port to that immutable Load Config.
+4. `router.out.log` forwards inference lines with a `[child_port]` prefix. For example, a load on port `35409` emits `[35409]` timing/MTP lines; this is a port, not OS PID 35409. Those lines belong only to the active Load Config for that port.
+5. When a task ID is present, `(load_config_id, task_id)` assembles the prompt timing, generation timing, total timing, and optional MTP lines into one completed Run record. A later load reusing the port or task ID creates a new session.
+6. PID and process birth identity, when independently resolved through OS helpers, provide optional liveness/reuse validation. They are never inferred from the log prefix.
 
-If the child port cannot be bound unambiguously to a PID, detailed history is skipped for that ambiguous session rather than guessed from timestamps or nearest-log-line heuristics. Aggregate Stats continue working independently.
+If a child port has no unambiguous active session or its launch argv is incomplete, detailed history is skipped rather than guessed from timestamps or nearest-log-line heuristics. An unavailable or failed PID lookup does not prevent valid port-based correlation. Aggregate Stats continue working independently.
 
 History is stored separately in `stats-history.json` at the repository root using atomic writes when history changes. It is not rewritten by aggregate polling. Each model retains its newest 1,000 completed runs; referenced and active Load Configs remain available. Existing `stats.json` files require no migration.
 
-A separate one-second follower starts at the current end of the router logs, processes only new complete lines, and handles rotation/truncation. It does not import old logs at installation or dashboard restart. PID binding retries for up to 30 seconds. Process birth markers, when available, also protect against PID reuse between polls. Complete PP/TG/total blocks are finalized after a short quiet interval to include trailing MTP lines; incomplete blocks are discarded. Optional throughput/MTP metrics remain nullable.
+A separate one-second follower starts at the current end of the router logs, processes only new complete lines, and handles rotation/truncation. It does not import old logs at installation or dashboard restart. Incomplete launch argv capture expires after 30 seconds. Optional OS lookups can detect a different PID or process birth identity owning the port; missing lookup results do not close a session. Observed exits/reloads or confirmed process replacement close the old mapping. Complete PP/TG/total blocks are finalized after a short quiet interval to include trailing MTP lines; incomplete blocks are discarded. Optional throughput/MTP metrics remain nullable.
 
 `GET /api/stats` stays lightweight. Expanded rows fetch `GET /api/stats/runs?model=<encoded-id>&limit=10` (allowed limits: 10/25/50/100), with only the referenced snapshots. `GET /api/stats/config?model=<encoded-id>&id=<config-id>` retrieves an individual snapshot and validates its model ownership. vLLM stays on aggregate Stats and has no detailed-history expansion.
 
@@ -112,7 +113,7 @@ The dashboard's own proxied calls send the configured key as `Authorization: Bea
 | Avg tok/s | `StatsTracker.summary()` | `generated / gen_secs`; `gen_secs` accumulates only during poll windows with active generation. |
 | Daily retention | `stats.py: DAILY_KEEP` | 30 days of daily buckets kept; UI toggles between showing the last 14 or 30. |
 | Aggregate persistence | `stats.py: STATS_FILE` | `stats.json` at the repo root; atomic write via temp file + `os.replace`. |
-| Detailed history | `stats_history.py`, `stats-history.json` | 1,000 completed Runs per model; immutable Load Configs; PID/session-safe correlation; UI fetch capped at 100. |
+| Detailed history | `stats_history.py`, `stats-history.json` | 1,000 completed Runs per model; immutable Load Configs; child-port/session-safe correlation; UI fetch capped at 100. |
 | Router launch | `router_ctl.start()` | Starts the configured router executable with models preset, models-max, host/port, offline mode, metrics, and optional API key. |
 | LAN bind | `POST /api/network` | Sets `router_host` to `0.0.0.0` (LAN) or `127.0.0.1` (local only) and restarts the router. |
 | Key visibility | `GET /api/network` | Returns `has_api_key: bool` only — the stored key itself is never sent back to the browser. |
@@ -123,7 +124,7 @@ If **Live Throughput** shows the router offline but models load fine, confirm th
 
 If one loaded model does not accumulate tokens, inspect that model's `/metrics?model=<id>` endpoint and confirm the router reports it as `loaded`; each resident model is scraped independently.
 
-For detailed Run History, an ambiguous child port -> PID association produces no guessed Run/Load Config relationship. Check the diagnostic log and router logs for the relevant load session. The history ingester follows rotation/truncation incrementally without replaying completed tasks.
+For detailed Run History, an unknown/ambiguous child port -> Load Config association produces no guessed Run/Load Config relationship. Missing PID metadata alone does not prevent capture. Check the diagnostic log and router logs for the relevant load session. The history ingester follows rotation/truncation incrementally without replaying completed tasks.
 
 If external clients get `401`/`403` after enabling LAN access, verify they send `Authorization: Bearer <key>` with the configured key. A blank key field on save keeps the previously stored key rather than clearing it.
 

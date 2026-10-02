@@ -1,0 +1,10 @@
+0.10.688.504 I srv          load: spawning server instance with name=gemma-test on port 35409
+0.10.688.536 I srv          load: spawning server instance with args:
+0.10.688.537 I srv          load:   /external/strix-llama/build/bin/llama-server
+0.10.688.538 I srv          load:   --model
+0.10.688.539 I srv          load:   /models/gemma-test.gguf
+0.10.688.540 I srv          load:   --port
+0.10.688.541 I srv          load:   35409
+0.10.688.542 I srv          load:   --spec-type
+0.10.688.543 I srv          load:   draft-mtp
+0.10.688.544 I srv          load: child started
