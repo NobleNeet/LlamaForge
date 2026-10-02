@@ -303,7 +303,7 @@ class RunHistory:
             cid = self.data['next_id']
             self.data['next_id'] += 1
             cfg = {k: session[k] for k in ('model_id', 'child_port', 'loaded_at')}
-            cfg.update(snapshot(session['argv']), id=cid, child_pid=pid)
+            cfg.update(snapshot(session['argv']), id=cid, child_pid=pid, process_identity=identity)
             self.data['configs'][str(cid)] = cfg
             self.active[port] = cid
             self.pids[port] = pid

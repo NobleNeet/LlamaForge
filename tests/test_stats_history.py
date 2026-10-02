@@ -89,6 +89,7 @@ class HistoryTests(unittest.TestCase):
                 self.assertEqual((run['mtp_acceptance'], run['mtp_accepted'], run['mtp_generated'], run['mtp_mean_len']), (.51855, 699, 1348, 2.17))
                 self.assertEqual(result['configs'][str(cid)]['model_id'], 'gemma-test')
                 self.assertEqual(result['configs'][str(cid)]['child_pid'], child_pid)
+                self.assertEqual(result['configs'][str(cid)]['process_identity'], f'birth-{child_pid}' if child_pid else None)
                 self.assertNotIn(mock.call(35409), identity.call_args_list, 'a child port must never be used as a process PID')
                 resumed = h.RunHistory(history.path)
                 self.assertEqual(resumed.recent('gemma-test'), result)
@@ -292,6 +293,7 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(len(result['runs']), 1)
         self.assertIsNone(result['runs'][0]['child_pid'])
         self.assertIsNone(result['configs'][str(cid)]['child_pid'])
+        self.assertIsNone(result['configs'][str(cid)]['process_identity'])
         self.now += h.STARTUP_WINDOW + 1
         self.history.bind()
         self.assertEqual(self.history.active, {35409:cid})
@@ -300,6 +302,7 @@ class HistoryTests(unittest.TestCase):
         self.run_block(task=5)
         self.assertEqual(self.history.recent('alpha')['runs'][0]['child_pid'], 101)
         self.assertIsNone(self.history.config(str(cid), 'alpha')['child_pid'], 'load snapshot must stay immutable')
+        self.assertIsNone(self.history.config(str(cid), 'alpha')['process_identity'])
 
     def test_incomplete_pending_load_times_out_without_guessed_history(self):
         self.history.stderr('I srv load: spawning server instance with name=alpha on port 35409')

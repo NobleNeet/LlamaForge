@@ -64,7 +64,7 @@ Correlation works as follows:
 3. Once argv capture is complete, LlamaForge maps the child port to that immutable Load Config.
 4. `router.out.log` forwards inference lines with a `[child_port]` prefix. For example, a load on port `35409` emits `[35409]` timing/MTP lines; this is a port, not OS PID 35409. Those lines belong only to the active Load Config for that port.
 5. When a task ID is present, `(load_config_id, task_id)` assembles the prompt timing, generation timing, total timing, and optional MTP lines into one completed Run record. A later load reusing the port or task ID creates a new session.
-6. PID and process birth identity, when independently resolved through OS helpers, provide optional liveness/reuse validation. They are never inferred from the log prefix.
+6. PID and process birth identity are saved in the load snapshot when independently resolved through OS helpers and provide optional liveness/reuse validation. They are never inferred from the log prefix.
 
 If a child port has no unambiguous active session or its launch argv is incomplete, detailed history is skipped rather than guessed from timestamps or nearest-log-line heuristics. An unavailable or failed PID lookup does not prevent valid port-based correlation. Aggregate Stats continue working independently.
 
